@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/mod/semver"
@@ -854,6 +855,211 @@ func convertWorkspaceAgent(derpMap *tailcfg.DERPMap, coordinator tailnet.Coordin
 	}
 
 	return workspaceAgent, nil
+}
+
+// workspaceAgentLogs returns a list of logs that are available on the agent.
+//
+// @Summary Get workspace agent logs
+// @ID get-workspace-agent-logs
+// @Security CoderSessionToken
+// @Tags Agents
+// @Param workspaceagent path string true "Workspace agent ID" format(uuid)
+// @Success 200 {array} codersdk.WorkspaceAgentLogInfo
+// @Router /workspaceagents/{workspaceagent}/logs [get]
+func (api *API) workspaceAgentLogs(rw http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	workspaceAgent := httpmw.WorkspaceAgentParam(r)
+	workspace := httpmw.WorkspaceParam(r)
+	if !api.Authorize(r, rbac.ActionRead, workspace) {
+		httpapi.ResourceNotFound(rw)
+		return
+	}
+
+	apiAgent, err := convertWorkspaceAgent(api.DERPMap, *api.TailnetCoordinator.Load(), workspaceAgent, nil, api.AgentInactiveDisconnectTimeout, api.DeploymentConfig.AgentFallbackTroubleshootingURL.Value)
+	if err != nil {
+		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Internal error reading workspace agent.",
+			Detail:  err.Error(),
+		})
+		return
+	}
+	if apiAgent.Status != codersdk.WorkspaceAgentConnected {
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: fmt.Sprintf("Agent state is %q, it must be in the %q state.", apiAgent.Status, codersdk.WorkspaceAgentConnected),
+		})
+		return
+	}
+
+	agentConn, release, err := api.workspaceAgentCache.Acquire(r, workspaceAgent.ID)
+	if err != nil {
+		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Internal error dialing workspace agent.",
+			Detail:  err.Error(),
+		})
+		return
+	}
+	defer release()
+
+	agentLogs, err := agentConn.Logs(ctx)
+	if err != nil {
+		var e *codersdk.Error
+		if xerrors.As(err, &e) {
+			httpapi.Write(ctx, rw, e.StatusCode(), codersdk.Response{
+				Message:     e.Message,
+				Detail:      e.Detail,
+				Validations: e.Validations,
+			})
+			return
+		}
+		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Internal error getting logs.",
+			Detail:  err.Error(),
+		})
+		return
+	}
+
+	httpapi.Write(ctx, rw, http.StatusOK, agentLogs)
+}
+
+// workspaceAgentLogInfo returns information about the log file.
+//
+// @Summary Get workspace agent log file information.
+// @ID get-workspace-agent-log-info
+// @Security CoderSessionToken
+// @Tags Agents
+// @Param workspaceagent path string true "Workspace agent ID" format(uuid)
+// @Param log path codersdk.WorkspaceAgentLog true "Workspace log file name"
+// @Success 200 {object} codersdk.WorkspaceAgentLogInfo
+// @Router /workspaceagents/{workspaceagent}/logs/{log} [get]
+func (api *API) workspaceAgentLogInfo(rw http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	workspaceAgent := httpmw.WorkspaceAgentParam(r)
+	workspace := httpmw.WorkspaceParam(r)
+	if !api.Authorize(r, rbac.ActionRead, workspace) {
+		httpapi.ResourceNotFound(rw)
+		return
+	}
+
+	logName := codersdk.WorkspaceAgentLog(chi.URLParam(r, "log"))
+
+	apiAgent, err := convertWorkspaceAgent(api.DERPMap, *api.TailnetCoordinator.Load(), workspaceAgent, nil, api.AgentInactiveDisconnectTimeout, api.DeploymentConfig.AgentFallbackTroubleshootingURL.Value)
+	if err != nil {
+		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Internal error reading workspace agent.",
+			Detail:  err.Error(),
+		})
+		return
+	}
+	if apiAgent.Status != codersdk.WorkspaceAgentConnected {
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: fmt.Sprintf("Agent state is %q, it must be in the %q state.", apiAgent.Status, codersdk.WorkspaceAgentConnected),
+		})
+		return
+	}
+
+	agentConn, release, err := api.workspaceAgentCache.Acquire(r, workspaceAgent.ID)
+	if err != nil {
+		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Internal error dialing workspace agent.",
+			Detail:  err.Error(),
+		})
+		return
+	}
+	defer release()
+
+	logInfo, err := agentConn.LogInfo(ctx, logName)
+	if err != nil {
+		var e *codersdk.Error
+		if xerrors.As(err, &e) {
+			httpapi.Write(ctx, rw, e.StatusCode(), codersdk.Response{
+				Message:     e.Message,
+				Detail:      e.Detail,
+				Validations: e.Validations,
+			})
+			return
+		}
+		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Internal error getting log info.",
+			Detail:  err.Error(),
+		})
+		return
+	}
+
+	httpapi.Write(ctx, rw, http.StatusOK, logInfo)
+}
+
+// workspaceAgentLogTail issues a log tail request to the workspace agent.
+//
+// @Summary Tail a workspace agent log.
+// @ID get-workspace-agent-log-tail
+// @Security CoderSessionToken
+// @Tags Agents
+// @Param workspaceagent path string true "Workspace agent ID" format(uuid)
+// @Param log path codersdk.WorkspaceAgentLog true "Workspace log file name"
+// @Success 200 {object} codersdk.WorkspaceAgentLogTailResponse
+// @Router /workspaceagents/{workspaceagent}/logs/{log}/tail [get]
+func (api *API) workspaceAgentLogTail(rw http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	workspaceAgent := httpmw.WorkspaceAgentParam(r)
+	workspace := httpmw.WorkspaceParam(r)
+	if !api.Authorize(r, rbac.ActionRead, workspace) {
+		httpapi.ResourceNotFound(rw)
+		return
+	}
+
+	logName := codersdk.WorkspaceAgentLog(chi.URLParam(r, "log"))
+	var req codersdk.WorkspaceAgentLogTailRequest
+	if !httpapi.Read(ctx, rw, r, &req) {
+		return
+	}
+
+	apiAgent, err := convertWorkspaceAgent(api.DERPMap, *api.TailnetCoordinator.Load(), workspaceAgent, nil, api.AgentInactiveDisconnectTimeout, api.DeploymentConfig.AgentFallbackTroubleshootingURL.Value)
+	if err != nil {
+		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Internal error reading workspace agent.",
+			Detail:  err.Error(),
+		})
+		return
+	}
+	if apiAgent.Status != codersdk.WorkspaceAgentConnected {
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: fmt.Sprintf("Agent state is %q, it must be in the %q state.", apiAgent.Status, codersdk.WorkspaceAgentConnected),
+		})
+		return
+	}
+
+	agentConn, release, err := api.workspaceAgentCache.Acquire(r, workspaceAgent.ID)
+	if err != nil {
+		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Internal error dialing workspace agent.",
+			Detail:  err.Error(),
+		})
+		return
+	}
+	defer release()
+
+	tail, err := agentConn.LogTail(ctx, logName, req)
+	if err != nil {
+		var e *codersdk.Error
+		if xerrors.As(err, &e) {
+			httpapi.Write(ctx, rw, e.StatusCode(), codersdk.Response{
+				Message:     e.Message,
+				Detail:      e.Detail,
+				Validations: e.Validations,
+			})
+			return
+		}
+		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Internal error tailing workspace agent log.",
+			Detail:  err.Error(),
+		})
+		return
+	}
+
+	httpapi.Write(ctx, rw, http.StatusOK, tail)
 }
 
 // @Summary Submit workspace agent stats

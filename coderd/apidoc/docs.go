@@ -4277,6 +4277,127 @@ const docTemplate = `{
                 }
             }
         },
+        "/workspaceagents/{workspaceagent}/logs": {
+            "get": {
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "tags": [
+                    "Agents"
+                ],
+                "summary": "Get workspace agent logs",
+                "operationId": "get-workspace-agent-logs",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Workspace agent ID",
+                        "name": "workspaceagent",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/codersdk.WorkspaceAgentLogInfo"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/workspaceagents/{workspaceagent}/logs/{log}": {
+            "get": {
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "tags": [
+                    "Agents"
+                ],
+                "summary": "Get workspace agent log file information.",
+                "operationId": "get-workspace-agent-log-info",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Workspace agent ID",
+                        "name": "workspaceagent",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "enum": [
+                            "coder-agent.log",
+                            "coder-startup-script.log"
+                        ],
+                        "type": "string",
+                        "description": "Workspace log file name",
+                        "name": "log",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.WorkspaceAgentLogInfo"
+                        }
+                    }
+                }
+            }
+        },
+        "/workspaceagents/{workspaceagent}/logs/{log}/tail": {
+            "get": {
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "tags": [
+                    "Agents"
+                ],
+                "summary": "Tail a workspace agent log.",
+                "operationId": "get-workspace-agent-log-tail",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Workspace agent ID",
+                        "name": "workspaceagent",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "enum": [
+                            "coder-agent.log",
+                            "coder-startup-script.log"
+                        ],
+                        "type": "string",
+                        "description": "Workspace log file name",
+                        "name": "log",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.WorkspaceAgentLogTailResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/workspaceagents/{workspaceagent}/pty": {
             "get": {
                 "security": [
@@ -8056,6 +8177,56 @@ const docTemplate = `{
                     "items": {
                         "$ref": "#/definitions/codersdk.WorkspaceAgentListeningPort"
                     }
+                }
+            }
+        },
+        "codersdk.WorkspaceAgentLog": {
+            "type": "string",
+            "enum": [
+                "coder-agent.log",
+                "coder-startup-script.log"
+            ],
+            "x-enum-varnames": [
+                "WorkspaceAgentLogAgent",
+                "WorkspaceAgentLogStartupScript"
+            ]
+        },
+        "codersdk.WorkspaceAgentLogInfo": {
+            "type": "object",
+            "properties": {
+                "lines": {
+                    "type": "integer"
+                },
+                "modified": {
+                    "type": "string"
+                },
+                "name": {
+                    "$ref": "#/definitions/codersdk.WorkspaceAgentLog"
+                },
+                "path": {
+                    "type": "string"
+                },
+                "size": {
+                    "type": "integer"
+                }
+            }
+        },
+        "codersdk.WorkspaceAgentLogTailResponse": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "count": {
+                    "description": "Number of lines returned.",
+                    "type": "integer"
+                },
+                "start": {
+                    "description": "Line offset, 0-based.",
+                    "type": "integer"
                 }
             }
         },

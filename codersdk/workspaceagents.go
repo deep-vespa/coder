@@ -51,6 +51,15 @@ const (
 	WorkspaceAgentLifecycleReady        WorkspaceAgentLifecycle = "ready"
 )
 
+// WorkspaceAgentLog represents the name of a workspace agent log.
+type WorkspaceAgentLog string
+
+// WorkspaceAgentLogs enums.
+const (
+	WorkspaceAgentLogAgent         WorkspaceAgentLog = "coder-agent.log"
+	WorkspaceAgentLogStartupScript WorkspaceAgentLog = "coder-startup-script.log"
+)
+
 type WorkspaceAgent struct {
 	ID                   uuid.UUID               `json:"id" format:"uuid"`
 	CreatedAt            time.Time               `json:"created_at" format:"date-time"`
@@ -274,6 +283,48 @@ func (c *Client) WorkspaceAgentListeningPorts(ctx context.Context, agentID uuid.
 	}
 	var listeningPorts WorkspaceAgentListeningPortsResponse
 	return listeningPorts, json.NewDecoder(res.Body).Decode(&listeningPorts)
+}
+
+// WorkspaceAgentLogs returns a list of logs that are available on the agent.
+func (c *Client) WorkspaceAgentLogs(ctx context.Context, agentID uuid.UUID) ([]WorkspaceAgentLogInfo, error) {
+	res, err := c.Request(ctx, http.MethodGet, fmt.Sprintf("/api/v2/workspaceagents/%s/logs", agentID), nil)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return nil, ReadBodyAsError(res)
+	}
+	var resp []WorkspaceAgentLogInfo
+	return resp, json.NewDecoder(res.Body).Decode(&resp)
+}
+
+// WorkspaceAgentLogInfo returns information about the log file.
+func (c *Client) WorkspaceAgentLogInfo(ctx context.Context, agentID uuid.UUID, name WorkspaceAgentLog) (WorkspaceAgentLogInfo, error) {
+	res, err := c.Request(ctx, http.MethodGet, fmt.Sprintf("/api/v2/workspaceagents/%s/logs/%s", agentID, name), nil)
+	if err != nil {
+		return WorkspaceAgentLogInfo{}, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return WorkspaceAgentLogInfo{}, ReadBodyAsError(res)
+	}
+	var resp WorkspaceAgentLogInfo
+	return resp, json.NewDecoder(res.Body).Decode(&resp)
+}
+
+// WorkspaceAgentLogTail issues a log tail request to the workspace agent.
+func (c *Client) WorkspaceAgentLogTail(ctx context.Context, agentID uuid.UUID, name WorkspaceAgentLog, req WorkspaceAgentLogTailRequest) (WorkspaceAgentLogTailResponse, error) {
+	res, err := c.Request(ctx, http.MethodGet, fmt.Sprintf("/api/v2/workspaceagents/%s/logs/%s/tail", agentID, name), req)
+	if err != nil {
+		return WorkspaceAgentLogTailResponse{}, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return WorkspaceAgentLogTailResponse{}, ReadBodyAsError(res)
+	}
+	var resp WorkspaceAgentLogTailResponse
+	return resp, json.NewDecoder(res.Body).Decode(&resp)
 }
 
 // GitProvider is a constant that represents the
