@@ -4284,6 +4284,9 @@ const docTemplate = `{
                         "CoderSessionToken": []
                     }
                 ],
+                "produces": [
+                    "application/json"
+                ],
                 "tags": [
                     "Agents"
                 ],
@@ -4319,11 +4322,14 @@ const docTemplate = `{
                         "CoderSessionToken": []
                     }
                 ],
+                "produces": [
+                    "application/json"
+                ],
                 "tags": [
                     "Agents"
                 ],
                 "summary": "Get workspace agent log file information.",
-                "operationId": "get-workspace-agent-log-info",
+                "operationId": "get-workspace-agent-log-information",
                 "parameters": [
                     {
                         "type": "string",
@@ -4362,11 +4368,17 @@ const docTemplate = `{
                         "CoderSessionToken": []
                     }
                 ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
                 "tags": [
                     "Agents"
                 ],
-                "summary": "Tail a workspace agent log.",
-                "operationId": "get-workspace-agent-log-tail",
+                "summary": "Get workspace agent log contents.",
+                "operationId": "get-workspace-agent-log-contents",
                 "parameters": [
                     {
                         "type": "string",
@@ -8198,7 +8210,8 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "modified": {
-                    "type": "string"
+                    "type": "string",
+                    "format": "date-time"
                 },
                 "name": {
                     "$ref": "#/definitions/codersdk.WorkspaceAgentLog"

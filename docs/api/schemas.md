@@ -5262,7 +5262,7 @@ Parameter represents a set value for the scope.
 ```json
 {
   "lines": 0,
-  "modified": "string",
+  "modified": "2019-08-24T14:15:22Z",
   "name": "coder-agent.log",
   "path": "string",
   "size": 0

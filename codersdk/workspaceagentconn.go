@@ -299,7 +299,7 @@ type WorkspaceAgentLogInfo struct {
 	Path     string            `json:"path"`
 	Size     int64             `json:"size"`
 	Lines    int               `json:"lines"`
-	Modified time.Time         `json:"modified"`
+	Modified time.Time         `json:"modified" format:"date-time"`
 }
 
 // Logs returns a list of logs that are available on the agent.

@@ -862,6 +862,7 @@ func convertWorkspaceAgent(derpMap *tailcfg.DERPMap, coordinator tailnet.Coordin
 // @Summary Get workspace agent logs
 // @ID get-workspace-agent-logs
 // @Security CoderSessionToken
+// @Produce json
 // @Tags Agents
 // @Param workspaceagent path string true "Workspace agent ID" format(uuid)
 // @Success 200 {array} codersdk.WorkspaceAgentLogInfo
@@ -925,8 +926,9 @@ func (api *API) workspaceAgentLogs(rw http.ResponseWriter, r *http.Request) {
 // workspaceAgentLogInfo returns information about the log file.
 //
 // @Summary Get workspace agent log file information.
-// @ID get-workspace-agent-log-info
+// @ID get-workspace-agent-log-information
 // @Security CoderSessionToken
+// @Produce json
 // @Tags Agents
 // @Param workspaceagent path string true "Workspace agent ID" format(uuid)
 // @Param log path codersdk.WorkspaceAgentLog true "Workspace log file name"
@@ -992,9 +994,11 @@ func (api *API) workspaceAgentLogInfo(rw http.ResponseWriter, r *http.Request) {
 
 // workspaceAgentLogTail issues a log tail request to the workspace agent.
 //
-// @Summary Tail a workspace agent log.
-// @ID get-workspace-agent-log-tail
+// @Summary Get workspace agent log contents.
+// @ID get-workspace-agent-log-contents
 // @Security CoderSessionToken
+// @Accept json
+// @Produce json
 // @Tags Agents
 // @Param workspaceagent path string true "Workspace agent ID" format(uuid)
 // @Param log path codersdk.WorkspaceAgentLog true "Workspace log file name"

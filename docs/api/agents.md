@@ -689,7 +689,7 @@ To perform this operation, you must be authenticated. [Learn more](authenticatio
 ```shell
 # Example request using curl
 curl -X GET http://coder-server:8080/api/v2/workspaceagents/{workspaceagent}/logs \
-  -H 'Accept: */*' \
+  -H 'Accept: application/json' \
   -H 'Coder-Session-Token: API_KEY'
 ```
 
@@ -705,6 +705,18 @@ curl -X GET http://coder-server:8080/api/v2/workspaceagents/{workspaceagent}/log
 
 > 200 Response
 
+```json
+[
+  {
+    "lines": 0,
+    "modified": "2019-08-24T14:15:22Z",
+    "name": "coder-agent.log",
+    "path": "string",
+    "size": 0
+  }
+]
+```
+
 ### Responses
 
 | Status | Meaning                                                 | Description | Schema                                                                              |
@@ -719,7 +731,7 @@ Status Code **200**
 | -------------- | ------------------------------------------------------------------ | -------- | ------------ | ----------- |
 | `[array item]` | array                                                              | false    |              |             |
 | `» lines`      | integer                                                            | false    |              |             |
-| `» modified`   | string                                                             | false    |              |             |
+| `» modified`   | string(date-time)                                                  | false    |              |             |
 | `» name`       | [codersdk.WorkspaceAgentLog](schemas.md#codersdkworkspaceagentlog) | false    |              |             |
 | `» path`       | string                                                             | false    |              |             |
 | `» size`       | integer                                                            | false    |              |             |
@@ -740,7 +752,7 @@ To perform this operation, you must be authenticated. [Learn more](authenticatio
 ```shell
 # Example request using curl
 curl -X GET http://coder-server:8080/api/v2/workspaceagents/{workspaceagent}/logs/{log} \
-  -H 'Accept: */*' \
+  -H 'Accept: application/json' \
   -H 'Coder-Session-Token: API_KEY'
 ```
 
@@ -764,6 +776,16 @@ curl -X GET http://coder-server:8080/api/v2/workspaceagents/{workspaceagent}/log
 
 > 200 Response
 
+```json
+{
+  "lines": 0,
+  "modified": "2019-08-24T14:15:22Z",
+  "name": "coder-agent.log",
+  "path": "string",
+  "size": 0
+}
+```
+
 ### Responses
 
 | Status | Meaning                                                 | Description | Schema                                                                     |
@@ -772,14 +794,14 @@ curl -X GET http://coder-server:8080/api/v2/workspaceagents/{workspaceagent}/log
 
 To perform this operation, you must be authenticated. [Learn more](authentication.md).
 
-## Tail a workspace agent log.
+## Get workspace agent log contents.
 
 ### Code samples
 
 ```shell
 # Example request using curl
 curl -X GET http://coder-server:8080/api/v2/workspaceagents/{workspaceagent}/logs/{log}/tail \
-  -H 'Accept: */*' \
+  -H 'Accept: application/json' \
   -H 'Coder-Session-Token: API_KEY'
 ```
 
@@ -802,6 +824,14 @@ curl -X GET http://coder-server:8080/api/v2/workspaceagents/{workspaceagent}/log
 ### Example responses
 
 > 200 Response
+
+```json
+{
+  "content": ["string"],
+  "count": 0,
+  "start": 0
+}
+```
 
 ### Responses
 
