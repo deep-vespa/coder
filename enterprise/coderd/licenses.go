@@ -37,7 +37,10 @@ const (
 //go:embed keys/2022-08-12
 var key20220812 []byte
 
-var Keys = map[string]ed25519.PublicKey{"2022-08-12": ed25519.PublicKey(key20220812)}
+//go:embed keys/2023-02-08
+var key20230208 []byte
+
+var Keys = map[string]ed25519.PublicKey{"2022-08-12": ed25519.PublicKey(key20220812), "2023-02-08": ed25519.PublicKey(key20230208)}
 
 // postLicense adds a new Enterprise license to the cluster.  We allow multiple different licenses
 // in the cluster at one time for several reasons:
