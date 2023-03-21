@@ -25,12 +25,10 @@ import (
 	"github.com/coder/coder/coderd/util/slice"
 )
 
-var (
-	skipMethods = map[string]string{
-		"InTx": "Not relevant",
-		"Ping": "Not relevant",
-	}
-)
+var skipMethods = map[string]string{
+	"InTx": "Not relevant",
+	"Ping": "Not relevant",
+}
 
 // TestMethodTestSuite runs MethodTestSuite.
 // In order for 'go test' to run this suite, we need to create
@@ -226,8 +224,8 @@ func (s *MethodTestSuite) NotAuthorizedErrorTest(ctx context.Context, az *coderd
 		}
 	})
 
-	s.Run("Cancelled", func() {
-		// Pass in a cancelled context
+	s.Run("Canceled", func() {
+		// Pass in a canceled context
 		ctx, cancel := context.WithCancel(ctx)
 		cancel()
 		az.AlwaysReturn = rbac.ForbiddenWithInternal(&topdown.Error{Code: topdown.CancelErr},
@@ -273,7 +271,7 @@ func splitResp(t *testing.T, values []reflect.Value) ([]reflect.Value, error) {
 			return outputs, err
 		}
 		outputs = append(outputs, r)
-	} //nolint: unreachable
+	}
 	t.Fatal("no expected error value found in responses (error can be nil)")
 	return nil, nil // unreachable, required to compile
 }
