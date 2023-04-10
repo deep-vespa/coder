@@ -22,6 +22,14 @@ var (
 		Type: "workspace",
 	}
 
+	// ResourceWorkspaceProxy CRUD. Org
+	//	create/delete = make or delete proxies
+	// 	read = read proxy urls
+	//	update = edit workspace proxy fields
+	ResourceWorkspaceProxy = Object{
+		Type: "workspace_proxy",
+	}
+
 	// ResourceWorkspaceExecution CRUD. Org + User owner
 	//	create = workspace remote execution
 	// 	read = ?
@@ -158,6 +166,11 @@ var (
 	// ResourceDebugInfo controls access to the debug routes `/api/v2/debug/*`.
 	ResourceDebugInfo = Object{
 		Type: "debug_info",
+	}
+
+	// ResourceSystem is a pseudo-resource only used for system-level actions.
+	ResourceSystem = Object{
+		Type: "system",
 	}
 )
 

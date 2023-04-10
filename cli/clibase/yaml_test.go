@@ -38,13 +38,13 @@ func TestOption_ToYAML(t *testing.T) {
 				Name:        "Workspace Name",
 				Value:       &workspaceName,
 				Default:     "billie",
-				Description: "The workspace's name",
+				Description: "The workspace's name.",
 				Group:       &clibase.Group{Name: "Names"},
 				YAML:        "workspaceName",
 			},
 		}
 
-		err := os.SetDefaults()
+		err := os.SetDefaults(nil)
 		require.NoError(t, err)
 
 		n, err := os.ToYAML()

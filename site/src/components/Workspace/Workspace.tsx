@@ -1,8 +1,19 @@
+import Button from "@material-ui/core/Button"
 import { makeStyles } from "@material-ui/core/styles"
+import RefreshOutlined from "@material-ui/icons/RefreshOutlined"
+import { Avatar } from "components/Avatar/Avatar"
+import { AgentRow } from "components/Resources/AgentRow"
+import { WorkspaceBuildLogs } from "components/WorkspaceBuildLogs/WorkspaceBuildLogs"
+import {
+  ActiveTransition,
+  WorkspaceBuildProgress,
+} from "components/WorkspaceBuildProgress/WorkspaceBuildProgress"
 import { WorkspaceStatusBadge } from "components/WorkspaceStatusBadge/WorkspaceStatusBadge"
 import { FC } from "react"
+import { useTranslation } from "react-i18next"
 import { useNavigate } from "react-router-dom"
 import * as TypesGen from "../../api/typesGenerated"
+import { AlertBanner } from "../AlertBanner/AlertBanner"
 import { BuildsTable } from "../BuildsTable/BuildsTable"
 import { Margins } from "../Margins/Margins"
 import {
@@ -16,13 +27,6 @@ import { WorkspaceActions } from "../WorkspaceActions/WorkspaceActions"
 import { WorkspaceDeletedBanner } from "../WorkspaceDeletedBanner/WorkspaceDeletedBanner"
 import { WorkspaceScheduleButton } from "../WorkspaceScheduleButton/WorkspaceScheduleButton"
 import { WorkspaceStats } from "../WorkspaceStats/WorkspaceStats"
-import { AlertBanner } from "../AlertBanner/AlertBanner"
-import {
-  ActiveTransition,
-  WorkspaceBuildProgress,
-} from "components/WorkspaceBuildProgress/WorkspaceBuildProgress"
-import { AgentRow } from "components/Resources/AgentRow"
-import { Avatar } from "components/Avatar/Avatar"
 
 export enum WorkspaceErrors {
   GET_BUILDS_ERROR = "getBuildsError",
@@ -42,21 +46,25 @@ export interface WorkspaceProps {
   handleDelete: () => void
   handleUpdate: () => void
   handleCancel: () => void
+  handleSettings: () => void
   handleChangeVersion: () => void
-  handleBuildParameters: () => void
   isUpdating: boolean
   workspace: TypesGen.Workspace
   resources?: TypesGen.WorkspaceResource[]
   builds?: TypesGen.WorkspaceBuild[]
   canUpdateWorkspace: boolean
+  canUpdateTemplate: boolean
+  canChangeVersions: boolean
   hideSSHButton?: boolean
   hideVSCodeDesktopButton?: boolean
   workspaceErrors: Partial<Record<WorkspaceErrors, Error | unknown>>
   buildInfo?: TypesGen.BuildInfoResponse
   applicationsHost?: string
+  sshPrefix?: string
   template?: TypesGen.Template
-  templateParameters?: TypesGen.TemplateVersionParameter[]
   quota_budget?: number
+  failedBuildLogs: TypesGen.ProvisionerJobLog[] | undefined
+  handleBuildRetry: () => void
 }
 
 /**
@@ -69,25 +77,30 @@ export const Workspace: FC<React.PropsWithChildren<WorkspaceProps>> = ({
   handleDelete,
   handleUpdate,
   handleCancel,
+  handleSettings,
   handleChangeVersion,
-  handleBuildParameters,
   workspace,
   isUpdating,
   resources,
   builds,
   canUpdateWorkspace,
+  canUpdateTemplate,
+  canChangeVersions,
   workspaceErrors,
   hideSSHButton,
   hideVSCodeDesktopButton,
   buildInfo,
   applicationsHost,
+  sshPrefix,
   template,
-  templateParameters,
   quota_budget,
+  failedBuildLogs,
+  handleBuildRetry,
 }) => {
   const styles = useStyles()
   const navigate = useNavigate()
   const serverVersion = buildInfo?.version || ""
+  const { t } = useTranslation("workspacePage")
 
   const buildError = Boolean(workspaceErrors[WorkspaceErrors.BUILD_ERROR]) && (
     <AlertBanner
@@ -126,17 +139,15 @@ export const Workspace: FC<React.PropsWithChildren<WorkspaceProps>> = ({
             />
             <WorkspaceActions
               workspaceStatus={workspace.latest_build.status}
-              hasTemplateParameters={
-                templateParameters ? templateParameters.length > 0 : false
-              }
               isOutdated={workspace.outdated}
               handleStart={handleStart}
               handleStop={handleStop}
               handleDelete={handleDelete}
               handleUpdate={handleUpdate}
               handleCancel={handleCancel}
+              handleSettings={handleSettings}
               handleChangeVersion={handleChangeVersion}
-              handleBuildParameters={handleBuildParameters}
+              canChangeVersions={canChangeVersions}
               isUpdating={isUpdating}
             />
           </Stack>
@@ -185,6 +196,40 @@ export const Workspace: FC<React.PropsWithChildren<WorkspaceProps>> = ({
           handleUpdate={handleUpdate}
         />
 
+        {failedBuildLogs && (
+          <Stack>
+            <AlertBanner severity="error">
+              <Stack
+                className={styles.fullWidth}
+                direction="row"
+                alignItems="center"
+                justifyContent="space-between"
+              >
+                <Stack spacing={0}>
+                  <span>Workspace build failed</span>
+                  <span className={styles.errorDetails}>
+                    {workspace.latest_build.job.error}
+                  </span>
+                </Stack>
+
+                {canUpdateTemplate && (
+                  <div>
+                    <Button
+                      onClick={handleBuildRetry}
+                      startIcon={<RefreshOutlined />}
+                      size="small"
+                      variant="outlined"
+                    >
+                      {t("actionButton.retryDebugMode")}
+                    </Button>
+                  </div>
+                )}
+              </Stack>
+            </AlertBanner>
+            <WorkspaceBuildLogs logs={failedBuildLogs} />
+          </Stack>
+        )}
+
         {transitionStats !== undefined && (
           <WorkspaceBuildProgress
             workspace={workspace}
@@ -201,6 +246,7 @@ export const Workspace: FC<React.PropsWithChildren<WorkspaceProps>> = ({
                 agent={agent}
                 workspace={workspace}
                 applicationsHost={applicationsHost}
+                sshPrefix={sshPrefix}
                 showApps={canUpdateWorkspace}
                 hideSSHButton={hideSSHButton}
                 hideVSCodeDesktopButton={hideVSCodeDesktopButton}
@@ -256,6 +302,18 @@ export const useStyles = makeStyles((theme) => {
 
     timelineContents: {
       margin: 0,
+    },
+    logs: {
+      border: `1px solid ${theme.palette.divider}`,
+    },
+
+    errorDetails: {
+      color: theme.palette.text.secondary,
+      fontSize: 12,
+    },
+
+    fullWidth: {
+      width: "100%",
     },
   }
 })

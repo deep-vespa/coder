@@ -19,7 +19,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/spf13/afero"
 	"go.opentelemetry.io/otel/codes"
-	semconv "go.opentelemetry.io/otel/semconv/v1.11.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.14.0"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/xerrors"
 
@@ -779,10 +779,6 @@ func (r *Runner) runTemplateImportProvisionWithRichParameters(ctx context.Contex
 				return nil, xerrors.New(msgType.Complete.Error)
 			}
 
-			if len(msgType.Complete.Parameters) > 0 && len(values) > 0 {
-				return nil, xerrors.Errorf(`rich parameters can't be used together with legacy parameters, set the coder provider flag "feature_use_managed_variables = true" to enable managed variables`)
-			}
-
 			r.logger.Info(context.Background(), "parse dry-run provision successful",
 				slog.F("resource_count", len(msgType.Complete.Resources)),
 				slog.F("resources", msgType.Complete.Resources),
@@ -904,7 +900,7 @@ func (r *Runner) buildWorkspace(ctx context.Context, stage string, req *sdkproto
 			})
 		case *sdkproto.Provision_Response_Complete:
 			if msgType.Complete.Error != "" {
-				r.logger.Warn(context.Background(), "provision failed; updating state",
+				r.logger.Error(context.Background(), "provision failed; updating state",
 					slog.F("state_length", len(msgType.Complete.State)),
 					slog.F("error", msgType.Complete.Error),
 				)
@@ -1005,6 +1001,8 @@ func (r *Runner) runWorkspaceBuild(ctx context.Context) (*proto.CompletedJob, *p
 		Directory: r.workDirectory,
 		Metadata:  r.job.GetWorkspaceBuild().Metadata,
 		State:     r.job.GetWorkspaceBuild().State,
+
+		ProvisionerLogLevel: r.job.GetWorkspaceBuild().LogLevel,
 	}
 
 	completedPlan, failed := r.buildWorkspace(ctx, "Planning infrastructure", &sdkproto.Provision_Request{
@@ -1014,6 +1012,7 @@ func (r *Runner) runWorkspaceBuild(ctx context.Context) (*proto.CompletedJob, *p
 				ParameterValues:     r.job.GetWorkspaceBuild().ParameterValues,
 				RichParameterValues: r.job.GetWorkspaceBuild().RichParameterValues,
 				VariableValues:      r.job.GetWorkspaceBuild().VariableValues,
+				GitAuthProviders:    r.job.GetWorkspaceBuild().GitAuthProviders,
 			},
 		},
 	})

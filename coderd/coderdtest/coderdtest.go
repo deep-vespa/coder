@@ -11,7 +11,6 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -22,11 +21,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -61,6 +60,7 @@ import (
 	"github.com/coder/coder/coderd/database/dbtestutil"
 	"github.com/coder/coder/coderd/gitauth"
 	"github.com/coder/coder/coderd/gitsshkey"
+	"github.com/coder/coder/coderd/healthcheck"
 	"github.com/coder/coder/coderd/httpapi"
 	"github.com/coder/coder/coderd/httpmw"
 	"github.com/coder/coder/coderd/rbac"
@@ -68,6 +68,7 @@ import (
 	"github.com/coder/coder/coderd/telemetry"
 	"github.com/coder/coder/coderd/updatecheck"
 	"github.com/coder/coder/coderd/util/ptr"
+	"github.com/coder/coder/coderd/workspaceapps"
 	"github.com/coder/coder/codersdk"
 	"github.com/coder/coder/codersdk/agentsdk"
 	"github.com/coder/coder/cryptorand"
@@ -80,9 +81,9 @@ import (
 	"github.com/coder/coder/testutil"
 )
 
-// AppSigningKey is a 64-byte key used to sign JWTs for workspace app tickets in
-// tests.
-var AppSigningKey = must(hex.DecodeString("64656164626565666465616462656566646561646265656664656164626565666465616462656566646561646265656664656164626565666465616462656566"))
+// AppSecurityKey is a 96-byte key used to sign JWTs and encrypt JWEs for
+// workspace app tokens in tests.
+var AppSecurityKey = must(workspaceapps.KeyFromString("6465616e207761732068657265206465616e207761732068657265206465616e207761732068657265206465616e207761732068657265206465616e207761732068657265206465616e207761732068657265206465616e2077617320686572"))
 
 type Options struct {
 	// AccessURL denotes a custom access URL. By default we use the httptest
@@ -106,6 +107,10 @@ type Options struct {
 	TrialGenerator        func(context.Context, string) error
 	TemplateScheduleStore schedule.TemplateScheduleStore
 
+	HealthcheckFunc    func(ctx context.Context) (*healthcheck.Report, error)
+	HealthcheckTimeout time.Duration
+	HealthcheckRefresh time.Duration
+
 	// All rate limits default to -1 (unlimited) in tests if not set.
 	APIRateLimit   int
 	LoginRateLimit int
@@ -125,6 +130,8 @@ type Options struct {
 	// test instances are running against the same database.
 	Database database.Store
 	Pubsub   database.Pubsub
+
+	ConfigSSH codersdk.SSHConfigResponse
 
 	SwaggerEndpoint bool
 }
@@ -181,18 +188,18 @@ func NewOptions(t *testing.T, options *Options) (func(http.Handler), context.Can
 			close(options.AutobuildStats)
 		})
 	}
+
+	if options.Authorizer == nil {
+		options.Authorizer = &RecordingAuthorizer{
+			Wrapped: rbac.NewCachingAuthorizer(prometheus.NewRegistry()),
+		}
+	}
+
 	if options.Database == nil {
 		options.Database, options.Pubsub = dbtestutil.NewDB(t)
-	}
-	// TODO: remove this once we're ready to enable authz querier by default.
-	if strings.Contains(os.Getenv("CODER_EXPERIMENTS_TEST"), string(codersdk.ExperimentAuthzQuerier)) {
-		if options.Authorizer == nil {
-			options.Authorizer = &RecordingAuthorizer{
-				Wrapped: rbac.NewCachingAuthorizer(prometheus.NewRegistry()),
-			}
-		}
 		options.Database = dbauthz.New(options.Database, options.Authorizer, slogtest.Make(t, nil).Leveled(slog.LevelDebug))
 	}
+
 	if options.DeploymentValues == nil {
 		options.DeploymentValues = DeploymentValues(t)
 	}
@@ -208,10 +215,17 @@ func NewOptions(t *testing.T, options *Options) (func(http.Handler), context.Can
 		options.FilesRateLimit = -1
 	}
 
+	var templateScheduleStore atomic.Pointer[schedule.TemplateScheduleStore]
+	if options.TemplateScheduleStore == nil {
+		options.TemplateScheduleStore = schedule.NewAGPLTemplateScheduleStore()
+	}
+	templateScheduleStore.Store(&options.TemplateScheduleStore)
+
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	lifecycleExecutor := executor.New(
 		ctx,
 		options.Database,
+		&templateScheduleStore,
 		slogtest.Make(t, nil).Named("autobuild.executor").Leveled(slog.LevelDebug),
 		options.AutobuildTicker,
 	).WithStatsChannel(options.AutobuildStats)
@@ -258,7 +272,7 @@ func NewOptions(t *testing.T, options *Options) (func(http.Handler), context.Can
 	stunAddr, stunCleanup := stuntest.ServeWithPacketListener(t, nettype.Std{})
 	t.Cleanup(stunCleanup)
 
-	derpServer := derp.NewServer(key.NewNode(), tailnet.Logger(slogtest.Make(t, nil).Named("derp")))
+	derpServer := derp.NewServer(key.NewNode(), tailnet.Logger(slogtest.Make(t, nil).Named("derp").Leveled(slog.LevelDebug)))
 	derpServer.SetMeshKey("test-key")
 
 	// match default with cli default
@@ -305,7 +319,7 @@ func NewOptions(t *testing.T, options *Options) (func(http.Handler), context.Can
 			FilesRateLimit:        options.FilesRateLimit,
 			Authorizer:            options.Authorizer,
 			Telemetry:             telemetry.NewNoop(),
-			TemplateScheduleStore: options.TemplateScheduleStore,
+			TemplateScheduleStore: &templateScheduleStore,
 			TLSCertificates:       options.TLSCertificates,
 			TrialGenerator:        options.TrialGenerator,
 			DERPMap: &tailcfg.DERPMap{
@@ -332,7 +346,11 @@ func NewOptions(t *testing.T, options *Options) (func(http.Handler), context.Can
 			DeploymentValues:            options.DeploymentValues,
 			UpdateCheckOptions:          options.UpdateCheckOptions,
 			SwaggerEndpoint:             options.SwaggerEndpoint,
-			AppSigningKey:               AppSigningKey,
+			AppSecurityKey:              AppSecurityKey,
+			SSHConfig:                   options.ConfigSSH,
+			HealthcheckFunc:             options.HealthcheckFunc,
+			HealthcheckTimeout:          options.HealthcheckTimeout,
+			HealthcheckRefresh:          options.HealthcheckRefresh,
 		}
 }
 
@@ -636,9 +654,16 @@ func AwaitWorkspaceBuildJob(t *testing.T, client *codersdk.Client, build uuid.UU
 	return workspaceBuild
 }
 
-// AwaitWorkspaceAgents waits for all resources with agents to be connected.
-func AwaitWorkspaceAgents(t *testing.T, client *codersdk.Client, workspaceID uuid.UUID) []codersdk.WorkspaceResource {
+// AwaitWorkspaceAgents waits for all resources with agents to be connected. If
+// specific agents are provided, it will wait for those agents to be connected
+// but will not fail if other agents are not connected.
+func AwaitWorkspaceAgents(t *testing.T, client *codersdk.Client, workspaceID uuid.UUID, agentNames ...string) []codersdk.WorkspaceResource {
 	t.Helper()
+
+	agentNamesMap := make(map[string]struct{}, len(agentNames))
+	for _, name := range agentNames {
+		agentNamesMap[name] = struct{}{}
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
 	defer cancel()
@@ -657,6 +682,12 @@ func AwaitWorkspaceAgents(t *testing.T, client *codersdk.Client, workspaceID uui
 
 		for _, resource := range workspace.LatestBuild.Resources {
 			for _, agent := range resource.Agents {
+				if len(agentNames) > 0 {
+					if _, ok := agentNamesMap[agent.Name]; !ok {
+						continue
+					}
+				}
+
 				if agent.Status != codersdk.WorkspaceAgentConnected {
 					t.Logf("agent %s not connected yet", agent.Name)
 					return false
@@ -965,6 +996,8 @@ func (o *OIDCConfig) OIDCConfig(t *testing.T, userInfoClaims jwt.MapClaims, opts
 		}),
 		Provider:      provider,
 		UsernameField: "preferred_username",
+		EmailField:    "email",
+		AuthURLParams: map[string]string{"access_type": "offline"},
 		GroupField:    "groups",
 	}
 	for _, opt := range opts {
@@ -1073,7 +1106,7 @@ QastnN77KfUwdj3SJt44U/uh1jAIv4oSLBr8HYUkbnI8
 func DeploymentValues(t *testing.T) *codersdk.DeploymentValues {
 	var cfg codersdk.DeploymentValues
 	opts := cfg.Options()
-	err := opts.SetDefaults()
+	err := opts.SetDefaults(nil)
 	require.NoError(t, err)
 	return &cfg
 }

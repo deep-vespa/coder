@@ -353,6 +353,8 @@ CREATE TABLE template_version_parameters (
     validation_error text DEFAULT ''::text NOT NULL,
     validation_monotonic text DEFAULT ''::text NOT NULL,
     required boolean DEFAULT true NOT NULL,
+    legacy_variable_name text DEFAULT ''::text NOT NULL,
+    display_name text DEFAULT ''::text NOT NULL,
     CONSTRAINT validation_monotonic_order CHECK ((validation_monotonic = ANY (ARRAY['increasing'::text, 'decreasing'::text, ''::text])))
 );
 
@@ -381,6 +383,10 @@ COMMENT ON COLUMN template_version_parameters.validation_error IS 'Validation: e
 COMMENT ON COLUMN template_version_parameters.validation_monotonic IS 'Validation: consecutive values preserve the monotonic order';
 
 COMMENT ON COLUMN template_version_parameters.required IS 'Is parameter required?';
+
+COMMENT ON COLUMN template_version_parameters.legacy_variable_name IS 'Name of the legacy variable for migration purposes';
+
+COMMENT ON COLUMN template_version_parameters.display_name IS 'Display name of the rich parameter';
 
 CREATE TABLE template_version_variables (
     template_version_id uuid NOT NULL,
@@ -439,14 +445,20 @@ CREATE TABLE templates (
     group_acl jsonb DEFAULT '{}'::jsonb NOT NULL,
     display_name character varying(64) DEFAULT ''::character varying NOT NULL,
     allow_user_cancel_workspace_jobs boolean DEFAULT true NOT NULL,
-    max_ttl bigint DEFAULT '0'::bigint NOT NULL
+    max_ttl bigint DEFAULT '0'::bigint NOT NULL,
+    allow_user_autostart boolean DEFAULT true NOT NULL,
+    allow_user_autostop boolean DEFAULT true NOT NULL
 );
 
-COMMENT ON COLUMN templates.default_ttl IS 'The default duration for auto-stop for workspaces created from this template.';
+COMMENT ON COLUMN templates.default_ttl IS 'The default duration for autostop for workspaces created from this template.';
 
 COMMENT ON COLUMN templates.display_name IS 'Display name is a custom, human-friendly template name that user can set.';
 
 COMMENT ON COLUMN templates.allow_user_cancel_workspace_jobs IS 'Allow users to cancel in-progress workspace jobs.';
+
+COMMENT ON COLUMN templates.allow_user_autostart IS 'Allow users to specify an autostart schedule for workspaces (enterprise).';
+
+COMMENT ON COLUMN templates.allow_user_autostop IS 'Allow users to specify custom autostop values for workspaces (enterprise).';
 
 CREATE TABLE user_links (
     user_id uuid NOT NULL,
@@ -471,6 +483,34 @@ CREATE TABLE users (
     deleted boolean DEFAULT false NOT NULL,
     last_seen_at timestamp without time zone DEFAULT '0001-01-01 00:00:00'::timestamp without time zone NOT NULL
 );
+
+CREATE UNLOGGED TABLE workspace_agent_metadata (
+    workspace_agent_id uuid NOT NULL,
+    display_name character varying(127) NOT NULL,
+    key character varying(127) NOT NULL,
+    script character varying(65535) NOT NULL,
+    value character varying(65535) DEFAULT ''::character varying NOT NULL,
+    error character varying(65535) DEFAULT ''::character varying NOT NULL,
+    timeout bigint NOT NULL,
+    "interval" bigint NOT NULL,
+    collected_at timestamp with time zone DEFAULT '0001-01-01 00:00:00+00'::timestamp with time zone NOT NULL
+);
+
+CREATE TABLE workspace_agent_startup_logs (
+    agent_id uuid NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    output character varying(1024) NOT NULL,
+    id bigint NOT NULL
+);
+
+CREATE SEQUENCE workspace_agent_startup_logs_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+ALTER SEQUENCE workspace_agent_startup_logs_id_seq OWNED BY workspace_agent_startup_logs.id;
 
 CREATE TABLE workspace_agent_stats (
     id uuid NOT NULL,
@@ -520,7 +560,10 @@ CREATE TABLE workspace_agents (
     startup_script_timeout_seconds integer DEFAULT 0 NOT NULL,
     expanded_directory character varying(4096) DEFAULT ''::character varying NOT NULL,
     shutdown_script character varying(65534),
-    shutdown_script_timeout_seconds integer DEFAULT 0 NOT NULL
+    shutdown_script_timeout_seconds integer DEFAULT 0 NOT NULL,
+    startup_logs_length integer DEFAULT 0 NOT NULL,
+    startup_logs_overflowed boolean DEFAULT false NOT NULL,
+    CONSTRAINT max_startup_logs_length CHECK ((startup_logs_length <= 1048576))
 );
 
 COMMENT ON COLUMN workspace_agents.version IS 'Version tracks the version of the currently running workspace agent. Workspace agents register their version upon start.';
@@ -542,6 +585,10 @@ COMMENT ON COLUMN workspace_agents.expanded_directory IS 'The resolved path of a
 COMMENT ON COLUMN workspace_agents.shutdown_script IS 'Script that is executed before the agent is stopped.';
 
 COMMENT ON COLUMN workspace_agents.shutdown_script_timeout_seconds IS 'The number of seconds to wait for the shutdown script to complete. If the script does not complete within this time, the agent lifecycle will be marked as shutdown_timeout.';
+
+COMMENT ON COLUMN workspace_agents.startup_logs_length IS 'Total length of startup logs';
+
+COMMENT ON COLUMN workspace_agents.startup_logs_overflowed IS 'Whether the startup logs overflowed in length';
 
 CREATE TABLE workspace_apps (
     id uuid NOT NULL,
@@ -587,6 +634,22 @@ CREATE TABLE workspace_builds (
     daily_cost integer DEFAULT 0 NOT NULL,
     max_deadline timestamp with time zone DEFAULT '0001-01-01 00:00:00+00'::timestamp with time zone NOT NULL
 );
+
+CREATE TABLE workspace_proxies (
+    id uuid NOT NULL,
+    name text NOT NULL,
+    display_name text NOT NULL,
+    icon text NOT NULL,
+    url text NOT NULL,
+    wildcard_hostname text NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    updated_at timestamp with time zone NOT NULL,
+    deleted boolean NOT NULL
+);
+
+COMMENT ON COLUMN workspace_proxies.url IS 'Full url including scheme of the proxy api url: https://us.example.com';
+
+COMMENT ON COLUMN workspace_proxies.wildcard_hostname IS 'Hostname with the wildcard for subdomain based app hosting: *.us.example.com';
 
 CREATE TABLE workspace_resource_metadata (
     workspace_resource_id uuid NOT NULL,
@@ -635,6 +698,8 @@ CREATE TABLE workspaces (
 ALTER TABLE ONLY licenses ALTER COLUMN id SET DEFAULT nextval('licenses_id_seq'::regclass);
 
 ALTER TABLE ONLY provisioner_job_logs ALTER COLUMN id SET DEFAULT nextval('provisioner_job_logs_id_seq'::regclass);
+
+ALTER TABLE ONLY workspace_agent_startup_logs ALTER COLUMN id SET DEFAULT nextval('workspace_agent_startup_logs_id_seq'::regclass);
 
 ALTER TABLE ONLY workspace_resource_metadata ALTER COLUMN id SET DEFAULT nextval('workspace_resource_metadata_id_seq'::regclass);
 
@@ -728,6 +793,12 @@ ALTER TABLE ONLY user_links
 ALTER TABLE ONLY users
     ADD CONSTRAINT users_pkey PRIMARY KEY (id);
 
+ALTER TABLE ONLY workspace_agent_metadata
+    ADD CONSTRAINT workspace_agent_metadata_pkey PRIMARY KEY (workspace_agent_id, key);
+
+ALTER TABLE ONLY workspace_agent_startup_logs
+    ADD CONSTRAINT workspace_agent_startup_logs_pkey PRIMARY KEY (id);
+
 ALTER TABLE ONLY workspace_agents
     ADD CONSTRAINT workspace_agents_pkey PRIMARY KEY (id);
 
@@ -748,6 +819,9 @@ ALTER TABLE ONLY workspace_builds
 
 ALTER TABLE ONLY workspace_builds
     ADD CONSTRAINT workspace_builds_workspace_id_build_number_key UNIQUE (workspace_id, build_number);
+
+ALTER TABLE ONLY workspace_proxies
+    ADD CONSTRAINT workspace_proxies_pkey PRIMARY KEY (id);
 
 ALTER TABLE ONLY workspace_resource_metadata
     ADD CONSTRAINT workspace_resource_metadata_name UNIQUE (workspace_resource_id, key);
@@ -799,9 +873,13 @@ CREATE UNIQUE INDEX users_email_lower_idx ON users USING btree (lower(email)) WH
 
 CREATE UNIQUE INDEX users_username_lower_idx ON users USING btree (lower(username)) WHERE (deleted = false);
 
+CREATE INDEX workspace_agent_startup_logs_id_agent_id_idx ON workspace_agent_startup_logs USING btree (agent_id, id);
+
 CREATE INDEX workspace_agents_auth_token_idx ON workspace_agents USING btree (auth_token);
 
 CREATE INDEX workspace_agents_resource_id_idx ON workspace_agents USING btree (resource_id);
+
+CREATE UNIQUE INDEX workspace_proxies_name_idx ON workspace_proxies USING btree (name) WHERE (deleted = false);
 
 CREATE INDEX workspace_resources_job_id_idx ON workspace_resources USING btree (job_id);
 
@@ -860,6 +938,12 @@ ALTER TABLE ONLY templates
 
 ALTER TABLE ONLY user_links
     ADD CONSTRAINT user_links_user_id_fkey FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY workspace_agent_metadata
+    ADD CONSTRAINT workspace_agent_metadata_workspace_agent_id_fkey FOREIGN KEY (workspace_agent_id) REFERENCES workspace_agents(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY workspace_agent_startup_logs
+    ADD CONSTRAINT workspace_agent_startup_logs_agent_id_fkey FOREIGN KEY (agent_id) REFERENCES workspace_agents(id) ON DELETE CASCADE;
 
 ALTER TABLE ONLY workspace_agents
     ADD CONSTRAINT workspace_agents_resource_id_fkey FOREIGN KEY (resource_id) REFERENCES workspace_resources(id) ON DELETE CASCADE;

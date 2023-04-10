@@ -9,6 +9,7 @@ import {
   displayError,
   displaySuccess,
 } from "../../components/GlobalSnackbar/utils"
+import { AxiosError } from "axios"
 
 const latestBuild = (builds: TypesGen.WorkspaceBuild[]) => {
   // Cloning builds to not change the origin object with the sort()
@@ -51,18 +52,21 @@ const Language = {
 type Permissions = Record<keyof ReturnType<typeof permissionsToCheck>, boolean>
 
 export interface WorkspaceContext {
+  // Initial data
+  username: string
+  workspaceName: string
   // our server side events instance
   eventSource?: EventSource
   workspace?: TypesGen.Workspace
   template?: TypesGen.Template
-  templateParameters?: TypesGen.TemplateVersionParameter[]
   build?: TypesGen.WorkspaceBuild
-  getWorkspaceError?: Error | unknown
+  getWorkspaceError?: AxiosError
   getTemplateWarning: Error | unknown
   getTemplateParametersWarning: Error | unknown
   // Builds
   builds?: TypesGen.WorkspaceBuild[]
   getBuildsError?: Error | unknown
+  missedParameters?: TypesGen.TemplateVersionParameter[]
   // error creating a new WorkspaceBuild
   buildError?: Error | unknown
   cancellationMessage?: Types.Message
@@ -72,17 +76,27 @@ export interface WorkspaceContext {
   checkPermissionsError?: Error | unknown
   // applications
   applicationsHost?: string
+  // debug
+  createBuildLogLevel?: TypesGen.CreateWorkspaceBuildRequest["log_level"]
+  // SSH Config
+  sshPrefix?: string
+  // Change version
+  templateVersionIdToChange?: TypesGen.TemplateVersion["id"]
 }
 
 export type WorkspaceEvent =
-  | { type: "GET_WORKSPACE"; workspaceName: string; username: string }
   | { type: "REFRESH_WORKSPACE"; data: TypesGen.ServerSentEvent["data"] }
   | { type: "START" }
   | { type: "STOP" }
   | { type: "ASK_DELETE" }
   | { type: "DELETE" }
   | { type: "CANCEL_DELETE" }
-  | { type: "UPDATE" }
+  | { type: "UPDATE"; buildParameters?: TypesGen.WorkspaceBuildParameter[] }
+  | {
+      type: "CHANGE_VERSION"
+      templateVersionId: TypesGen.TemplateVersion["id"]
+      buildParameters?: TypesGen.WorkspaceBuildParameter[]
+    }
   | { type: "CANCEL" }
   | {
       type: "REFRESH_TIMELINE"
@@ -92,13 +106,18 @@ export type WorkspaceEvent =
   | { type: "EVENT_SOURCE_ERROR"; error: Error | unknown }
   | { type: "INCREASE_DEADLINE"; hours: number }
   | { type: "DECREASE_DEADLINE"; hours: number }
+  | { type: "RETRY_BUILD" }
 
 export const checks = {
   readWorkspace: "readWorkspace",
   updateWorkspace: "updateWorkspace",
+  updateTemplate: "updateTemplate",
 } as const
 
-const permissionsToCheck = (workspace: TypesGen.Workspace) => ({
+const permissionsToCheck = (
+  workspace: TypesGen.Workspace,
+  template: TypesGen.Template,
+) => ({
   [checks.readWorkspace]: {
     object: {
       resource_type: "workspace",
@@ -112,6 +131,13 @@ const permissionsToCheck = (workspace: TypesGen.Workspace) => ({
       resource_type: "workspace",
       resource_id: workspace.id,
       owner_id: workspace.owner_id,
+    },
+    action: "update",
+  },
+  [checks.updateTemplate]: {
+    object: {
+      resource_type: "template",
+      resource_id: template.id,
     },
     action: "update",
   },
@@ -135,7 +161,10 @@ export const workspaceMachine = createMachine(
         getTemplateParameters: {
           data: TypesGen.TemplateVersionParameter[]
         }
-        startWorkspaceWithLatestTemplate: {
+        updateWorkspace: {
+          data: TypesGen.WorkspaceBuild
+        }
+        changeWorkspaceVersion: {
           data: TypesGen.WorkspaceBuild
         }
         startWorkspace: {
@@ -162,19 +191,13 @@ export const workspaceMachine = createMachine(
         getApplicationsHost: {
           data: TypesGen.AppHostResponse
         }
+        getSSHPrefix: {
+          data: TypesGen.SSHConfigResponse
+        }
       },
     },
-    initial: "idle",
-    on: {
-      GET_WORKSPACE: {
-        target: ".gettingWorkspace",
-        internal: false,
-      },
-    },
+    initial: "gettingWorkspace",
     states: {
-      idle: {
-        tags: "loading",
-      },
       gettingWorkspace: {
         entry: ["clearContext"],
         invoke: {
@@ -202,7 +225,7 @@ export const workspaceMachine = createMachine(
           onDone: [
             {
               actions: ["assignTemplate", "clearGetTemplateWarning"],
-              target: "gettingTemplateParameters",
+              target: "gettingPermissions",
             },
           ],
           onError: [
@@ -210,31 +233,6 @@ export const workspaceMachine = createMachine(
               actions: [
                 "assignGetTemplateWarning",
                 "displayGetTemplateWarning",
-              ],
-              target: "error",
-            },
-          ],
-        },
-        tags: "loading",
-      },
-      gettingTemplateParameters: {
-        invoke: {
-          src: "getTemplateParameters",
-          id: "getTemplateParameters",
-          onDone: [
-            {
-              actions: [
-                "assignTemplateParameters",
-                "clearGetTemplateParametersWarning",
-              ],
-              target: "gettingPermissions",
-            },
-          ],
-          onError: [
-            {
-              actions: [
-                "assignGetTemplateParametersWarning",
-                "displayGetTemplateParametersWarning",
               ],
               target: "error",
             },
@@ -301,8 +299,29 @@ export const workspaceMachine = createMachine(
                   START: "requestingStart",
                   STOP: "requestingStop",
                   ASK_DELETE: "askingDelete",
-                  UPDATE: "updatingWorkspace",
+                  UPDATE: "requestingUpdate",
+                  CHANGE_VERSION: {
+                    target: "requestingChangeVersion",
+                    actions: ["assignTemplateVersionIdToChange"],
+                  },
                   CANCEL: "requestingCancel",
+                  RETRY_BUILD: [
+                    {
+                      target: "requestingStart",
+                      cond: "lastBuildWasStarting",
+                      actions: ["enableDebugMode"],
+                    },
+                    {
+                      target: "requestingStop",
+                      cond: "lastBuildWasStopping",
+                      actions: ["enableDebugMode"],
+                    },
+                    {
+                      target: "requestingDelete",
+                      cond: "lastBuildWasDeleting",
+                      actions: ["enableDebugMode"],
+                    },
+                  ],
                 },
               },
               askingDelete: {
@@ -315,38 +334,58 @@ export const workspaceMachine = createMachine(
                   },
                 },
               },
-              updatingWorkspace: {
-                tags: "updating",
-                initial: "refreshingTemplate",
-                states: {
-                  refreshingTemplate: {
-                    invoke: {
-                      id: "refreshTemplate",
-                      src: "getTemplate",
-                      onDone: {
-                        target: "startingWithLatestTemplate",
-                        actions: ["assignTemplate"],
-                      },
-                      onError: {
-                        target: "#workspaceState.ready.build.idle",
-                        actions: ["assignGetTemplateWarning"],
-                      },
-                    },
+              requestingUpdate: {
+                entry: ["clearBuildError"],
+                invoke: {
+                  src: "updateWorkspace",
+                  onDone: {
+                    target: "idle",
+                    actions: ["assignBuild"],
                   },
-                  startingWithLatestTemplate: {
-                    invoke: {
-                      id: "startWorkspaceWithLatestTemplate",
-                      src: "startWorkspaceWithLatestTemplate",
-                      onDone: {
-                        target: "#workspaceState.ready.build.idle",
-                        actions: ["assignBuild"],
-                      },
-                      onError: {
-                        target: "#workspaceState.ready.build.idle",
-                        actions: ["assignBuildError"],
-                      },
+                  onError: [
+                    {
+                      target: "askingForMissedBuildParameters",
+                      cond: "isMissingBuildParameterError",
+                      actions: ["assignMissedParameters"],
                     },
+                    {
+                      target: "idle",
+                      actions: ["assignBuildError"],
+                    },
+                  ],
+                },
+              },
+              requestingChangeVersion: {
+                entry: ["clearBuildError"],
+                invoke: {
+                  src: "changeWorkspaceVersion",
+                  onDone: {
+                    target: "idle",
+                    actions: ["assignBuild", "clearTemplateVersionIdToChange"],
                   },
+                  onError: [
+                    {
+                      target: "askingForMissedBuildParameters",
+                      cond: "isMissingBuildParameterError",
+                      actions: ["assignMissedParameters"],
+                    },
+                    {
+                      target: "idle",
+                      actions: ["assignBuildError"],
+                    },
+                  ],
+                },
+              },
+              askingForMissedBuildParameters: {
+                on: {
+                  CANCEL: "idle",
+                  UPDATE: [
+                    {
+                      target: "requestingChangeVersion",
+                      cond: "isChangingVersion",
+                    },
+                    { target: "requestingUpdate" },
+                  ],
                 },
               },
               requestingStart: {
@@ -356,7 +395,7 @@ export const workspaceMachine = createMachine(
                   id: "startWorkspace",
                   onDone: [
                     {
-                      actions: ["assignBuild"],
+                      actions: ["assignBuild", "disableDebugMode"],
                       target: "idle",
                     },
                   ],
@@ -375,7 +414,7 @@ export const workspaceMachine = createMachine(
                   id: "stopWorkspace",
                   onDone: [
                     {
-                      actions: ["assignBuild"],
+                      actions: ["assignBuild", "disableDebugMode"],
                       target: "idle",
                     },
                   ],
@@ -394,7 +433,7 @@ export const workspaceMachine = createMachine(
                   id: "deleteWorkspace",
                   onDone: [
                     {
-                      actions: ["assignBuild"],
+                      actions: ["assignBuild", "disableDebugMode"],
                       target: "idle",
                     },
                   ],
@@ -488,10 +527,34 @@ export const workspaceMachine = createMachine(
               },
             },
           },
+          sshConfig: {
+            initial: "gettingSshConfig",
+            states: {
+              gettingSshConfig: {
+                invoke: {
+                  src: "getSSHPrefix",
+                  onDone: {
+                    target: "success",
+                    actions: ["assignSSHPrefix"],
+                  },
+                  onError: {
+                    target: "error",
+                    actions: ["displaySSHPrefixError"],
+                  },
+                },
+              },
+              error: {
+                type: "final",
+              },
+              success: {
+                type: "final",
+              },
+            },
+          },
           schedule: {
             invoke: {
               id: "scheduleBannerMachine",
-              src: workspaceScheduleBannerMachine,
+              src: "scheduleBannerMachine",
               data: {
                 workspace: (context: WorkspaceContext) => context.workspace,
               },
@@ -500,11 +563,7 @@ export const workspaceMachine = createMachine(
         },
       },
       error: {
-        on: {
-          GET_WORKSPACE: {
-            target: "gettingWorkspace",
-          },
-        },
+        type: "final",
       },
     },
   },
@@ -523,15 +582,12 @@ export const workspaceMachine = createMachine(
         workspace: (_, event) => event.data,
       }),
       assignGetWorkspaceError: assign({
-        getWorkspaceError: (_, event) => event.data,
+        getWorkspaceError: (_, event) => event.data as AxiosError,
       }),
       clearGetWorkspaceError: (context) =>
         assign({ ...context, getWorkspaceError: undefined }),
       assignTemplate: assign({
         template: (_, event) => event.data,
-      }),
-      assignTemplateParameters: assign({
-        templateParameters: (_, event) => event.data,
       }),
       assignPermissions: assign({
         // Setting event.data as Permissions to be more stricted. So we know
@@ -593,15 +649,6 @@ export const workspaceMachine = createMachine(
       clearGetTemplateWarning: assign({
         getTemplateWarning: (_) => undefined,
       }),
-      assignGetTemplateParametersWarning: assign({
-        getTemplateParametersWarning: (_, event) => event.data,
-      }),
-      displayGetTemplateParametersWarning: () => {
-        displayError(Language.getTemplateParametersWarning)
-      },
-      clearGetTemplateParametersWarning: assign({
-        getTemplateParametersWarning: (_) => undefined,
-      }),
       // Timeline
       assignBuilds: assign({
         builds: (_, event) => event.data,
@@ -623,6 +670,17 @@ export const workspaceMachine = createMachine(
         )
         displayError(message)
       },
+      // SSH
+      assignSSHPrefix: assign({
+        sshPrefix: (_, { data }) => data.hostname_prefix,
+      }),
+      displaySSHPrefixError: (_, { data }) => {
+        const message = getErrorMessage(
+          data,
+          "Error getting the deployment ssh configuration.",
+        )
+        displayError(message)
+      },
       // Optimistically update. So when the user clicks on stop, we can show
       // the "pending" state right away without having to wait 0.5s ~ 2s to
       // display the visual feedback to the user.
@@ -641,19 +699,48 @@ export const workspaceMachine = createMachine(
           }
         },
       }),
+      assignMissedParameters: assign({
+        missedParameters: (_, { data }) => {
+          if (!(data instanceof API.MissingBuildParameters)) {
+            throw new Error("data is not a MissingBuildParameters error")
+          }
+          return data.parameters
+        },
+      }),
+      // Debug mode when build fails
+      enableDebugMode: assign({ createBuildLogLevel: (_) => "debug" as const }),
+      disableDebugMode: assign({ createBuildLogLevel: (_) => undefined }),
+      // Change version
+      assignTemplateVersionIdToChange: assign({
+        templateVersionIdToChange: (_, { templateVersionId }) =>
+          templateVersionId,
+      }),
+      clearTemplateVersionIdToChange: assign({
+        templateVersionIdToChange: (_) => undefined,
+      }),
     },
     guards: {
       moreBuildsAvailable,
+      isMissingBuildParameterError: (_, { data }) => {
+        return data instanceof API.MissingBuildParameters
+      },
+      lastBuildWasStarting: ({ workspace }) => {
+        return workspace?.latest_build.transition === "start"
+      },
+      lastBuildWasStopping: ({ workspace }) => {
+        return workspace?.latest_build.transition === "stop"
+      },
+      lastBuildWasDeleting: ({ workspace }) => {
+        return workspace?.latest_build.transition === "delete"
+      },
+      isChangingVersion: ({ templateVersionIdToChange }) =>
+        Boolean(templateVersionIdToChange),
     },
     services: {
-      getWorkspace: async (_, event) => {
-        return await API.getWorkspaceByOwnerAndName(
-          event.username,
-          event.workspaceName,
-          {
-            include_deleted: true,
-          },
-        )
+      getWorkspace: async ({ username, workspaceName }) => {
+        return await API.getWorkspaceByOwnerAndName(username, workspaceName, {
+          include_deleted: true,
+        })
       },
       getTemplate: async (context) => {
         if (context.workspace) {
@@ -662,32 +749,39 @@ export const workspaceMachine = createMachine(
           throw Error("Cannot get template without workspace")
         }
       },
-      getTemplateParameters: async (context) => {
-        if (context.workspace) {
-          return await API.getTemplateVersionRichParameters(
-            context.workspace.latest_build.template_version_id,
-          )
-        } else {
-          throw Error("Cannot get template parameters without workspace")
-        }
-      },
-      startWorkspaceWithLatestTemplate: (context) => async (send) => {
-        if (context.workspace && context.template) {
-          const startWorkspacePromise = await API.startWorkspace(
-            context.workspace.id,
-            context.template.active_version_id,
+      updateWorkspace:
+        ({ workspace }, { buildParameters }) =>
+        async (send) => {
+          if (!workspace) {
+            throw new Error("Workspace is not set")
+          }
+          const build = await API.updateWorkspace(workspace, buildParameters)
+          send({ type: "REFRESH_TIMELINE" })
+          return build
+        },
+      changeWorkspaceVersion:
+        ({ workspace, templateVersionIdToChange }, { buildParameters }) =>
+        async (send) => {
+          if (!workspace) {
+            throw new Error("Workspace is not set")
+          }
+          if (!templateVersionIdToChange) {
+            throw new Error("Template version id to change is not set")
+          }
+          const build = await API.changeWorkspaceVersion(
+            workspace,
+            templateVersionIdToChange,
+            buildParameters,
           )
           send({ type: "REFRESH_TIMELINE" })
-          return startWorkspacePromise
-        } else {
-          throw Error("Cannot start workspace without workspace id")
-        }
-      },
+          return build
+        },
       startWorkspace: (context) => async (send) => {
         if (context.workspace) {
           const startWorkspacePromise = await API.startWorkspace(
             context.workspace.id,
             context.workspace.latest_build.template_version_id,
+            context.createBuildLogLevel,
           )
           send({ type: "REFRESH_TIMELINE" })
           return startWorkspacePromise
@@ -699,6 +793,7 @@ export const workspaceMachine = createMachine(
         if (context.workspace) {
           const stopWorkspacePromise = await API.stopWorkspace(
             context.workspace.id,
+            context.createBuildLogLevel,
           )
           send({ type: "REFRESH_TIMELINE" })
           return stopWorkspacePromise
@@ -710,6 +805,7 @@ export const workspaceMachine = createMachine(
         if (context.workspace) {
           const deleteWorkspacePromise = await API.deleteWorkspace(
             context.workspace.id,
+            context.createBuildLogLevel,
           )
           send({ type: "REFRESH_TIMELINE" })
           return deleteWorkspacePromise
@@ -743,6 +839,7 @@ export const workspaceMachine = createMachine(
             checkRefresh: true,
             data: JSON.parse(event.data),
           })
+          // refresh
         })
 
         // handle any error events returned by our sse
@@ -767,17 +864,23 @@ export const workspaceMachine = createMachine(
           throw Error("Cannot get builds without id")
         }
       },
-      checkPermissions: async (context) => {
-        if (context.workspace) {
-          return await API.checkAuthorization({
-            checks: permissionsToCheck(context.workspace),
-          })
-        } else {
-          throw Error("Cannot check permissions workspace id")
+      checkPermissions: async ({ workspace, template }) => {
+        if (!workspace) {
+          throw new Error("Workspace is not set")
         }
+        if (!template) {
+          throw new Error("Template is not set")
+        }
+        return await API.checkAuthorization({
+          checks: permissionsToCheck(workspace, template),
+        })
       },
       getApplicationsHost: async () => {
         return API.getApplicationsHost()
+      },
+      scheduleBannerMachine: workspaceScheduleBannerMachine,
+      getSSHPrefix: async () => {
+        return API.getDeploymentSSHConfig()
       },
     },
   },

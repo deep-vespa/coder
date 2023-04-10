@@ -35,10 +35,10 @@ func TestOptionSet_ParseFlags(t *testing.T) {
 		require.EqualValues(t, "f", workspaceName)
 	})
 
-	t.Run("Strings", func(t *testing.T) {
+	t.Run("StringArray", func(t *testing.T) {
 		t.Parallel()
 
-		var names clibase.Strings
+		var names clibase.StringArray
 
 		os := clibase.OptionSet{
 			clibase.Option{
@@ -49,7 +49,10 @@ func TestOptionSet_ParseFlags(t *testing.T) {
 			},
 		}
 
-		err := os.FlagSet().Parse([]string{"--name", "foo", "--name", "bar"})
+		err := os.SetDefaults(nil)
+		require.NoError(t, err)
+
+		err = os.FlagSet().Parse([]string{"--name", "foo", "--name", "bar"})
 		require.NoError(t, err)
 		require.EqualValues(t, []string{"foo", "bar"}, names)
 	})
@@ -87,7 +90,9 @@ func TestOptionSet_ParseEnv(t *testing.T) {
 			},
 		}
 
-		err := os.ParseEnv("CODER_", []string{"CODER_WORKSPACE_NAME=foo"})
+		err := os.ParseEnv([]clibase.EnvVar{
+			{Name: "WORKSPACE_NAME", Value: "foo"},
+		})
 		require.NoError(t, err)
 		require.EqualValues(t, "foo", workspaceName)
 	})
@@ -106,11 +111,59 @@ func TestOptionSet_ParseEnv(t *testing.T) {
 			},
 		}
 
-		err := os.SetDefaults()
+		err := os.SetDefaults(nil)
 		require.NoError(t, err)
 
-		err = os.ParseEnv("CODER_", []string{"CODER_WORKSPACE_NAME="})
+		err = os.ParseEnv(clibase.ParseEnviron([]string{"CODER_WORKSPACE_NAME="}, "CODER_"))
 		require.NoError(t, err)
 		require.EqualValues(t, "defname", workspaceName)
+	})
+
+	t.Run("StringSlice", func(t *testing.T) {
+		t.Parallel()
+
+		var actual clibase.StringArray
+		expected := []string{"foo", "bar", "baz"}
+
+		os := clibase.OptionSet{
+			clibase.Option{
+				Name:  "name",
+				Value: &actual,
+				Env:   "NAMES",
+			},
+		}
+
+		err := os.SetDefaults(nil)
+		require.NoError(t, err)
+
+		err = os.ParseEnv([]clibase.EnvVar{
+			{Name: "NAMES", Value: "foo,bar,baz"},
+		})
+		require.NoError(t, err)
+		require.EqualValues(t, expected, actual)
+	})
+
+	t.Run("StructMapStringString", func(t *testing.T) {
+		t.Parallel()
+
+		var actual clibase.Struct[map[string]string]
+		expected := map[string]string{"foo": "bar", "baz": "zap"}
+
+		os := clibase.OptionSet{
+			clibase.Option{
+				Name:  "labels",
+				Value: &actual,
+				Env:   "LABELS",
+			},
+		}
+
+		err := os.SetDefaults(nil)
+		require.NoError(t, err)
+
+		err = os.ParseEnv([]clibase.EnvVar{
+			{Name: "LABELS", Value: `{"foo":"bar","baz":"zap"}`},
+		})
+		require.NoError(t, err)
+		require.EqualValues(t, expected, actual.Value)
 	})
 }

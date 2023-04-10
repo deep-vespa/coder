@@ -31,6 +31,7 @@ const createTemplateVersionParameter = (
     validation_max: 0,
     validation_monotonic: "increasing",
     description_plaintext: "",
+    required: true,
     ...partial,
   }
 }
@@ -99,6 +100,17 @@ OptionsType.args = {
   }),
 }
 
+export const ListStringType = Template.bind({})
+ListStringType.args = {
+  initialValue: JSON.stringify(["first", "second", "third"]),
+  id: "list_string_parameter",
+  parameter: createTemplateVersionParameter({
+    name: "list_string_parameter",
+    type: "list(string)",
+    description: "List string parameter",
+  }),
+}
+
 export const IconLabel = Template.bind({})
 IconLabel.args = {
   initialValue: "initial-value",
@@ -161,5 +173,17 @@ DescriptionWithLinks.args = {
     default_value: "~/coder",
     icon: "",
     options: [],
+  }),
+}
+
+export const BasicWithDisplayName = Template.bind({})
+BasicWithDisplayName.args = {
+  initialValue: "initial-value",
+  id: "project_name",
+  parameter: createTemplateVersionParameter({
+    name: "project_name",
+    display_name: "Project Name",
+    description:
+      "Customize the name of a Google Cloud project that will be created!",
   }),
 }

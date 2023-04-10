@@ -14,6 +14,14 @@ import (
 	"github.com/coder/coder/provisionersdk/proto"
 )
 
+type agentMetadata struct {
+	Key         string `mapstructure:"key"`
+	DisplayName string `mapstructure:"display_name"`
+	Script      string `mapstructure:"script"`
+	Interval    int64  `mapstructure:"interval"`
+	Timeout     int64  `mapstructure:"timeout"`
+}
+
 // A mapping of attributes on the "coder_agent" resource.
 type agentAttributes struct {
 	Auth                         string            `mapstructure:"auth"`
@@ -31,6 +39,7 @@ type agentAttributes struct {
 	StartupScriptTimeoutSeconds  int32             `mapstructure:"startup_script_timeout"`
 	ShutdownScript               string            `mapstructure:"shutdown_script"`
 	ShutdownScriptTimeoutSeconds int32             `mapstructure:"shutdown_script_timeout"`
+	Metadata                     []agentMetadata   `mapstructure:"metadata"`
 }
 
 // A mapping of attributes on the "coder_app" resource.
@@ -59,15 +68,15 @@ type appHealthcheckAttributes struct {
 }
 
 // A mapping of attributes on the "coder_metadata" resource.
-type metadataAttributes struct {
-	ResourceID string         `mapstructure:"resource_id"`
-	Hide       bool           `mapstructure:"hide"`
-	Icon       string         `mapstructure:"icon"`
-	DailyCost  int32          `mapstructure:"daily_cost"`
-	Items      []metadataItem `mapstructure:"item"`
+type resourceMetadataAttributes struct {
+	ResourceID string                 `mapstructure:"resource_id"`
+	Hide       bool                   `mapstructure:"hide"`
+	Icon       string                 `mapstructure:"icon"`
+	DailyCost  int32                  `mapstructure:"daily_cost"`
+	Items      []resourceMetadataItem `mapstructure:"item"`
 }
 
-type metadataItem struct {
+type resourceMetadataItem struct {
 	Key       string `mapstructure:"key"`
 	Value     string `mapstructure:"value"`
 	Sensitive bool   `mapstructure:"sensitive"`
@@ -83,7 +92,7 @@ type State struct {
 // ConvertState consumes Terraform state and a GraphViz representation
 // produced by `terraform graph` to produce resources consumable by Coder.
 // nolint:gocyclo
-func ConvertState(modules []*tfjson.StateModule, rawGraph string) (*State, error) {
+func ConvertState(modules []*tfjson.StateModule, rawGraph string, rawParameterNames []string) (*State, error) {
 	parsedGraph, err := gographviz.ParseString(rawGraph)
 	if err != nil {
 		return nil, xerrors.Errorf("parse graph: %w", err)
@@ -99,12 +108,20 @@ func ConvertState(modules []*tfjson.StateModule, rawGraph string) (*State, error
 	// Indexes Terraform resources by their label.
 	// The label is what "terraform graph" uses to reference nodes.
 	tfResourcesByLabel := map[string]map[string]*tfjson.StateResource{}
+
+	// Extra array to preserve the order of rich parameters.
+	tfResourcesRichParameters := make([]*tfjson.StateResource, 0)
+
 	var findTerraformResources func(mod *tfjson.StateModule)
 	findTerraformResources = func(mod *tfjson.StateModule) {
 		for _, module := range mod.ChildModules {
 			findTerraformResources(module)
 		}
 		for _, resource := range mod.Resources {
+			if resource.Type == "coder_parameter" {
+				tfResourcesRichParameters = append(tfResourcesRichParameters, resource)
+			}
+
 			label := convertAddressToLabel(resource.Address)
 			if tfResourcesByLabel[label] == nil {
 				tfResourcesByLabel[label] = map[string]*tfjson.StateResource{}
@@ -140,6 +157,17 @@ func ConvertState(modules []*tfjson.StateModule, rawGraph string) (*State, error
 				loginBeforeReady = attrs.LoginBeforeReady
 			}
 
+			var metadata []*proto.Agent_Metadata
+			for _, item := range attrs.Metadata {
+				metadata = append(metadata, &proto.Agent_Metadata{
+					Key:         item.Key,
+					DisplayName: item.DisplayName,
+					Script:      item.Script,
+					Interval:    item.Interval,
+					Timeout:     item.Timeout,
+				})
+			}
+
 			agent := &proto.Agent{
 				Name:                         tfResource.Name,
 				Id:                           attrs.ID,
@@ -155,6 +183,7 @@ func ConvertState(modules []*tfjson.StateModule, rawGraph string) (*State, error
 				StartupScriptTimeoutSeconds:  attrs.StartupScriptTimeoutSeconds,
 				ShutdownScript:               attrs.ShutdownScript,
 				ShutdownScriptTimeoutSeconds: attrs.ShutdownScriptTimeoutSeconds,
+				Metadata:                     metadata,
 			}
 			switch attrs.Auth {
 			case "token":
@@ -348,7 +377,7 @@ func ConvertState(modules []*tfjson.StateModule, rawGraph string) (*State, error
 				continue
 			}
 
-			var attrs metadataAttributes
+			var attrs resourceMetadataAttributes
 			err = mapstructure.Decode(resource.AttributeValues, &attrs)
 			if err != nil {
 				return nil, xerrors.Errorf("decode metadata attributes: %w", err)
@@ -434,45 +463,42 @@ func ConvertState(modules []*tfjson.StateModule, rawGraph string) (*State, error
 	}
 
 	parameters := make([]*proto.RichParameter, 0)
-	for _, tfResources := range tfResourcesByLabel {
-		for _, resource := range tfResources {
-			if resource.Type != "coder_parameter" {
-				continue
-			}
-			var param provider.Parameter
-			err = mapstructure.Decode(resource.AttributeValues, &param)
-			if err != nil {
-				return nil, xerrors.Errorf("decode map values for coder_parameter.%s: %w", resource.Name, err)
-			}
-			protoParam := &proto.RichParameter{
-				Name:         param.Name,
-				Description:  param.Description,
-				Type:         param.Type,
-				Mutable:      param.Mutable,
-				DefaultValue: param.Default,
-				Icon:         param.Icon,
-				Required:     !param.Optional,
-			}
-			if len(param.Validation) == 1 {
-				protoParam.ValidationRegex = param.Validation[0].Regex
-				protoParam.ValidationError = param.Validation[0].Error
-				protoParam.ValidationMax = int32(param.Validation[0].Max)
-				protoParam.ValidationMin = int32(param.Validation[0].Min)
-				protoParam.ValidationMonotonic = param.Validation[0].Monotonic
-			}
-			if len(param.Option) > 0 {
-				protoParam.Options = make([]*proto.RichParameterOption, 0, len(param.Option))
-				for _, option := range param.Option {
-					protoParam.Options = append(protoParam.Options, &proto.RichParameterOption{
-						Name:        option.Name,
-						Description: option.Description,
-						Value:       option.Value,
-						Icon:        option.Icon,
-					})
-				}
-			}
-			parameters = append(parameters, protoParam)
+	for _, resource := range orderedRichParametersResources(tfResourcesRichParameters, rawParameterNames) {
+		var param provider.Parameter
+		err = mapstructure.Decode(resource.AttributeValues, &param)
+		if err != nil {
+			return nil, xerrors.Errorf("decode map values for coder_parameter.%s: %w", resource.Name, err)
 		}
+		protoParam := &proto.RichParameter{
+			Name:               param.Name,
+			DisplayName:        param.DisplayName,
+			Description:        param.Description,
+			Type:               param.Type,
+			Mutable:            param.Mutable,
+			DefaultValue:       param.Default,
+			Icon:               param.Icon,
+			Required:           !param.Optional,
+			LegacyVariableName: param.LegacyVariableName,
+		}
+		if len(param.Validation) == 1 {
+			protoParam.ValidationRegex = param.Validation[0].Regex
+			protoParam.ValidationError = param.Validation[0].Error
+			protoParam.ValidationMax = int32(param.Validation[0].Max)
+			protoParam.ValidationMin = int32(param.Validation[0].Min)
+			protoParam.ValidationMonotonic = param.Validation[0].Monotonic
+		}
+		if len(param.Option) > 0 {
+			protoParam.Options = make([]*proto.RichParameterOption, 0, len(param.Option))
+			for _, option := range param.Option {
+				protoParam.Options = append(protoParam.Options, &proto.RichParameterOption{
+					Name:        option.Name,
+					Description: option.Description,
+					Value:       option.Value,
+					Icon:        option.Icon,
+				})
+			}
+		}
+		parameters = append(parameters, protoParam)
 	}
 
 	// A map is used to ensure we don't have duplicates!
@@ -621,4 +647,20 @@ func findResourcesInGraph(graph *gographviz.Graph, tfResourcesByLabel map[string
 	}
 
 	return graphResources
+}
+
+func orderedRichParametersResources(tfResourcesRichParameters []*tfjson.StateResource, orderedNames []string) []*tfjson.StateResource {
+	if len(orderedNames) == 0 {
+		return tfResourcesRichParameters
+	}
+
+	ordered := make([]*tfjson.StateResource, len(orderedNames))
+	for i, name := range orderedNames {
+		for _, resource := range tfResourcesRichParameters {
+			if resource.Name == name {
+				ordered[i] = resource
+			}
+		}
+	}
+	return ordered
 }

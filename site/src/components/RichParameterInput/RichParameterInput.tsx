@@ -8,6 +8,7 @@ import { FC, useState } from "react"
 import { TemplateVersionParameter } from "../../api/typesGenerated"
 import { colors } from "theme/colors"
 import { MemoizedMarkdown } from "components/Markdown/Markdown"
+import { MultiTextField } from "components/MultiTextField/MultiTextField"
 
 const isBoolean = (parameter: TemplateVersionParameter) => {
   return parameter.type === "bool"
@@ -21,6 +22,9 @@ export interface ParameterLabelProps {
 const ParameterLabel: FC<ParameterLabelProps> = ({ id, parameter }) => {
   const styles = useStyles()
   const hasDescription = parameter.description && parameter.description !== ""
+  const displayName = parameter.display_name
+    ? parameter.display_name
+    : parameter.name
 
   return (
     <label htmlFor={id}>
@@ -37,13 +41,13 @@ const ParameterLabel: FC<ParameterLabelProps> = ({ id, parameter }) => {
 
         {hasDescription ? (
           <Stack spacing={0.5}>
-            <span className={styles.labelCaption}>{parameter.name}</span>
+            <span className={styles.labelCaption}>{displayName}</span>
             <span className={styles.labelPrimary}>
               <MemoizedMarkdown>{parameter.description}</MemoizedMarkdown>
             </span>
           </Stack>
         ) : (
-          <span className={styles.labelPrimary}>{parameter.name}</span>
+          <span className={styles.labelPrimary}>{displayName}</span>
         )}
       </Stack>
     </label>
@@ -151,6 +155,34 @@ const RichParameterField: React.FC<RichParameterInputProps> = ({
           />
         ))}
       </RadioGroup>
+    )
+  }
+
+  if (parameter.type === "list(string)") {
+    let values: string[] = []
+
+    if (parameterValue) {
+      try {
+        values = JSON.parse(parameterValue) as string[]
+      } catch (e) {
+        console.error("Error parsing list(string) parameter", e)
+      }
+    }
+
+    return (
+      <MultiTextField
+        label={props.label as string}
+        values={values}
+        onChange={(values) => {
+          try {
+            const value = JSON.stringify(values)
+            setParameterValue(value)
+            onChange(value)
+          } catch (e) {
+            console.error("Error on change of list(string) parameter", e)
+          }
+        }}
+      />
     )
   }
 

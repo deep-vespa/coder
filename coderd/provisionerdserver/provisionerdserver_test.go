@@ -11,12 +11,14 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/oauth2"
 
 	"cdr.dev/slog/sloggers/slogtest"
 	"github.com/coder/coder/coderd/audit"
 	"github.com/coder/coder/coderd/database"
 	"github.com/coder/coder/coderd/database/dbfake"
 	"github.com/coder/coder/coderd/database/dbgen"
+	"github.com/coder/coder/coderd/gitauth"
 	"github.com/coder/coder/coderd/provisionerdserver"
 	"github.com/coder/coder/coderd/schedule"
 	"github.com/coder/coder/coderd/telemetry"
@@ -97,9 +99,24 @@ func TestAcquireJob(t *testing.T) {
 	t.Run("WorkspaceBuildJob", func(t *testing.T) {
 		t.Parallel()
 		srv := setup(t, false)
+		gitAuthProvider := "github"
+		srv.GitAuthConfigs = []*gitauth.Config{{
+			ID:           gitAuthProvider,
+			OAuth2Config: &testutil.OAuth2Config{},
+		}}
 		ctx := context.Background()
 
 		user := dbgen.User(t, srv.Database, database.User{})
+		link := dbgen.UserLink(t, srv.Database, database.UserLink{
+			LoginType:        database.LoginTypeOIDC,
+			UserID:           user.ID,
+			OAuthExpiry:      database.Now().Add(time.Hour),
+			OAuthAccessToken: "access-token",
+		})
+		dbgen.GitAuthLink(t, srv.Database, database.GitAuthLink{
+			ProviderID: gitAuthProvider,
+			UserID:     user.ID,
+		})
 		template := dbgen.Template(t, srv.Database, database.Template{
 			Name:        "template",
 			Provisioner: database.ProvisionerTypeEcho,
@@ -113,6 +130,12 @@ func TestAcquireJob(t *testing.T) {
 			},
 			JobID: uuid.New(),
 		})
+		err := srv.Database.UpdateTemplateVersionGitAuthProvidersByJobID(ctx, database.UpdateTemplateVersionGitAuthProvidersByJobIDParams{
+			JobID:            version.JobID,
+			GitAuthProviders: []string{gitAuthProvider},
+			UpdatedAt:        database.Now(),
+		})
+		require.NoError(t, err)
 		// Import version job
 		_ = dbgen.ProvisionerJob(t, srv.Database, database.ProvisionerJob{
 			ID:            version.JobID,
@@ -207,16 +230,21 @@ func TestAcquireJob(t *testing.T) {
 						Value: "second_value",
 					},
 				},
+				GitAuthProviders: []*sdkproto.GitAuthProvider{{
+					Id:          gitAuthProvider,
+					AccessToken: "access_token",
+				}},
 				Metadata: &sdkproto.Provision_Metadata{
-					CoderUrl:            srv.AccessURL.String(),
-					WorkspaceTransition: sdkproto.WorkspaceTransition_START,
-					WorkspaceName:       workspace.Name,
-					WorkspaceOwner:      user.Username,
-					WorkspaceOwnerEmail: user.Email,
-					WorkspaceId:         workspace.ID.String(),
-					WorkspaceOwnerId:    user.ID.String(),
-					TemplateName:        template.Name,
-					TemplateVersion:     version.Name,
+					CoderUrl:                      srv.AccessURL.String(),
+					WorkspaceTransition:           sdkproto.WorkspaceTransition_START,
+					WorkspaceName:                 workspace.Name,
+					WorkspaceOwner:                user.Username,
+					WorkspaceOwnerEmail:           user.Email,
+					WorkspaceOwnerOidcAccessToken: link.OAuthAccessToken,
+					WorkspaceId:                   workspace.ID.String(),
+					WorkspaceOwnerId:              user.ID.String(),
+					TemplateName:                  template.Name,
+					TemplateVersion:               version.Name,
 				},
 			},
 		})
@@ -787,7 +815,9 @@ func TestCompleteJob(t *testing.T) {
 		job, err = srv.Database.GetProvisionerJobByID(ctx, job.ID)
 		require.NoError(t, err)
 		require.Contains(t, job.Error.String, `git auth provider "github" is not configured`)
-		srv.GitAuthProviders = []string{"github"}
+		srv.GitAuthConfigs = []*gitauth.Config{{
+			ID: "github",
+		}}
 		completeJob()
 		job, err = srv.Database.GetProvisionerJobByID(ctx, job.ID)
 		require.NoError(t, err)
@@ -798,11 +828,12 @@ func TestCompleteJob(t *testing.T) {
 		t.Parallel()
 
 		cases := []struct {
-			name               string
-			templateDefaultTTL time.Duration
-			templateMaxTTL     time.Duration
-			workspaceTTL       time.Duration
-			transition         database.WorkspaceTransition
+			name                  string
+			templateAllowAutostop bool
+			templateDefaultTTL    time.Duration
+			templateMaxTTL        time.Duration
+			workspaceTTL          time.Duration
+			transition            database.WorkspaceTransition
 			// The TTL is actually a deadline time on the workspace_build row,
 			// so during the test this will be compared to be within 15 seconds
 			// of the expected value.
@@ -810,76 +841,94 @@ func TestCompleteJob(t *testing.T) {
 			expectedMaxTTL time.Duration
 		}{
 			{
-				name:               "OK",
-				templateDefaultTTL: 0,
-				templateMaxTTL:     0,
-				workspaceTTL:       0,
-				transition:         database.WorkspaceTransitionStart,
-				expectedTTL:        0,
-				expectedMaxTTL:     0,
+				name:                  "OK",
+				templateAllowAutostop: true,
+				templateDefaultTTL:    0,
+				templateMaxTTL:        0,
+				workspaceTTL:          0,
+				transition:            database.WorkspaceTransitionStart,
+				expectedTTL:           0,
+				expectedMaxTTL:        0,
 			},
 			{
-				name:               "Delete",
-				templateDefaultTTL: 0,
-				templateMaxTTL:     0,
-				workspaceTTL:       0,
-				transition:         database.WorkspaceTransitionDelete,
-				expectedTTL:        0,
-				expectedMaxTTL:     0,
+				name:                  "Delete",
+				templateAllowAutostop: true,
+				templateDefaultTTL:    0,
+				templateMaxTTL:        0,
+				workspaceTTL:          0,
+				transition:            database.WorkspaceTransitionDelete,
+				expectedTTL:           0,
+				expectedMaxTTL:        0,
 			},
 			{
-				name:               "WorkspaceTTL",
-				templateDefaultTTL: 0,
-				templateMaxTTL:     0,
-				workspaceTTL:       time.Hour,
-				transition:         database.WorkspaceTransitionStart,
-				expectedTTL:        time.Hour,
-				expectedMaxTTL:     0,
+				name:                  "WorkspaceTTL",
+				templateAllowAutostop: true,
+				templateDefaultTTL:    0,
+				templateMaxTTL:        0,
+				workspaceTTL:          time.Hour,
+				transition:            database.WorkspaceTransitionStart,
+				expectedTTL:           time.Hour,
+				expectedMaxTTL:        0,
 			},
 			{
-				name:               "TemplateDefaultTTLIgnored",
-				templateDefaultTTL: time.Hour,
-				templateMaxTTL:     0,
-				workspaceTTL:       0,
-				transition:         database.WorkspaceTransitionStart,
-				expectedTTL:        0,
-				expectedMaxTTL:     0,
+				name:                  "TemplateDefaultTTLIgnored",
+				templateAllowAutostop: true,
+				templateDefaultTTL:    time.Hour,
+				templateMaxTTL:        0,
+				workspaceTTL:          0,
+				transition:            database.WorkspaceTransitionStart,
+				expectedTTL:           0,
+				expectedMaxTTL:        0,
 			},
 			{
-				name:               "WorkspaceTTLOverridesTemplateDefaultTTL",
-				templateDefaultTTL: 2 * time.Hour,
-				templateMaxTTL:     0,
-				workspaceTTL:       time.Hour,
-				transition:         database.WorkspaceTransitionStart,
-				expectedTTL:        time.Hour,
-				expectedMaxTTL:     0,
+				name:                  "WorkspaceTTLOverridesTemplateDefaultTTL",
+				templateAllowAutostop: true,
+				templateDefaultTTL:    2 * time.Hour,
+				templateMaxTTL:        0,
+				workspaceTTL:          time.Hour,
+				transition:            database.WorkspaceTransitionStart,
+				expectedTTL:           time.Hour,
+				expectedMaxTTL:        0,
 			},
 			{
-				name:               "TemplateMaxTTL",
-				templateDefaultTTL: 0,
-				templateMaxTTL:     time.Hour,
-				workspaceTTL:       0,
-				transition:         database.WorkspaceTransitionStart,
-				expectedTTL:        time.Hour,
-				expectedMaxTTL:     time.Hour,
+				name:                  "TemplateMaxTTL",
+				templateAllowAutostop: true,
+				templateDefaultTTL:    0,
+				templateMaxTTL:        time.Hour,
+				workspaceTTL:          0,
+				transition:            database.WorkspaceTransitionStart,
+				expectedTTL:           time.Hour,
+				expectedMaxTTL:        time.Hour,
 			},
 			{
-				name:               "TemplateMaxTTLOverridesWorkspaceTTL",
-				templateDefaultTTL: 0,
-				templateMaxTTL:     2 * time.Hour,
-				workspaceTTL:       3 * time.Hour,
-				transition:         database.WorkspaceTransitionStart,
-				expectedTTL:        2 * time.Hour,
-				expectedMaxTTL:     2 * time.Hour,
+				name:                  "TemplateMaxTTLOverridesWorkspaceTTL",
+				templateAllowAutostop: true,
+				templateDefaultTTL:    0,
+				templateMaxTTL:        2 * time.Hour,
+				workspaceTTL:          3 * time.Hour,
+				transition:            database.WorkspaceTransitionStart,
+				expectedTTL:           2 * time.Hour,
+				expectedMaxTTL:        2 * time.Hour,
 			},
 			{
-				name:               "TemplateMaxTTLOverridesTemplateDefaultTTL",
-				templateDefaultTTL: 3 * time.Hour,
-				templateMaxTTL:     2 * time.Hour,
-				workspaceTTL:       0,
-				transition:         database.WorkspaceTransitionStart,
-				expectedTTL:        2 * time.Hour,
-				expectedMaxTTL:     2 * time.Hour,
+				name:                  "TemplateMaxTTLOverridesTemplateDefaultTTL",
+				templateAllowAutostop: true,
+				templateDefaultTTL:    3 * time.Hour,
+				templateMaxTTL:        2 * time.Hour,
+				workspaceTTL:          0,
+				transition:            database.WorkspaceTransitionStart,
+				expectedTTL:           2 * time.Hour,
+				expectedMaxTTL:        2 * time.Hour,
+			},
+			{
+				name:                  "TemplateBlockWorkspaceTTL",
+				templateAllowAutostop: false,
+				templateDefaultTTL:    3 * time.Hour,
+				templateMaxTTL:        6 * time.Hour,
+				workspaceTTL:          4 * time.Hour,
+				transition:            database.WorkspaceTransitionStart,
+				expectedTTL:           3 * time.Hour,
+				expectedMaxTTL:        6 * time.Hour,
 			},
 		}
 
@@ -891,12 +940,13 @@ func TestCompleteJob(t *testing.T) {
 
 				srv := setup(t, false)
 
-				var store schedule.TemplateScheduleStore = mockTemplateScheduleStore{
+				var store schedule.TemplateScheduleStore = schedule.MockTemplateScheduleStore{
 					GetFn: func(_ context.Context, _ database.Store, _ uuid.UUID) (schedule.TemplateScheduleOptions, error) {
 						return schedule.TemplateScheduleOptions{
-							UserSchedulingEnabled: true,
-							DefaultTTL:            c.templateDefaultTTL,
-							MaxTTL:                c.templateMaxTTL,
+							UserAutostartEnabled: false,
+							UserAutostopEnabled:  c.templateAllowAutostop,
+							DefaultTTL:           c.templateDefaultTTL,
+							MaxTTL:               c.templateMaxTTL,
 						}, nil
 					},
 				}
@@ -908,10 +958,11 @@ func TestCompleteJob(t *testing.T) {
 					Provisioner: database.ProvisionerTypeEcho,
 				})
 				template, err := srv.Database.UpdateTemplateScheduleByID(ctx, database.UpdateTemplateScheduleByIDParams{
-					ID:         template.ID,
-					UpdatedAt:  database.Now(),
-					DefaultTTL: int64(c.templateDefaultTTL),
-					MaxTTL:     int64(c.templateMaxTTL),
+					ID:                 template.ID,
+					UpdatedAt:          database.Now(),
+					AllowUserAutostart: c.templateAllowAutostop,
+					DefaultTTL:         int64(c.templateDefaultTTL),
+					MaxTTL:             int64(c.templateMaxTTL),
 				})
 				require.NoError(t, err)
 				file := dbgen.File(t, srv.Database, database.File{CreatedBy: user.ID})
@@ -922,8 +973,7 @@ func TestCompleteJob(t *testing.T) {
 						Valid: true,
 					}
 				}
-				workspace, err := srv.Database.InsertWorkspace(ctx, database.InsertWorkspaceParams{
-					ID:         uuid.New(),
+				workspace := dbgen.Workspace(t, srv.Database, database.Workspace{
 					TemplateID: template.ID,
 					Ttl:        workspaceTTL,
 				})
@@ -934,26 +984,19 @@ func TestCompleteJob(t *testing.T) {
 					},
 					JobID: uuid.New(),
 				})
-				require.NoError(t, err)
-				build, err := srv.Database.InsertWorkspaceBuild(ctx, database.InsertWorkspaceBuildParams{
-					ID:                uuid.New(),
+				build := dbgen.WorkspaceBuild(t, srv.Database, database.WorkspaceBuild{
 					WorkspaceID:       workspace.ID,
 					TemplateVersionID: version.ID,
 					Transition:        c.transition,
 					Reason:            database.BuildReasonInitiator,
 				})
-				require.NoError(t, err)
-				job, err := srv.Database.InsertProvisionerJob(ctx, database.InsertProvisionerJobParams{
-					ID:            uuid.New(),
-					FileID:        file.ID,
-					Provisioner:   database.ProvisionerTypeEcho,
-					Type:          database.ProvisionerJobTypeWorkspaceBuild,
-					StorageMethod: database.ProvisionerStorageMethodFile,
+				job := dbgen.ProvisionerJob(t, srv.Database, database.ProvisionerJob{
+					FileID: file.ID,
+					Type:   database.ProvisionerJobTypeWorkspaceBuild,
 					Input: must(json.Marshal(provisionerdserver.WorkspaceProvisionJob{
 						WorkspaceBuildID: build.ID,
 					})),
 				})
-				require.NoError(t, err)
 				_, err = srv.Database.AcquireProvisionerJob(ctx, database.AcquireProvisionerJobParams{
 					WorkerID: uuid.NullUUID{
 						UUID:  srv.ID,
@@ -1014,7 +1057,6 @@ func TestCompleteJob(t *testing.T) {
 			})
 		}
 	})
-
 	t.Run("TemplateDryRun", func(t *testing.T) {
 		t.Parallel()
 		srv := setup(t, false)
@@ -1152,6 +1194,7 @@ func setup(t *testing.T, ignoreLogErrors bool) *provisionerdserver.Server {
 	return &provisionerdserver.Server{
 		ID:                    uuid.New(),
 		Logger:                slogtest.Make(t, &slogtest.Options{IgnoreErrors: ignoreLogErrors}),
+		OIDCConfig:            &oauth2.Config{},
 		AccessURL:             &url.URL{},
 		Provisioners:          []database.ProvisionerType{database.ProvisionerTypeEcho},
 		Database:              db,
@@ -1167,18 +1210,4 @@ func must[T any](value T, err error) T {
 		panic(err)
 	}
 	return value
-}
-
-type mockTemplateScheduleStore struct {
-	GetFn func(ctx context.Context, db database.Store, id uuid.UUID) (schedule.TemplateScheduleOptions, error)
-}
-
-var _ schedule.TemplateScheduleStore = mockTemplateScheduleStore{}
-
-func (mockTemplateScheduleStore) SetTemplateScheduleOptions(ctx context.Context, db database.Store, template database.Template, opts schedule.TemplateScheduleOptions) (database.Template, error) {
-	return schedule.NewAGPLTemplateScheduleStore().SetTemplateScheduleOptions(ctx, db, template, opts)
-}
-
-func (m mockTemplateScheduleStore) GetTemplateScheduleOptions(ctx context.Context, db database.Store, id uuid.UUID) (schedule.TemplateScheduleOptions, error) {
-	return m.GetFn(ctx, db, id)
 }

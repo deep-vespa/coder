@@ -11,8 +11,8 @@ export enum ButtonTypesEnum {
   deleting = "deleting",
   update = "update",
   updating = "updating",
+  settings = "settings",
   changeVersion = "changeVersion",
-  buildParameters = "buildParameters",
   // disabled buttons
   canceling = "canceling",
   deleted = "deleted",
@@ -31,19 +31,8 @@ interface WorkspaceAbilities {
 
 export const buttonAbilities = (
   status: WorkspaceStatus,
-  hasTemplateParameters: boolean,
 ): WorkspaceAbilities => {
-  if (hasTemplateParameters) {
-    return statusToAbilities[status]
-  }
-
-  const all = statusToAbilities[status]
-  return {
-    ...all,
-    actions: all.actions.filter(
-      (action) => action !== ButtonTypesEnum.buildParameters,
-    ),
-  }
+  return statusToAbilities[status]
 }
 
 const statusToAbilities: Record<WorkspaceStatus, WorkspaceAbilities> = {
@@ -55,7 +44,7 @@ const statusToAbilities: Record<WorkspaceStatus, WorkspaceAbilities> = {
   running: {
     actions: [
       ButtonTypesEnum.stop,
-      ButtonTypesEnum.buildParameters,
+      ButtonTypesEnum.settings,
       ButtonTypesEnum.changeVersion,
       ButtonTypesEnum.delete,
     ],
@@ -70,7 +59,7 @@ const statusToAbilities: Record<WorkspaceStatus, WorkspaceAbilities> = {
   stopped: {
     actions: [
       ButtonTypesEnum.start,
-      ButtonTypesEnum.buildParameters,
+      ButtonTypesEnum.settings,
       ButtonTypesEnum.changeVersion,
       ButtonTypesEnum.delete,
     ],
@@ -81,7 +70,7 @@ const statusToAbilities: Record<WorkspaceStatus, WorkspaceAbilities> = {
     actions: [
       ButtonTypesEnum.start,
       ButtonTypesEnum.stop,
-      ButtonTypesEnum.buildParameters,
+      ButtonTypesEnum.settings,
       ButtonTypesEnum.changeVersion,
       ButtonTypesEnum.delete,
     ],
@@ -92,7 +81,8 @@ const statusToAbilities: Record<WorkspaceStatus, WorkspaceAbilities> = {
   failed: {
     actions: [
       ButtonTypesEnum.start,
-      ButtonTypesEnum.buildParameters,
+      ButtonTypesEnum.stop,
+      ButtonTypesEnum.settings,
       ButtonTypesEnum.changeVersion,
       ButtonTypesEnum.delete,
     ],

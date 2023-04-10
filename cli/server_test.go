@@ -37,6 +37,7 @@ import (
 	"github.com/coder/coder/coderd/database/postgres"
 	"github.com/coder/coder/coderd/telemetry"
 	"github.com/coder/coder/codersdk"
+	"github.com/coder/coder/cryptorand"
 	"github.com/coder/coder/pty/ptytest"
 	"github.com/coder/coder/testutil"
 )
@@ -108,78 +109,66 @@ func TestServer(t *testing.T) {
 		connectionURL, closeFunc, err := postgres.Open()
 		require.NoError(t, err)
 		defer closeFunc()
-		ctx, cancelFunc := context.WithCancel(context.Background())
-		defer cancelFunc()
 
-		root, cfg := clitest.New(t,
+		// Postgres + race detector + CI = slow.
+		ctx := testutil.Context(t, testutil.WaitSuperLong*3)
+
+		inv, cfg := clitest.New(t,
 			"server",
 			"--http-address", ":0",
 			"--access-url", "http://example.com",
 			"--postgres-url", connectionURL,
 			"--cache-dir", t.TempDir(),
 		)
-		pty := ptytest.New(t)
-		root.SetOutput(pty.Output())
-		root.SetErr(pty.Output())
-		errC := make(chan error, 1)
-		go func() {
-			errC <- root.ExecuteContext(ctx)
-		}()
+		clitest.Start(t, inv.WithContext(ctx))
 		accessURL := waitAccessURL(t, cfg)
 		client := codersdk.New(accessURL)
 
 		_, err = client.CreateFirstUser(ctx, coderdtest.FirstUserParams)
 		require.NoError(t, err)
-		cancelFunc()
-		require.NoError(t, <-errC)
 	})
 	t.Run("BuiltinPostgres", func(t *testing.T) {
 		t.Parallel()
 		if testing.Short() {
 			t.SkipNow()
 		}
-		ctx, cancelFunc := context.WithCancel(context.Background())
-		defer cancelFunc()
 
-		root, cfg := clitest.New(t,
+		inv, cfg := clitest.New(t,
 			"server",
 			"--http-address", ":0",
 			"--access-url", "http://example.com",
 			"--cache-dir", t.TempDir(),
 		)
-		pty := ptytest.New(t)
-		root.SetOutput(pty.Output())
-		root.SetErr(pty.Output())
-		errC := make(chan error, 1)
-		go func() {
-			errC <- root.ExecuteContext(ctx)
-		}()
+
+		const superDuperLong = testutil.WaitSuperLong * 3
+
+		ctx := testutil.Context(t, superDuperLong)
+		clitest.Start(t, inv.WithContext(ctx))
+
 		//nolint:gocritic // Embedded postgres take a while to fire up.
 		require.Eventually(t, func() bool {
 			rawURL, err := cfg.URL().Read()
 			return err == nil && rawURL != ""
-		}, 3*time.Minute, testutil.IntervalFast, "failed to get access URL")
-		cancelFunc()
-		require.NoError(t, <-errC)
+		}, superDuperLong, testutil.IntervalFast, "failed to get access URL")
 	})
 	t.Run("BuiltinPostgresURL", func(t *testing.T) {
 		t.Parallel()
 		root, _ := clitest.New(t, "server", "postgres-builtin-url")
 		pty := ptytest.New(t)
-		root.SetOutput(pty.Output())
-		err := root.Execute()
+		root.Stdout = pty.Output()
+		err := root.Run()
 		require.NoError(t, err)
 
 		pty.ExpectMatch("psql")
 	})
 	t.Run("BuiltinPostgresURLRaw", func(t *testing.T) {
 		t.Parallel()
-		ctx, _ := testutil.Context(t)
+		ctx := testutil.Context(t, testutil.WaitLong)
 
 		root, _ := clitest.New(t, "server", "postgres-builtin-url", "--raw-url")
 		pty := ptytest.New(t)
-		root.SetOutput(pty.Output())
-		err := root.ExecuteContext(ctx)
+		root.Stdout = pty.Output()
+		err := root.WithContext(ctx).Run()
 		require.NoError(t, err)
 
 		got := pty.ReadLine(ctx)
@@ -192,93 +181,62 @@ func TestServer(t *testing.T) {
 	// reachable.
 	t.Run("LocalAccessURL", func(t *testing.T) {
 		t.Parallel()
-		ctx, cancelFunc := context.WithCancel(context.Background())
-		defer cancelFunc()
-
-		root, cfg := clitest.New(t,
+		inv, cfg := clitest.New(t,
 			"server",
 			"--in-memory",
 			"--http-address", ":0",
 			"--access-url", "http://localhost:3000/",
 			"--cache-dir", t.TempDir(),
 		)
-		pty := ptytest.New(t)
-		root.SetIn(pty.Input())
-		root.SetOut(pty.Output())
-		errC := make(chan error, 1)
-		go func() {
-			errC <- root.ExecuteContext(ctx)
-		}()
+		pty := ptytest.New(t).Attach(inv)
+		clitest.Start(t, inv)
 
 		// Just wait for startup
 		_ = waitAccessURL(t, cfg)
 
 		pty.ExpectMatch("this may cause unexpected problems when creating workspaces")
 		pty.ExpectMatch("View the Web UI: http://localhost:3000/")
-
-		cancelFunc()
-		require.NoError(t, <-errC)
 	})
 
 	// Validate that an https scheme is prepended to a remote access URL
 	// and that a warning is printed for a host that cannot be resolved.
 	t.Run("RemoteAccessURL", func(t *testing.T) {
 		t.Parallel()
-		ctx, cancelFunc := context.WithCancel(context.Background())
-		defer cancelFunc()
 
-		root, cfg := clitest.New(t,
+		inv, cfg := clitest.New(t,
 			"server",
 			"--in-memory",
 			"--http-address", ":0",
 			"--access-url", "https://foobarbaz.mydomain",
 			"--cache-dir", t.TempDir(),
 		)
-		pty := ptytest.New(t)
-		root.SetIn(pty.Input())
-		root.SetOut(pty.Output())
-		errC := make(chan error, 1)
-		go func() {
-			errC <- root.ExecuteContext(ctx)
-		}()
+		pty := ptytest.New(t).Attach(inv)
+
+		clitest.Start(t, inv)
 
 		// Just wait for startup
 		_ = waitAccessURL(t, cfg)
 
 		pty.ExpectMatch("this may cause unexpected problems when creating workspaces")
 		pty.ExpectMatch("View the Web UI: https://foobarbaz.mydomain")
-
-		cancelFunc()
-		require.NoError(t, <-errC)
 	})
 
 	t.Run("NoWarningWithRemoteAccessURL", func(t *testing.T) {
 		t.Parallel()
-		ctx, cancelFunc := context.WithCancel(context.Background())
-		defer cancelFunc()
-
-		root, cfg := clitest.New(t,
+		inv, cfg := clitest.New(t,
 			"server",
 			"--in-memory",
 			"--http-address", ":0",
 			"--access-url", "https://google.com",
 			"--cache-dir", t.TempDir(),
 		)
-		pty := ptytest.New(t)
-		root.SetIn(pty.Input())
-		root.SetOut(pty.Output())
-		errC := make(chan error, 1)
-		go func() {
-			errC <- root.ExecuteContext(ctx)
-		}()
+		pty := ptytest.New(t).Attach(inv)
+		clitest.Start(t, inv)
 
 		// Just wait for startup
 		_ = waitAccessURL(t, cfg)
 
 		pty.ExpectMatch("View the Web UI: https://google.com")
-
-		cancelFunc()
-		require.NoError(t, <-errC)
 	})
 
 	t.Run("NoSchemeAccessURL", func(t *testing.T) {
@@ -293,7 +251,7 @@ func TestServer(t *testing.T) {
 			"--access-url", "google.com",
 			"--cache-dir", t.TempDir(),
 		)
-		err := root.ExecuteContext(ctx)
+		err := root.WithContext(ctx).Run()
 		require.Error(t, err)
 	})
 
@@ -312,7 +270,7 @@ func TestServer(t *testing.T) {
 			"--tls-min-version", "tls9",
 			"--cache-dir", t.TempDir(),
 		)
-		err := root.ExecuteContext(ctx)
+		err := root.WithContext(ctx).Run()
 		require.Error(t, err)
 	})
 	t.Run("TLSBadClientAuth", func(t *testing.T) {
@@ -330,7 +288,7 @@ func TestServer(t *testing.T) {
 			"--tls-client-auth", "something",
 			"--cache-dir", t.TempDir(),
 		)
-		err := root.ExecuteContext(ctx)
+		err := root.WithContext(ctx).Run()
 		require.Error(t, err)
 	})
 	t.Run("TLSInvalid", func(t *testing.T) {
@@ -382,7 +340,7 @@ func TestServer(t *testing.T) {
 				}
 				args = append(args, c.args...)
 				root, _ := clitest.New(t, args...)
-				err := root.ExecuteContext(ctx)
+				err := root.WithContext(ctx).Run()
 				require.Error(t, err)
 				t.Logf("args: %v", args)
 				require.ErrorContains(t, err, c.errContains)
@@ -406,7 +364,7 @@ func TestServer(t *testing.T) {
 			"--tls-key-file", keyPath,
 			"--cache-dir", t.TempDir(),
 		)
-		clitest.Start(ctx, t, root)
+		clitest.Start(t, root.WithContext(ctx))
 
 		// Verify HTTPS
 		accessURL := waitAccessURL(t, cfg)
@@ -445,8 +403,8 @@ func TestServer(t *testing.T) {
 			"--cache-dir", t.TempDir(),
 		)
 		pty := ptytest.New(t)
-		root.SetOut(pty.Output())
-		clitest.Start(ctx, t, root)
+		root.Stdout = pty.Output()
+		clitest.Start(t, root.WithContext(ctx))
 
 		accessURL := waitAccessURL(t, cfg)
 		require.Equal(t, "https", accessURL.Scheme)
@@ -511,7 +469,7 @@ func TestServer(t *testing.T) {
 		defer cancelFunc()
 
 		certPath, keyPath := generateTLSCertificate(t)
-		root, _ := clitest.New(t,
+		inv, _ := clitest.New(t,
 			"server",
 			"--in-memory",
 			"--http-address", ":0",
@@ -523,17 +481,11 @@ func TestServer(t *testing.T) {
 			"--tls-key-file", keyPath,
 			"--cache-dir", t.TempDir(),
 		)
-		pty := ptytest.New(t)
-		root.SetOutput(pty.Output())
-		root.SetErr(pty.Output())
-
-		errC := make(chan error, 1)
-		go func() {
-			errC <- root.ExecuteContext(ctx)
-		}()
+		pty := ptytest.New(t).Attach(inv)
+		clitest.Start(t, inv)
 
 		// We can't use waitAccessURL as it will only return the HTTP URL.
-		const httpLinePrefix = "Started HTTP listener at "
+		const httpLinePrefix = "Started HTTP listener at"
 		pty.ExpectMatch(httpLinePrefix)
 		httpLine := pty.ReadLine(ctx)
 		httpAddr := strings.TrimSpace(strings.TrimPrefix(httpLine, httpLinePrefix))
@@ -572,9 +524,6 @@ func TestServer(t *testing.T) {
 		defer client.HTTPClient.CloseIdleConnections()
 		_, err = client.HasFirstUser(ctx)
 		require.NoError(t, err)
-
-		cancelFunc()
-		require.NoError(t, <-errC)
 	})
 
 	t.Run("TLSRedirect", func(t *testing.T) {
@@ -670,15 +619,11 @@ func TestServer(t *testing.T) {
 					flags = append(flags, "--redirect-to-access-url")
 				}
 
-				root, _ := clitest.New(t, flags...)
+				inv, _ := clitest.New(t, flags...)
 				pty := ptytest.New(t)
-				root.SetOutput(pty.Output())
-				root.SetErr(pty.Output())
+				pty.Attach(inv)
 
-				errC := make(chan error, 1)
-				go func() {
-					errC <- root.ExecuteContext(ctx)
-				}()
+				clitest.Start(t, inv)
 
 				var (
 					httpAddr string
@@ -686,14 +631,14 @@ func TestServer(t *testing.T) {
 				)
 				// We can't use waitAccessURL as it will only return the HTTP URL.
 				if c.httpListener {
-					const httpLinePrefix = "Started HTTP listener at "
+					const httpLinePrefix = "Started HTTP listener at"
 					pty.ExpectMatch(httpLinePrefix)
 					httpLine := pty.ReadLine(ctx)
 					httpAddr = strings.TrimSpace(strings.TrimPrefix(httpLine, httpLinePrefix))
 					require.NotEmpty(t, httpAddr)
 				}
 				if c.tlsListener {
-					const tlsLinePrefix = "Started TLS/HTTPS listener at "
+					const tlsLinePrefix = "Started TLS/HTTPS listener at"
 					pty.ExpectMatch(tlsLinePrefix)
 					tlsLine := pty.ReadLine(ctx)
 					tlsAddr = strings.TrimSpace(strings.TrimPrefix(tlsLine, tlsLinePrefix))
@@ -723,8 +668,7 @@ func TestServer(t *testing.T) {
 				if c.tlsListener {
 					accessURLParsed, err := url.Parse(c.requestURL)
 					require.NoError(t, err)
-					client := codersdk.New(accessURLParsed)
-					client.HTTPClient = &http.Client{
+					client := &http.Client{
 						CheckRedirect: func(req *http.Request, via []*http.Request) error {
 							return http.ErrUseLastResponse
 						},
@@ -737,13 +681,15 @@ func TestServer(t *testing.T) {
 							},
 						},
 					}
-					defer client.HTTPClient.CloseIdleConnections()
-					_, err = client.HasFirstUser(ctx)
-					if err != nil {
-						require.ErrorContains(t, err, "Invalid application URL")
-					}
-					cancelFunc()
-					require.NoError(t, <-errC)
+					defer client.CloseIdleConnections()
+
+					req, err := http.NewRequestWithContext(ctx, http.MethodGet, accessURLParsed.String(), nil)
+					require.NoError(t, err)
+					resp, err := client.Do(req)
+					// We don't care much about the response, just that TLS
+					// worked.
+					require.NoError(t, err)
+					defer resp.Body.Close()
 				}
 			})
 		}
@@ -762,18 +708,19 @@ func TestServer(t *testing.T) {
 		)
 
 		pty := ptytest.New(t)
-		root.SetOutput(pty.Output())
-		root.SetErr(pty.Output())
+		root.Stdout = pty.Output()
+		root.Stderr = pty.Output()
 		serverStop := make(chan error, 1)
 		go func() {
-			err := root.ExecuteContext(ctx)
+			err := root.WithContext(ctx).Run()
 			if err != nil {
 				t.Error(err)
 			}
 			close(serverStop)
 		}()
 
-		pty.ExpectMatch("Started HTTP listener at http://0.0.0.0:")
+		pty.ExpectMatch("Started HTTP listener")
+		pty.ExpectMatch("http://0.0.0.0:")
 
 		cancelFunc()
 		<-serverStop
@@ -781,32 +728,19 @@ func TestServer(t *testing.T) {
 
 	t.Run("CanListenUnspecifiedv6", func(t *testing.T) {
 		t.Parallel()
-		ctx, cancelFunc := context.WithCancel(context.Background())
-		defer cancelFunc()
 
-		root, _ := clitest.New(t,
+		inv, _ := clitest.New(t,
 			"server",
 			"--in-memory",
 			"--http-address", "[::]:0",
 			"--access-url", "http://example.com",
 		)
 
-		pty := ptytest.New(t)
-		root.SetOutput(pty.Output())
-		root.SetErr(pty.Output())
-		serverClose := make(chan struct{}, 1)
-		go func() {
-			err := root.ExecuteContext(ctx)
-			if err != nil {
-				t.Error(err)
-			}
-			close(serverClose)
-		}()
+		pty := ptytest.New(t).Attach(inv)
+		clitest.Start(t, inv)
 
-		pty.ExpectMatch("Started HTTP listener at http://[::]:")
-
-		cancelFunc()
-		<-serverClose
+		pty.ExpectMatch("Started HTTP listener at")
+		pty.ExpectMatch("http://[::]:")
 	})
 
 	t.Run("NoAddress", func(t *testing.T) {
@@ -814,14 +748,14 @@ func TestServer(t *testing.T) {
 		ctx, cancelFunc := context.WithCancel(context.Background())
 		defer cancelFunc()
 
-		root, _ := clitest.New(t,
+		inv, _ := clitest.New(t,
 			"server",
 			"--in-memory",
 			"--http-address", ":80",
 			"--tls-enable=false",
 			"--tls-address", "",
 		)
-		err := root.ExecuteContext(ctx)
+		err := inv.WithContext(ctx).Run()
 		require.Error(t, err)
 		require.ErrorContains(t, err, "tls-address")
 	})
@@ -831,13 +765,13 @@ func TestServer(t *testing.T) {
 		ctx, cancelFunc := context.WithCancel(context.Background())
 		defer cancelFunc()
 
-		root, _ := clitest.New(t,
+		inv, _ := clitest.New(t,
 			"server",
 			"--in-memory",
 			"--tls-enable=true",
 			"--tls-address", "",
 		)
-		err := root.ExecuteContext(ctx)
+		err := inv.WithContext(ctx).Run()
 		require.Error(t, err)
 		require.ErrorContains(t, err, "must not be empty")
 	})
@@ -854,7 +788,7 @@ func TestServer(t *testing.T) {
 			ctx, cancelFunc := context.WithCancel(context.Background())
 			defer cancelFunc()
 
-			root, cfg := clitest.New(t,
+			inv, cfg := clitest.New(t,
 				"server",
 				"--in-memory",
 				"--address", ":0",
@@ -862,9 +796,9 @@ func TestServer(t *testing.T) {
 				"--cache-dir", t.TempDir(),
 			)
 			pty := ptytest.New(t)
-			root.SetOutput(pty.Output())
-			root.SetErr(pty.Output())
-			clitest.Start(ctx, t, root)
+			inv.Stdout = pty.Output()
+			inv.Stderr = pty.Output()
+			clitest.Start(t, inv.WithContext(ctx))
 
 			pty.ExpectMatch("is deprecated")
 
@@ -892,9 +826,9 @@ func TestServer(t *testing.T) {
 				"--cache-dir", t.TempDir(),
 			)
 			pty := ptytest.New(t)
-			root.SetOutput(pty.Output())
-			root.SetErr(pty.Output())
-			clitest.Start(ctx, t, root)
+			root.Stdout = pty.Output()
+			root.Stderr = pty.Output()
+			clitest.Start(t, root.WithContext(ctx))
 
 			pty.ExpectMatch("is deprecated")
 
@@ -935,7 +869,7 @@ func TestServer(t *testing.T) {
 		)
 		serverErr := make(chan error, 1)
 		go func() {
-			serverErr <- root.ExecuteContext(ctx)
+			serverErr <- root.WithContext(ctx).Run()
 		}()
 		_ = waitAccessURL(t, cfg)
 		currentProcess, err := os.FindProcess(os.Getpid())
@@ -949,10 +883,8 @@ func TestServer(t *testing.T) {
 	})
 	t.Run("TracerNoLeak", func(t *testing.T) {
 		t.Parallel()
-		ctx, cancelFunc := context.WithCancel(context.Background())
-		defer cancelFunc()
 
-		root, _ := clitest.New(t,
+		inv, _ := clitest.New(t,
 			"server",
 			"--in-memory",
 			"--http-address", ":0",
@@ -960,18 +892,14 @@ func TestServer(t *testing.T) {
 			"--trace=true",
 			"--cache-dir", t.TempDir(),
 		)
-		errC := make(chan error, 1)
-		go func() {
-			errC <- root.ExecuteContext(ctx)
-		}()
-		cancelFunc()
-		require.NoError(t, <-errC)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		clitest.Start(t, inv.WithContext(ctx))
+		cancel()
 		require.Error(t, goleak.Find())
 	})
 	t.Run("Telemetry", func(t *testing.T) {
 		t.Parallel()
-		ctx, cancelFunc := context.WithCancel(context.Background())
-		defer cancelFunc()
 
 		deployment := make(chan struct{}, 64)
 		snapshot := make(chan *telemetry.Snapshot, 64)
@@ -990,7 +918,7 @@ func TestServer(t *testing.T) {
 		server := httptest.NewServer(r)
 		defer server.Close()
 
-		root, _ := clitest.New(t,
+		inv, _ := clitest.New(t,
 			"server",
 			"--in-memory",
 			"--http-address", ":0",
@@ -999,21 +927,13 @@ func TestServer(t *testing.T) {
 			"--telemetry-url", server.URL,
 			"--cache-dir", t.TempDir(),
 		)
-		errC := make(chan error, 1)
-		go func() {
-			errC <- root.ExecuteContext(ctx)
-		}()
+		clitest.Start(t, inv)
 
 		<-deployment
 		<-snapshot
-		cancelFunc()
-		<-errC
 	})
 	t.Run("Prometheus", func(t *testing.T) {
 		t.Parallel()
-		ctx, cancelFunc := context.WithCancel(context.Background())
-		defer cancelFunc()
-
 		random, err := net.Listen("tcp", "127.0.0.1:0")
 		require.NoError(t, err)
 		_ = random.Close()
@@ -1021,7 +941,7 @@ func TestServer(t *testing.T) {
 		require.True(t, valid)
 		randomPort := tcpAddr.Port
 
-		root, cfg := clitest.New(t,
+		inv, cfg := clitest.New(t,
 			"server",
 			"--in-memory",
 			"--http-address", ":0",
@@ -1031,10 +951,11 @@ func TestServer(t *testing.T) {
 			"--prometheus-address", ":"+strconv.Itoa(randomPort),
 			"--cache-dir", t.TempDir(),
 		)
-		serverErr := make(chan error, 1)
-		go func() {
-			serverErr <- root.ExecuteContext(ctx)
-		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
+		defer cancel()
+
+		clitest.Start(t, inv)
 		_ = waitAccessURL(t, cfg)
 
 		var res *http.Response
@@ -1045,6 +966,7 @@ func TestServer(t *testing.T) {
 			res, err = http.DefaultClient.Do(req)
 			return err == nil
 		}, testutil.WaitShort, testutil.IntervalFast)
+		defer res.Body.Close()
 
 		scanner := bufio.NewScanner(res.Body)
 		hasActiveUsers := false
@@ -1065,16 +987,12 @@ func TestServer(t *testing.T) {
 		require.NoError(t, scanner.Err())
 		require.True(t, hasActiveUsers)
 		require.True(t, hasWorkspaces)
-		cancelFunc()
-		<-serverErr
 	})
 	t.Run("GitHubOAuth", func(t *testing.T) {
 		t.Parallel()
-		ctx, cancelFunc := context.WithCancel(context.Background())
-		defer cancelFunc()
 
 		fakeRedirect := "https://fake-url.com"
-		root, cfg := clitest.New(t,
+		inv, cfg := clitest.New(t,
 			"server",
 			"--in-memory",
 			"--http-address", ":0",
@@ -1084,10 +1002,7 @@ func TestServer(t *testing.T) {
 			"--oauth2-github-client-secret", "fake",
 			"--oauth2-github-enterprise-base-url", fakeRedirect,
 		)
-		serverErr := make(chan error, 1)
-		go func() {
-			serverErr <- root.ExecuteContext(ctx)
-		}()
+		clitest.Start(t, inv)
 		accessURL := waitAccessURL(t, cfg)
 		client := codersdk.New(accessURL)
 		client.HTTPClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
@@ -1095,7 +1010,7 @@ func TestServer(t *testing.T) {
 		}
 		githubURL, err := accessURL.Parse("/api/v2/users/oauth2/github")
 		require.NoError(t, err)
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, githubURL.String(), nil)
+		req, err := http.NewRequestWithContext(inv.Context(), http.MethodGet, githubURL.String(), nil)
 		require.NoError(t, err)
 		res, err := client.HTTPClient.Do(req)
 		require.NoError(t, err)
@@ -1103,8 +1018,169 @@ func TestServer(t *testing.T) {
 		fakeURL, err := res.Location()
 		require.NoError(t, err)
 		require.True(t, strings.HasPrefix(fakeURL.String(), fakeRedirect), fakeURL.String())
-		cancelFunc()
-		<-serverErr
+	})
+
+	t.Run("OIDC", func(t *testing.T) {
+		t.Parallel()
+
+		t.Run("Defaults", func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitMedium)
+			defer cancel()
+
+			// Startup a fake server that just responds to .well-known/openid-configuration
+			// This is just needed to get Coder to start up.
+			oidcServer := httptest.NewServer(nil)
+			fakeWellKnownHandler := func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				payload := fmt.Sprintf("{\"issuer\": %q}", oidcServer.URL)
+				_, _ = w.Write([]byte(payload))
+			}
+			oidcServer.Config.Handler = http.HandlerFunc(fakeWellKnownHandler)
+			t.Cleanup(oidcServer.Close)
+
+			inv, cfg := clitest.New(t,
+				"server",
+				"--in-memory",
+				"--http-address", ":0",
+				"--access-url", "http://example.com",
+				"--oidc-client-id", "fake",
+				"--oidc-client-secret", "fake",
+				"--oidc-issuer-url", oidcServer.URL,
+				// Leaving the rest of the flags as defaults.
+			)
+
+			// Ensure that the server starts up without error.
+			clitest.Start(t, inv)
+			accessURL := waitAccessURL(t, cfg)
+			client := codersdk.New(accessURL)
+
+			randPassword, err := cryptorand.String(24)
+			require.NoError(t, err)
+
+			_, err = client.CreateFirstUser(ctx, codersdk.CreateFirstUserRequest{
+				Email:    "admin@coder.com",
+				Password: randPassword,
+				Username: "admin",
+				Trial:    true,
+			})
+			require.NoError(t, err)
+
+			loginResp, err := client.LoginWithPassword(ctx, codersdk.LoginWithPasswordRequest{
+				Email:    "admin@coder.com",
+				Password: randPassword,
+			})
+			require.NoError(t, err)
+			client.SetSessionToken(loginResp.SessionToken)
+
+			deploymentConfig, err := client.DeploymentConfig(ctx)
+			require.NoError(t, err)
+
+			// Ensure that the OIDC provider is configured correctly.
+			require.Equal(t, "fake", deploymentConfig.Values.OIDC.ClientID.Value())
+			// The client secret is not returned from the API.
+			require.Empty(t, deploymentConfig.Values.OIDC.ClientSecret.Value())
+			require.Equal(t, oidcServer.URL, deploymentConfig.Values.OIDC.IssuerURL.Value())
+			// These are the default values returned from the API. See codersdk/deployment.go for the default values.
+			require.True(t, deploymentConfig.Values.OIDC.AllowSignups.Value())
+			require.Empty(t, deploymentConfig.Values.OIDC.EmailDomain.Value())
+			require.Equal(t, []string{"openid", "profile", "email"}, deploymentConfig.Values.OIDC.Scopes.Value())
+			require.False(t, deploymentConfig.Values.OIDC.IgnoreEmailVerified.Value())
+			require.Equal(t, "preferred_username", deploymentConfig.Values.OIDC.UsernameField.Value())
+			require.Equal(t, "email", deploymentConfig.Values.OIDC.EmailField.Value())
+			require.Equal(t, map[string]string{"access_type": "offline"}, deploymentConfig.Values.OIDC.AuthURLParams.Value)
+			require.False(t, deploymentConfig.Values.OIDC.IgnoreUserInfo.Value())
+			require.Empty(t, deploymentConfig.Values.OIDC.GroupField.Value())
+			require.Empty(t, deploymentConfig.Values.OIDC.GroupMapping.Value)
+			require.Equal(t, "OpenID Connect", deploymentConfig.Values.OIDC.SignInText.Value())
+			require.Empty(t, deploymentConfig.Values.OIDC.IconURL.Value())
+		})
+
+		t.Run("Overrides", func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitMedium)
+			defer cancel()
+
+			// Startup a fake server that just responds to .well-known/openid-configuration
+			// This is just needed to get Coder to start up.
+			oidcServer := httptest.NewServer(nil)
+			fakeWellKnownHandler := func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				payload := fmt.Sprintf("{\"issuer\": %q}", oidcServer.URL)
+				_, _ = w.Write([]byte(payload))
+			}
+			oidcServer.Config.Handler = http.HandlerFunc(fakeWellKnownHandler)
+			t.Cleanup(oidcServer.Close)
+
+			inv, cfg := clitest.New(t,
+				"server",
+				"--in-memory",
+				"--http-address", ":0",
+				"--access-url", "http://example.com",
+				"--oidc-client-id", "fake",
+				"--oidc-client-secret", "fake",
+				"--oidc-issuer-url", oidcServer.URL,
+				// The following values have defaults that we want to override.
+				"--oidc-allow-signups=false",
+				"--oidc-email-domain", "example.com",
+				"--oidc-scopes", "360noscope",
+				"--oidc-ignore-email-verified",
+				"--oidc-username-field", "not_preferred_username",
+				"--oidc-email-field", "not_email",
+				"--oidc-auth-url-params", `{"prompt":"consent"}`,
+				"--oidc-ignore-userinfo",
+				"--oidc-group-field", "serious_business_unit",
+				"--oidc-group-mapping", `{"serious_business_unit": "serious_business_unit"}`,
+				"--oidc-sign-in-text", "Sign In With Coder",
+				"--oidc-icon-url", "https://example.com/icon.png",
+			)
+
+			// Ensure that the server starts up without error.
+			clitest.Start(t, inv)
+			accessURL := waitAccessURL(t, cfg)
+			client := codersdk.New(accessURL)
+
+			randPassword, err := cryptorand.String(24)
+			require.NoError(t, err)
+
+			_, err = client.CreateFirstUser(ctx, codersdk.CreateFirstUserRequest{
+				Email:    "admin@coder.com",
+				Password: randPassword,
+				Username: "admin",
+				Trial:    true,
+			})
+			require.NoError(t, err)
+
+			loginResp, err := client.LoginWithPassword(ctx, codersdk.LoginWithPasswordRequest{
+				Email:    "admin@coder.com",
+				Password: randPassword,
+			})
+			require.NoError(t, err)
+			client.SetSessionToken(loginResp.SessionToken)
+
+			deploymentConfig, err := client.DeploymentConfig(ctx)
+			require.NoError(t, err)
+
+			// Ensure that the OIDC provider is configured correctly.
+			require.Equal(t, "fake", deploymentConfig.Values.OIDC.ClientID.Value())
+			// The client secret is not returned from the API.
+			require.Empty(t, deploymentConfig.Values.OIDC.ClientSecret.Value())
+			require.Equal(t, oidcServer.URL, deploymentConfig.Values.OIDC.IssuerURL.Value())
+			// These are values that we want to make sure were overridden.
+			require.False(t, deploymentConfig.Values.OIDC.AllowSignups.Value())
+			require.Equal(t, []string{"example.com"}, deploymentConfig.Values.OIDC.EmailDomain.Value())
+			require.Equal(t, []string{"360noscope"}, deploymentConfig.Values.OIDC.Scopes.Value())
+			require.True(t, deploymentConfig.Values.OIDC.IgnoreEmailVerified.Value())
+			require.Equal(t, "not_preferred_username", deploymentConfig.Values.OIDC.UsernameField.Value())
+			require.Equal(t, "not_email", deploymentConfig.Values.OIDC.EmailField.Value())
+			require.True(t, deploymentConfig.Values.OIDC.IgnoreUserInfo.Value())
+			require.Equal(t, map[string]string{"prompt": "consent"}, deploymentConfig.Values.OIDC.AuthURLParams.Value)
+			require.Equal(t, "serious_business_unit", deploymentConfig.Values.OIDC.GroupField.Value())
+			require.Equal(t, map[string]string{"serious_business_unit": "serious_business_unit"}, deploymentConfig.Values.OIDC.GroupMapping.Value)
+			require.Equal(t, "Sign In With Coder", deploymentConfig.Values.OIDC.SignInText.Value())
+			require.Equal(t, "https://example.com/icon.png", deploymentConfig.Values.OIDC.IconURL.Value().String())
+		})
 	})
 
 	t.Run("RateLimit", func(t *testing.T) {
@@ -1123,7 +1199,7 @@ func TestServer(t *testing.T) {
 			)
 			serverErr := make(chan error, 1)
 			go func() {
-				serverErr <- root.ExecuteContext(ctx)
+				serverErr <- root.WithContext(ctx).Run()
 			}()
 			accessURL := waitAccessURL(t, cfg)
 			client := codersdk.New(accessURL)
@@ -1152,7 +1228,7 @@ func TestServer(t *testing.T) {
 			)
 			serverErr := make(chan error, 1)
 			go func() {
-				serverErr <- root.ExecuteContext(ctx)
+				serverErr <- root.WithContext(ctx).Run()
 			}()
 			accessURL := waitAccessURL(t, cfg)
 			client := codersdk.New(accessURL)
@@ -1180,7 +1256,7 @@ func TestServer(t *testing.T) {
 			)
 			serverErr := make(chan error, 1)
 			go func() {
-				serverErr <- root.ExecuteContext(ctx)
+				serverErr <- root.WithContext(ctx).Run()
 			}()
 			accessURL := waitAccessURL(t, cfg)
 			client := codersdk.New(accessURL)
@@ -1230,9 +1306,9 @@ func TestServer(t *testing.T) {
 				"--access-url", "http://example.com",
 				"--log-human", fiName,
 			)
-			clitest.Start(context.Background(), t, root)
+			clitest.Start(t, root)
 
-			waitFile(t, fiName, testutil.WaitShort)
+			waitFile(t, fiName, testutil.WaitLong)
 		})
 
 		t.Run("Human", func(t *testing.T) {
@@ -1247,7 +1323,7 @@ func TestServer(t *testing.T) {
 				"--access-url", "http://example.com",
 				"--log-human", fi,
 			)
-			clitest.Start(context.Background(), t, root)
+			clitest.Start(t, root)
 
 			waitFile(t, fi, testutil.WaitShort)
 		})
@@ -1264,7 +1340,7 @@ func TestServer(t *testing.T) {
 				"--access-url", "http://example.com",
 				"--log-json", fi,
 			)
-			clitest.Start(context.Background(), t, root)
+			clitest.Start(t, root)
 
 			waitFile(t, fi, testutil.WaitShort)
 		})
@@ -1276,7 +1352,7 @@ func TestServer(t *testing.T) {
 
 			fi := testutil.TempFile(t, "", "coder-logging-test-*")
 
-			root, _ := clitest.New(t,
+			inv, _ := clitest.New(t,
 				"server",
 				"--verbose",
 				"--in-memory",
@@ -1286,22 +1362,13 @@ func TestServer(t *testing.T) {
 			)
 			// Attach pty so we get debug output from the command if this test
 			// fails.
-			pty := ptytest.New(t)
-			root.SetOut(pty.Output())
-			root.SetErr(pty.Output())
+			pty := ptytest.New(t).Attach(inv)
 
-			serverErr := make(chan error, 1)
-			go func() {
-				serverErr <- root.ExecuteContext(ctx)
-			}()
-			defer func() {
-				cancelFunc()
-				<-serverErr
-			}()
+			clitest.Start(t, inv.WithContext(ctx))
 
 			// Wait for server to listen on HTTP, this is a good
 			// starting point for expecting logs.
-			_ = pty.ExpectMatchContext(ctx, "Started HTTP listener at ")
+			_ = pty.ExpectMatchContext(ctx, "Started HTTP listener at")
 
 			waitFile(t, fi, testutil.WaitSuperLong)
 		})
@@ -1319,7 +1386,7 @@ func TestServer(t *testing.T) {
 			// which can take a long time and end up failing the test.
 			// This is why we wait extra long below for server to listen on
 			// HTTP.
-			root, _ := clitest.New(t,
+			inv, _ := clitest.New(t,
 				"server",
 				"--verbose",
 				"--in-memory",
@@ -1331,15 +1398,13 @@ func TestServer(t *testing.T) {
 			)
 			// Attach pty so we get debug output from the command if this test
 			// fails.
-			pty := ptytest.New(t)
-			root.SetOut(pty.Output())
-			root.SetErr(pty.Output())
+			pty := ptytest.New(t).Attach(inv)
 
-			clitest.Start(ctx, t, root)
+			clitest.Start(t, inv)
 
 			// Wait for server to listen on HTTP, this is a good
 			// starting point for expecting logs.
-			_ = pty.ExpectMatchContext(ctx, "Started HTTP listener at ")
+			_ = pty.ExpectMatchContext(ctx, "Started HTTP listener at")
 
 			waitFile(t, fi1, testutil.WaitSuperLong)
 			waitFile(t, fi2, testutil.WaitSuperLong)

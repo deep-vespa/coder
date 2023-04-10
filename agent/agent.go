@@ -2,12 +2,14 @@ package agent
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -41,6 +43,7 @@ import (
 	"cdr.dev/slog"
 	"github.com/coder/coder/agent/usershell"
 	"github.com/coder/coder/buildinfo"
+	"github.com/coder/coder/coderd/database"
 	"github.com/coder/coder/coderd/gitauth"
 	"github.com/coder/coder/codersdk"
 	"github.com/coder/coder/codersdk/agentsdk"
@@ -78,15 +81,19 @@ type Options struct {
 	EnvironmentVariables   map[string]string
 	Logger                 slog.Logger
 	AgentPorts             map[int]string
+	SSHMaxTimeout          time.Duration
+	TailnetListenPort      uint16
 }
 
 type Client interface {
-	Metadata(ctx context.Context) (agentsdk.Metadata, error)
+	Manifest(ctx context.Context) (agentsdk.Manifest, error)
 	Listen(ctx context.Context) (net.Conn, error)
 	ReportStats(ctx context.Context, log slog.Logger, statsChan <-chan *agentsdk.Stats, setInterval func(time.Duration)) (io.Closer, error)
 	PostLifecycle(ctx context.Context, state agentsdk.PostLifecycleRequest) error
 	PostAppHealth(ctx context.Context, req agentsdk.PostAppHealthsRequest) error
 	PostStartup(ctx context.Context, req agentsdk.PostStartupRequest) error
+	PostMetadata(ctx context.Context, key string, req agentsdk.PostMetadataRequest) error
+	PatchStartupLogs(ctx context.Context, req agentsdk.PatchStartupLogs) error
 }
 
 func New(options Options) io.Closer {
@@ -112,6 +119,7 @@ func New(options Options) io.Closer {
 	}
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	a := &agent{
+		tailnetListenPort:      options.TailnetListenPort,
 		reconnectingPTYTimeout: options.ReconnectingPTYTimeout,
 		logger:                 options.Logger,
 		closeCancel:            cancelFunc,
@@ -126,18 +134,20 @@ func New(options Options) io.Closer {
 		lifecycleReported:      make(chan codersdk.WorkspaceAgentLifecycle, 1),
 		ignorePorts:            options.AgentPorts,
 		connStatsChan:          make(chan *agentsdk.Stats, 1),
+		sshMaxTimeout:          options.SSHMaxTimeout,
 	}
 	a.init(ctx)
 	return a
 }
 
 type agent struct {
-	logger        slog.Logger
-	client        Client
-	exchangeToken func(ctx context.Context) (string, error)
-	filesystem    afero.Fs
-	logDir        string
-	tempDir       string
+	logger            slog.Logger
+	client            Client
+	exchangeToken     func(ctx context.Context) (string, error)
+	tailnetListenPort uint16
+	filesystem        afero.Fs
+	logDir            string
+	tempDir           string
 	// ignorePorts tells the api handler which ports to ignore when
 	// listing all listening ports. This is helpful to hide ports that
 	// are used by the agent, that the user does not care about.
@@ -152,10 +162,11 @@ type agent struct {
 	closed        chan struct{}
 
 	envVars map[string]string
-	// metadata is atomic because values can change after reconnection.
-	metadata     atomic.Value
-	sessionToken atomic.Pointer[string]
-	sshServer    *ssh.Server
+	// manifest is atomic because values can change after reconnection.
+	manifest      atomic.Pointer[agentsdk.Manifest]
+	sessionToken  atomic.Pointer[string]
+	sshServer     *ssh.Server
+	sshMaxTimeout time.Duration
 
 	lifecycleUpdate   chan struct{}
 	lifecycleReported chan codersdk.WorkspaceAgentLifecycle
@@ -178,6 +189,7 @@ type agent struct {
 // failure, you'll want the agent to reconnect.
 func (a *agent) runLoop(ctx context.Context) {
 	go a.reportLifecycleLoop(ctx)
+	go a.reportMetadataLoop(ctx)
 
 	for retrier := retry.New(100*time.Millisecond, 10*time.Second); retrier.Wait(ctx); {
 		a.logger.Info(ctx, "connecting to coderd")
@@ -197,6 +209,185 @@ func (a *agent) runLoop(ctx context.Context) {
 			continue
 		}
 		a.logger.Warn(ctx, "run exited with error", slog.Error(err))
+	}
+}
+
+func (a *agent) collectMetadata(ctx context.Context, md codersdk.WorkspaceAgentMetadataDescription) *codersdk.WorkspaceAgentMetadataResult {
+	var out bytes.Buffer
+	result := &codersdk.WorkspaceAgentMetadataResult{
+		// CollectedAt is set here for testing purposes and overrode by
+		// the server to the time the server received the result to protect
+		// against clock skew.
+		//
+		// In the future, the server may accept the timestamp from the agent
+		// if it is certain the clocks are in sync.
+		CollectedAt: time.Now(),
+	}
+	cmd, err := a.createCommand(ctx, md.Script, nil)
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+
+	// The error isn't mutually exclusive with useful output.
+	err = cmd.Run()
+
+	const bufLimit = 10 << 10
+	if out.Len() > bufLimit {
+		err = errors.Join(
+			err,
+			xerrors.Errorf("output truncated from %v to %v bytes", out.Len(), bufLimit),
+		)
+		out.Truncate(bufLimit)
+	}
+
+	if err != nil {
+		result.Error = err.Error()
+	}
+	result.Value = out.String()
+	return result
+}
+
+func adjustIntervalForTests(i int64) time.Duration {
+	// In tests we want to set shorter intervals because engineers are
+	// impatient.
+	base := time.Second
+	if flag.Lookup("test.v") != nil {
+		base = time.Millisecond * 100
+	}
+	return time.Duration(i) * base
+}
+
+type metadataResultAndKey struct {
+	result *codersdk.WorkspaceAgentMetadataResult
+	key    string
+}
+
+type trySingleflight struct {
+	m sync.Map
+}
+
+func (t *trySingleflight) Do(key string, fn func()) {
+	_, loaded := t.m.LoadOrStore(key, struct{}{})
+	if !loaded {
+		// There is already a goroutine running for this key.
+		return
+	}
+
+	defer t.m.Delete(key)
+	fn()
+}
+
+func (a *agent) reportMetadataLoop(ctx context.Context) {
+	baseInterval := adjustIntervalForTests(1)
+
+	const metadataLimit = 128
+
+	var (
+		baseTicker       = time.NewTicker(baseInterval)
+		lastCollectedAts = make(map[string]time.Time)
+		metadataResults  = make(chan metadataResultAndKey, metadataLimit)
+	)
+	defer baseTicker.Stop()
+
+	// We use a custom singleflight that immediately returns if there is already
+	// a goroutine running for a given key. This is to prevent a build-up of
+	// goroutines waiting on Do when the script takes many multiples of
+	// baseInterval to run.
+	var flight trySingleflight
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case mr := <-metadataResults:
+			lastCollectedAts[mr.key] = mr.result.CollectedAt
+			err := a.client.PostMetadata(ctx, mr.key, *mr.result)
+			if err != nil {
+				a.logger.Error(ctx, "report metadata", slog.Error(err))
+			}
+		case <-baseTicker.C:
+		}
+
+		if len(metadataResults) > 0 {
+			// The inner collection loop expects the channel is empty before spinning up
+			// all the collection goroutines.
+			a.logger.Debug(
+				ctx, "metadata collection backpressured",
+				slog.F("queue_len", len(metadataResults)),
+			)
+			continue
+		}
+
+		manifest := a.manifest.Load()
+		if manifest == nil {
+			continue
+		}
+
+		if len(manifest.Metadata) > metadataLimit {
+			a.logger.Error(
+				ctx, "metadata limit exceeded",
+				slog.F("limit", metadataLimit), slog.F("got", len(manifest.Metadata)),
+			)
+			continue
+		}
+
+		// If the manifest changes (e.g. on agent reconnect) we need to
+		// purge old cache values to prevent lastCollectedAt from growing
+		// boundlessly.
+		for key := range lastCollectedAts {
+			if slices.IndexFunc(manifest.Metadata, func(md codersdk.WorkspaceAgentMetadataDescription) bool {
+				return md.Key == key
+			}) < 0 {
+				delete(lastCollectedAts, key)
+			}
+		}
+
+		// Spawn a goroutine for each metadata collection, and use a
+		// channel to synchronize the results and avoid both messy
+		// mutex logic and overloading the API.
+		for _, md := range manifest.Metadata {
+			collectedAt, ok := lastCollectedAts[md.Key]
+			if ok {
+				// If the interval is zero, we assume the user just wants
+				// a single collection at startup, not a spinning loop.
+				if md.Interval == 0 {
+					continue
+				}
+				// The last collected value isn't quite stale yet, so we skip it.
+				if collectedAt.Add(
+					adjustIntervalForTests(md.Interval),
+				).After(time.Now()) {
+					continue
+				}
+			}
+
+			md := md
+			// We send the result to the channel in the goroutine to avoid
+			// sending the same result multiple times. So, we don't care about
+			// the return values.
+			go flight.Do(md.Key, func() {
+				timeout := md.Timeout
+				if timeout == 0 {
+					timeout = md.Interval
+				}
+				ctx, cancel := context.WithTimeout(ctx,
+					time.Duration(timeout)*time.Second,
+				)
+				defer cancel()
+
+				select {
+				case <-ctx.Done():
+				case metadataResults <- metadataResultAndKey{
+					key:    md.Key,
+					result: a.collectMetadata(ctx, md),
+				}:
+				}
+			})
+		}
 	}
 }
 
@@ -274,40 +465,40 @@ func (a *agent) run(ctx context.Context) error {
 	}
 	a.sessionToken.Store(&sessionToken)
 
-	metadata, err := a.client.Metadata(ctx)
+	manifest, err := a.client.Manifest(ctx)
 	if err != nil {
 		return xerrors.Errorf("fetch metadata: %w", err)
 	}
-	a.logger.Info(ctx, "fetched metadata", slog.F("metadata", metadata))
+	a.logger.Info(ctx, "fetched manifest", slog.F("manifest", manifest))
 
 	// Expand the directory and send it back to coderd so external
 	// applications that rely on the directory can use it.
 	//
 	// An example is VS Code Remote, which must know the directory
 	// before initializing a connection.
-	metadata.Directory, err = expandDirectory(metadata.Directory)
+	manifest.Directory, err = expandDirectory(manifest.Directory)
 	if err != nil {
 		return xerrors.Errorf("expand directory: %w", err)
 	}
 	err = a.client.PostStartup(ctx, agentsdk.PostStartupRequest{
 		Version:           buildinfo.Version(),
-		ExpandedDirectory: metadata.Directory,
+		ExpandedDirectory: manifest.Directory,
 	})
 	if err != nil {
 		return xerrors.Errorf("update workspace agent version: %w", err)
 	}
 
-	oldMetadata := a.metadata.Swap(metadata)
+	oldManifest := a.manifest.Swap(&manifest)
 
 	// The startup script should only execute on the first run!
-	if oldMetadata == nil {
+	if oldManifest == nil {
 		a.setLifecycle(ctx, codersdk.WorkspaceAgentLifecycleStarting)
 
 		// Perform overrides early so that Git auth can work even if users
 		// connect to a workspace that is not yet ready. We don't run this
 		// concurrently with the startup script to avoid conflicts between
 		// them.
-		if metadata.GitAuthConfigs > 0 {
+		if manifest.GitAuthConfigs > 0 {
 			// If this fails, we should consider surfacing the error in the
 			// startup log and setting the lifecycle state to be "start_error"
 			// (after startup script completion), but for now we'll just log it.
@@ -322,7 +513,7 @@ func (a *agent) run(ctx context.Context) error {
 		scriptStart := time.Now()
 		err = a.trackConnGoroutine(func() {
 			defer close(scriptDone)
-			scriptDone <- a.runStartupScript(ctx, metadata.StartupScript)
+			scriptDone <- a.runStartupScript(ctx, manifest.StartupScript)
 		})
 		if err != nil {
 			return xerrors.Errorf("track startup script: %w", err)
@@ -331,8 +522,8 @@ func (a *agent) run(ctx context.Context) error {
 			var timeout <-chan time.Time
 			// If timeout is zero, an older version of the coder
 			// provider was used. Otherwise a timeout is always > 0.
-			if metadata.StartupScriptTimeout > 0 {
-				t := time.NewTimer(metadata.StartupScriptTimeout)
+			if manifest.StartupScriptTimeout > 0 {
+				t := time.NewTimer(manifest.StartupScriptTimeout)
 				defer t.Stop()
 				timeout = t.C
 			}
@@ -349,7 +540,7 @@ func (a *agent) run(ctx context.Context) error {
 				return
 			}
 			// Only log if there was a startup script.
-			if metadata.StartupScript != "" {
+			if manifest.StartupScript != "" {
 				execTime := time.Since(scriptStart)
 				if err != nil {
 					a.logger.Warn(ctx, "startup script failed", slog.F("execution_time", execTime), slog.Error(err))
@@ -366,13 +557,13 @@ func (a *agent) run(ctx context.Context) error {
 	appReporterCtx, appReporterCtxCancel := context.WithCancel(ctx)
 	defer appReporterCtxCancel()
 	go NewWorkspaceAppHealthReporter(
-		a.logger, metadata.Apps, a.client.PostAppHealth)(appReporterCtx)
+		a.logger, manifest.Apps, a.client.PostAppHealth)(appReporterCtx)
 
 	a.closeMutex.Lock()
 	network := a.network
 	a.closeMutex.Unlock()
 	if network == nil {
-		network, err = a.createTailnet(ctx, metadata.DERPMap)
+		network, err = a.createTailnet(ctx, manifest.DERPMap)
 		if err != nil {
 			return xerrors.Errorf("create tailnet: %w", err)
 		}
@@ -391,7 +582,7 @@ func (a *agent) run(ctx context.Context) error {
 		a.startReportingConnectionStats(ctx)
 	} else {
 		// Update the DERP map!
-		network.SetDERPMap(metadata.DERPMap)
+		network.SetDERPMap(manifest.DERPMap)
 	}
 
 	a.logger.Debug(ctx, "running tailnet connection coordinator")
@@ -418,9 +609,10 @@ func (a *agent) trackConnGoroutine(fn func()) error {
 
 func (a *agent) createTailnet(ctx context.Context, derpMap *tailcfg.DERPMap) (_ *tailnet.Conn, err error) {
 	network, err := tailnet.NewConn(&tailnet.Options{
-		Addresses: []netip.Prefix{netip.PrefixFrom(codersdk.WorkspaceAgentIP, 128)},
-		DERPMap:   derpMap,
-		Logger:    a.logger.Named("tailnet"),
+		Addresses:  []netip.Prefix{netip.PrefixFrom(codersdk.WorkspaceAgentIP, 128)},
+		DERPMap:    derpMap,
+		Logger:     a.logger.Named("tailnet"),
+		ListenPort: a.tailnetListenPort,
 	})
 	if err != nil {
 		return nil, xerrors.Errorf("create tailnet: %w", err)
@@ -639,13 +831,32 @@ func (a *agent) runScript(ctx context.Context, lifecycle, script string) error {
 	}
 
 	a.logger.Info(ctx, "running script", slog.F("lifecycle", lifecycle), slog.F("script", script))
-	writer, err := a.filesystem.OpenFile(filepath.Join(a.logDir, fmt.Sprintf("coder-%s-script.log", lifecycle)), os.O_CREATE|os.O_RDWR, 0o600)
+	fileWriter, err := a.filesystem.OpenFile(filepath.Join(a.logDir, fmt.Sprintf("coder-%s-script.log", lifecycle)), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return xerrors.Errorf("open %s script log file: %w", lifecycle, err)
 	}
 	defer func() {
-		_ = writer.Close()
+		_ = fileWriter.Close()
 	}()
+
+	var writer io.Writer = fileWriter
+	if lifecycle == "startup" {
+		// Create pipes for startup logs reader and writer
+		logsReader, logsWriter := io.Pipe()
+		defer func() {
+			_ = logsReader.Close()
+		}()
+		writer = io.MultiWriter(fileWriter, logsWriter)
+		flushedLogs, err := a.trackScriptLogs(ctx, logsReader)
+		if err != nil {
+			return xerrors.Errorf("track script logs: %w", err)
+		}
+		defer func() {
+			_ = logsWriter.Close()
+			<-flushedLogs
+		}()
+	}
+
 	cmd, err := a.createCommand(ctx, script, nil)
 	if err != nil {
 		return xerrors.Errorf("create command: %w", err)
@@ -661,8 +872,122 @@ func (a *agent) runScript(ctx context.Context, lifecycle, script string) error {
 
 		return xerrors.Errorf("run: %w", err)
 	}
-
 	return nil
+}
+
+func (a *agent) trackScriptLogs(ctx context.Context, reader io.Reader) (chan struct{}, error) {
+	// Initialize variables for log management
+	queuedLogs := make([]agentsdk.StartupLog, 0)
+	var flushLogsTimer *time.Timer
+	var logMutex sync.Mutex
+	logsFlushed := sync.NewCond(&sync.Mutex{})
+	var logsSending bool
+	defer func() {
+		logMutex.Lock()
+		if flushLogsTimer != nil {
+			flushLogsTimer.Stop()
+		}
+		logMutex.Unlock()
+	}()
+
+	// sendLogs function uploads the queued logs to the server
+	sendLogs := func() {
+		// Lock logMutex and check if logs are already being sent
+		logMutex.Lock()
+		if logsSending {
+			logMutex.Unlock()
+			return
+		}
+		if flushLogsTimer != nil {
+			flushLogsTimer.Stop()
+		}
+		if len(queuedLogs) == 0 {
+			logMutex.Unlock()
+			return
+		}
+		// Move the current queued logs to logsToSend and clear the queue
+		logsToSend := queuedLogs
+		logsSending = true
+		queuedLogs = make([]agentsdk.StartupLog, 0)
+		logMutex.Unlock()
+
+		// Retry uploading logs until successful or a specific error occurs
+		for r := retry.New(time.Second, 5*time.Second); r.Wait(ctx); {
+			err := a.client.PatchStartupLogs(ctx, agentsdk.PatchStartupLogs{
+				Logs: logsToSend,
+			})
+			if err == nil {
+				break
+			}
+			var sdkErr *codersdk.Error
+			if errors.As(err, &sdkErr) {
+				if sdkErr.StatusCode() == http.StatusRequestEntityTooLarge {
+					a.logger.Warn(ctx, "startup logs too large, dropping logs")
+					break
+				}
+			}
+			a.logger.Error(ctx, "upload startup logs", slog.Error(err), slog.F("to_send", logsToSend))
+		}
+		// Reset logsSending flag
+		logMutex.Lock()
+		logsSending = false
+		flushLogsTimer.Reset(100 * time.Millisecond)
+		logMutex.Unlock()
+		logsFlushed.Broadcast()
+	}
+	// queueLog function appends a log to the queue and triggers sendLogs if necessary
+	queueLog := func(log agentsdk.StartupLog) {
+		logMutex.Lock()
+		defer logMutex.Unlock()
+
+		// Append log to the queue
+		queuedLogs = append(queuedLogs, log)
+
+		// If there are more than 100 logs, send them immediately
+		if len(queuedLogs) > 100 {
+			// Don't early return after this, because we still want
+			// to reset the timer just in case logs come in while
+			// we're sending.
+			go sendLogs()
+		}
+		// Reset or set the flushLogsTimer to trigger sendLogs after 100 milliseconds
+		if flushLogsTimer != nil {
+			flushLogsTimer.Reset(100 * time.Millisecond)
+			return
+		}
+		flushLogsTimer = time.AfterFunc(100*time.Millisecond, sendLogs)
+	}
+
+	// It's important that we either flush or drop all logs before returning
+	// because the startup state is reported after flush.
+	//
+	// It'd be weird for the startup state to be ready, but logs are still
+	// coming in.
+	logsFinished := make(chan struct{})
+	err := a.trackConnGoroutine(func() {
+		scanner := bufio.NewScanner(reader)
+		for scanner.Scan() {
+			queueLog(agentsdk.StartupLog{
+				CreatedAt: database.Now(),
+				Output:    scanner.Text(),
+			})
+		}
+		defer close(logsFinished)
+		logsFlushed.L.Lock()
+		for {
+			logMutex.Lock()
+			if len(queuedLogs) == 0 {
+				logMutex.Unlock()
+				break
+			}
+			logMutex.Unlock()
+			logsFlushed.Wait()
+		}
+	})
+	if err != nil {
+		return nil, xerrors.Errorf("track conn goroutine: %w", err)
+	}
+	return logsFinished, nil
 }
 
 func (a *agent) init(ctx context.Context) {
@@ -706,6 +1031,7 @@ func (a *agent) init(ctx context.Context) {
 				_ = session.Exit(MagicSessionErrorCode)
 				return
 			}
+			_ = session.Exit(0)
 		},
 		HostSigners: []ssh.Signer{randomSigner},
 		LocalPortForwardingCallback: func(ctx ssh.Context, destinationHost string, destinationPort uint32) bool {
@@ -780,15 +1106,16 @@ func (a *agent) init(ctx context.Context) {
 				_ = session.Exit(1)
 			},
 		},
+		MaxTimeout: a.sshMaxTimeout,
 	}
 
 	go a.runLoop(ctx)
 }
 
 // createCommand processes raw command input with OpenSSH-like behavior.
-// If the rawCommand provided is empty, it will default to the users shell.
+// If the script provided is empty, it will default to the users shell.
 // This injects environment variables specified by the user at launch too.
-func (a *agent) createCommand(ctx context.Context, rawCommand string, env []string) (*exec.Cmd, error) {
+func (a *agent) createCommand(ctx context.Context, script string, env []string) (*exec.Cmd, error) {
 	currentUser, err := user.Current()
 	if err != nil {
 		return nil, xerrors.Errorf("get current user: %w", err)
@@ -800,13 +1127,9 @@ func (a *agent) createCommand(ctx context.Context, rawCommand string, env []stri
 		return nil, xerrors.Errorf("get user shell: %w", err)
 	}
 
-	rawMetadata := a.metadata.Load()
-	if rawMetadata == nil {
+	manifest := a.manifest.Load()
+	if manifest == nil {
 		return nil, xerrors.Errorf("no metadata was provided")
-	}
-	metadata, valid := rawMetadata.(agentsdk.Metadata)
-	if !valid {
-		return nil, xerrors.Errorf("metadata is the wrong type: %T", metadata)
 	}
 
 	// OpenSSH executes all commands with the users current shell.
@@ -815,11 +1138,11 @@ func (a *agent) createCommand(ctx context.Context, rawCommand string, env []stri
 	if runtime.GOOS == "windows" {
 		caller = "/c"
 	}
-	args := []string{caller, rawCommand}
+	args := []string{caller, script}
 
 	// gliderlabs/ssh returns a command slice of zero
 	// when a shell is requested.
-	if len(rawCommand) == 0 {
+	if len(script) == 0 {
 		args = []string{}
 		if runtime.GOOS != "windows" {
 			// On Linux and macOS, we should start a login
@@ -829,7 +1152,7 @@ func (a *agent) createCommand(ctx context.Context, rawCommand string, env []stri
 	}
 
 	cmd := exec.CommandContext(ctx, shell, args...)
-	cmd.Dir = metadata.Directory
+	cmd.Dir = manifest.Directory
 
 	// If the metadata directory doesn't exist, we run the command
 	// in the users home directory.
@@ -870,14 +1193,14 @@ func (a *agent) createCommand(ctx context.Context, rawCommand string, env []stri
 
 	// This adds the ports dialog to code-server that enables
 	// proxying a port dynamically.
-	cmd.Env = append(cmd.Env, fmt.Sprintf("VSCODE_PROXY_URI=%s", metadata.VSCodePortProxyURI))
+	cmd.Env = append(cmd.Env, fmt.Sprintf("VSCODE_PROXY_URI=%s", manifest.VSCodePortProxyURI))
 
 	// Hide Coder message on code-server's "Getting Started" page
 	cmd.Env = append(cmd.Env, "CS_DISABLE_GETTING_STARTED_OVERRIDE=true")
 
 	// Load environment variables passed via the agent.
 	// These should override all variables we manually specify.
-	for envKey, value := range metadata.EnvironmentVariables {
+	for envKey, value := range manifest.EnvironmentVariables {
 		// Expanding environment variables allows for customization
 		// of the $PATH, among other variables. Customers can prepend
 		// or append to the $PATH, so allowing expand is required!
@@ -940,9 +1263,9 @@ func (a *agent) handleSSHSession(session ssh.Session) (retErr error) {
 		session.DisablePTYEmulation()
 
 		if !isQuietLogin(session.RawCommand()) {
-			metadata, ok := a.metadata.Load().(agentsdk.Metadata)
-			if ok {
-				err = showMOTD(session, metadata.MOTDFile)
+			manifest := a.manifest.Load()
+			if manifest != nil {
+				err = showMOTD(session, manifest.MOTDFile)
 				if err != nil {
 					a.logger.Error(ctx, "show MOTD", slog.Error(err))
 				}
@@ -961,7 +1284,9 @@ func (a *agent) handleSSHSession(session ssh.Session) (retErr error) {
 		if err != nil {
 			return xerrors.Errorf("start command: %w", err)
 		}
+		var wg sync.WaitGroup
 		defer func() {
+			defer wg.Wait()
 			closeErr := ptty.Close()
 			if closeErr != nil {
 				a.logger.Warn(ctx, "failed to close tty", slog.Error(closeErr))
@@ -973,17 +1298,52 @@ func (a *agent) handleSSHSession(session ssh.Session) (retErr error) {
 		go func() {
 			for win := range windowSize {
 				resizeErr := ptty.Resize(uint16(win.Height), uint16(win.Width))
-				if resizeErr != nil {
+				// If the pty is closed, then command has exited, no need to log.
+				if resizeErr != nil && !errors.Is(resizeErr, pty.ErrClosed) {
 					a.logger.Warn(ctx, "failed to resize tty", slog.Error(resizeErr))
 				}
 			}
 		}()
+		// We don't add input copy to wait group because
+		// it won't return until the session is closed.
 		go func() {
 			_, _ = io.Copy(ptty.Input(), session)
 		}()
+
+		// In low parallelism scenarios, the command may exit and we may close
+		// the pty before the output copy has started. This can result in the
+		// output being lost. To avoid this, we wait for the output copy to
+		// start before waiting for the command to exit. This ensures that the
+		// output copy goroutine will be scheduled before calling close on the
+		// pty. This shouldn't be needed because of `pty.Dup()` below, but it
+		// may not be supported on all platforms.
+		outputCopyStarted := make(chan struct{})
+		ptyOutput := func() io.ReadCloser {
+			defer close(outputCopyStarted)
+			// Try to dup so we can separate stdin and stdout closure.
+			// Once the original pty is closed, the dup will return
+			// input/output error once the buffered data has been read.
+			stdout, err := ptty.Dup()
+			if err == nil {
+				return stdout
+			}
+			// If we can't dup, we shouldn't close
+			// the fd since it's tied to stdin.
+			return readNopCloser{ptty.Output()}
+		}
+		wg.Add(1)
 		go func() {
-			_, _ = io.Copy(session, ptty.Output())
+			// Ensure data is flushed to session on command exit, if we
+			// close the session too soon, we might lose data.
+			defer wg.Done()
+
+			stdout := ptyOutput()
+			defer stdout.Close()
+
+			_, _ = io.Copy(session, stdout)
 		}()
+		<-outputCopyStarted
+
 		err = process.Wait()
 		var exitErr *exec.ExitError
 		// ExitErrors just mean the command we run returned a non-zero exit code, which is normal
@@ -1012,6 +1372,11 @@ func (a *agent) handleSSHSession(session ssh.Session) (retErr error) {
 	}
 	return cmd.Wait()
 }
+
+type readNopCloser struct{ io.Reader }
+
+// Close implements io.Closer.
+func (readNopCloser) Close() error { return nil }
 
 func (a *agent) handleReconnectingPTY(ctx context.Context, logger slog.Logger, msg codersdk.WorkspaceAgentReconnectingPTYInit, conn net.Conn) (retErr error) {
 	defer conn.Close()
@@ -1330,19 +1695,19 @@ func (a *agent) Close() error {
 	a.setLifecycle(ctx, codersdk.WorkspaceAgentLifecycleShuttingDown)
 
 	lifecycleState := codersdk.WorkspaceAgentLifecycleOff
-	if metadata, ok := a.metadata.Load().(agentsdk.Metadata); ok && metadata.ShutdownScript != "" {
+	if manifest := a.manifest.Load(); manifest != nil && manifest.ShutdownScript != "" {
 		scriptDone := make(chan error, 1)
 		scriptStart := time.Now()
 		go func() {
 			defer close(scriptDone)
-			scriptDone <- a.runShutdownScript(ctx, metadata.ShutdownScript)
+			scriptDone <- a.runShutdownScript(ctx, manifest.ShutdownScript)
 		}()
 
 		var timeout <-chan time.Time
 		// If timeout is zero, an older version of the coder
 		// provider was used. Otherwise a timeout is always > 0.
-		if metadata.ShutdownScriptTimeout > 0 {
-			t := time.NewTimer(metadata.ShutdownScriptTimeout)
+		if manifest.ShutdownScriptTimeout > 0 {
+			t := time.NewTimer(manifest.ShutdownScriptTimeout)
 			defer t.Stop()
 			timeout = t.C
 		}

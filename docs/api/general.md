@@ -150,11 +150,14 @@ curl -X GET http://coder-server:8080/api/v2/deployment/config \
       "user": {}
     },
     "agent_stat_refresh_interval": 0,
-    "audit_logging": true,
     "autobuild_poll_interval": 0,
     "browser_only": true,
     "cache_directory": "string",
     "config": "string",
+    "config_ssh": {
+      "deploymentName": "string",
+      "sshconfigOptions": ["string"]
+    },
     "dangerous": {
       "allow_path_app_sharing": true,
       "allow_path_app_site_owner_access": true
@@ -227,9 +230,12 @@ curl -X GET http://coder-server:8080/api/v2/deployment/config \
     },
     "oidc": {
       "allow_signups": true,
+      "auth_url_params": {},
       "client_id": "string",
       "client_secret": "string",
       "email_domain": ["string"],
+      "email_field": "string",
+      "group_mapping": {},
       "groups_field": "string",
       "icon_url": {
         "forceQuery": true,
@@ -245,6 +251,7 @@ curl -X GET http://coder-server:8080/api/v2/deployment/config \
         "user": {}
       },
       "ignore_email_verified": true,
+      "ignore_user_info": true,
       "issuer_url": "string",
       "scopes": ["string"],
       "sign_in_text": "string",
@@ -336,6 +343,7 @@ curl -X GET http://coder-server:8080/api/v2/deployment/config \
     },
     "update_check": true,
     "verbose": true,
+    "wgtunnel_host": "string",
     "wildcard_access_url": {
       "forceQuery": true,
       "fragment": "string",
@@ -395,6 +403,41 @@ curl -X GET http://coder-server:8080/api/v2/deployment/config \
 | Status | Meaning                                                 | Description | Schema                                                           |
 | ------ | ------------------------------------------------------- | ----------- | ---------------------------------------------------------------- |
 | 200    | [OK](https://tools.ietf.org/html/rfc7231#section-6.3.1) | OK          | [codersdk.DeploymentConfig](schemas.md#codersdkdeploymentconfig) |
+
+To perform this operation, you must be authenticated. [Learn more](authentication.md).
+
+## SSH Config
+
+### Code samples
+
+```shell
+# Example request using curl
+curl -X GET http://coder-server:8080/api/v2/deployment/ssh \
+  -H 'Accept: application/json' \
+  -H 'Coder-Session-Token: API_KEY'
+```
+
+`GET /deployment/ssh`
+
+### Example responses
+
+> 200 Response
+
+```json
+{
+  "hostname_prefix": "string",
+  "ssh_config_options": {
+    "property1": "string",
+    "property2": "string"
+  }
+}
+```
+
+### Responses
+
+| Status | Meaning                                                 | Description | Schema                                                             |
+| ------ | ------------------------------------------------------- | ----------- | ------------------------------------------------------------------ |
+| 200    | [OK](https://tools.ietf.org/html/rfc7231#section-6.3.1) | OK          | [codersdk.SSHConfigResponse](schemas.md#codersdksshconfigresponse) |
 
 To perform this operation, you must be authenticated. [Learn more](authentication.md).
 
@@ -468,7 +511,7 @@ curl -X GET http://coder-server:8080/api/v2/experiments \
 > 200 Response
 
 ```json
-["authz_querier"]
+["template_editor"]
 ```
 
 ### Responses
@@ -516,3 +559,40 @@ curl -X GET http://coder-server:8080/api/v2/updatecheck \
 | Status | Meaning                                                 | Description | Schema                                                                 |
 | ------ | ------------------------------------------------------- | ----------- | ---------------------------------------------------------------------- |
 | 200    | [OK](https://tools.ietf.org/html/rfc7231#section-6.3.1) | OK          | [codersdk.UpdateCheckResponse](schemas.md#codersdkupdatecheckresponse) |
+
+## Get token config
+
+### Code samples
+
+```shell
+# Example request using curl
+curl -X GET http://coder-server:8080/api/v2/users/{user}/keys/tokens/tokenconfig \
+  -H 'Accept: application/json' \
+  -H 'Coder-Session-Token: API_KEY'
+```
+
+`GET /users/{user}/keys/tokens/tokenconfig`
+
+### Parameters
+
+| Name   | In   | Type   | Required | Description          |
+| ------ | ---- | ------ | -------- | -------------------- |
+| `user` | path | string | true     | User ID, name, or me |
+
+### Example responses
+
+> 200 Response
+
+```json
+{
+  "max_token_lifetime": 0
+}
+```
+
+### Responses
+
+| Status | Meaning                                                 | Description | Schema                                                 |
+| ------ | ------------------------------------------------------- | ----------- | ------------------------------------------------------ |
+| 200    | [OK](https://tools.ietf.org/html/rfc7231#section-6.3.1) | OK          | [codersdk.TokenConfig](schemas.md#codersdktokenconfig) |
+
+To perform this operation, you must be authenticated. [Learn more](authentication.md).

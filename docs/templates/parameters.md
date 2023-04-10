@@ -42,10 +42,33 @@ provider "docker" {
 }
 ```
 
-The following parameter types are supported: `string`, `bool`, and `number`.
-
 > For a complete list of supported parameter properties, see the
 > [coder_parameter Terraform reference](https://registry.terraform.io/providers/coder/coder/latest/docs/data-sources/parameter)
+
+## Types
+
+The following parameter types are supported: `string`, `list(string)`, `bool`, and `number`.
+
+### List of strings
+
+List of strings is a specific parameter type, that can't be easily mapped to the default value, which is string type.
+Parameters with the `list(string)` type must be converted to JSON arrays using [jsonencode](https://developer.hashicorp.com/terraform/language/functions/jsonencode)
+function.
+
+```hcl
+data "coder_parameter" "security_groups" {
+  name        = "Security groups"
+  icon        = "/icon/aws.png"
+  type        = "list(string)"
+  description = "Select appropriate security groups."
+  mutable     = true
+  default = jsonencode([
+    "Web Server Security Group",
+    "Database Security Group",
+    "Backend Security Group"
+  ])
+}
+```
 
 ## Options
 
@@ -114,7 +137,7 @@ data "coder_parameter" "dotfiles_url" {
 
 ## Mutability
 
-Immutable parameters can be only set before workspace creation. The idea is to prevent users from modifying fragile or persistent workspace resources like volumes, regions, etc.:
+Immutable parameters can be only set before workspace creation, or during update on the first usage to set the initial value for required parameters. The idea is to prevent users from modifying fragile or persistent workspace resources like volumes, regions, etc.:
 
 ```hcl
 data "coder_parameter" "region" {
@@ -195,6 +218,53 @@ variable "cpu" {
 ```
 
 > ⚠️ Legacy (`variable`) parameters and rich parameters can't be used in the same template.
+
+### Migration
+
+Terraform variables shouldn't be used for workspace scoped parameters anymore, and it's recommended to convert variables to `coder_parameter` resources. To make the migration smoother, there is a special property introduced -
+`legacy_variable` and `legacy_variable_name` , which can link `coder_parameter` with a legacy variable.
+
+```hcl
+variable "legacy_cpu" {
+  sensitive   = false
+  description = "CPU cores"
+  default     = 2
+}
+
+data "coder_parameter" "cpu" {
+  name        = "CPU cores"
+  type        = "number"
+  description = "Number of CPU cores"
+  mutable     = true
+
+  legacy_variable_name = "legacy_cpu"
+  legacy_variable = var.legacy_cpu
+}
+```
+
+#### Steps
+
+1. Prepare and update a new template version:
+
+   - Add `coder_parameter` resource matching the legacy variable to migrate.
+   - Use `legacy_variable_name` and `legacy_variable` to link the `coder_parameter` to the legacy variable.
+   - Mark the new parameter as `mutable`, so that Coder will not block updating existing workspaces.
+
+2. Update all workspaces to the updated template version. Coder will populate the added `coder_parameter`s with values from legacy variables.
+3. Prepare another template version:
+
+   - Remove the migrated variables.
+   - Remove properties `legacy_variable` and `legacy_variable_name` from `coder_parameter`s.
+
+4. Update all workspaces to the updated template version (2nd).
+5. Prepare a third template version:
+
+   - Enable the `feature_use_managed_variables` provider flag to use managed Terraform variables for template customization. Once the flag is enabled, legacy variables won't be used.
+
+6. Update all workspaces to the updated template version (3rd).
+7. Delete legacy parameters.
+
+As a template improvement, the template author can consider making some of the new `coder_parameter` resources `mutable`.
 
 ## Managed Terraform variables
 

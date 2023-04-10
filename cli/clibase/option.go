@@ -46,6 +46,8 @@ type Option struct {
 	UseInstead []Option `json:"use_instead,omitempty"`
 
 	Hidden bool `json:"hidden,omitempty"`
+
+	envChanged bool
 }
 
 // OptionSet is a group of options that can be applied to a command.
@@ -58,6 +60,10 @@ func (s *OptionSet) Add(opts ...Option) {
 
 // FlagSet returns a pflag.FlagSet for the OptionSet.
 func (s *OptionSet) FlagSet() *pflag.FlagSet {
+	if s == nil {
+		return &pflag.FlagSet{}
+	}
+
 	fs := pflag.NewFlagSet("", pflag.ContinueOnError)
 	for _, opt := range *s {
 		if opt.Flag == "" {
@@ -71,11 +77,16 @@ func (s *OptionSet) FlagSet() *pflag.FlagSet {
 			}
 		}
 
+		val := opt.Value
+		if val == nil {
+			val = DiscardValue
+		}
+
 		fs.AddFlag(&pflag.Flag{
 			Name:        opt.Flag,
 			Shorthand:   opt.FlagShorthand,
 			Usage:       opt.Description,
-			Value:       opt.Value,
+			Value:       val,
 			DefValue:    "",
 			Changed:     false,
 			Deprecated:  "",
@@ -90,18 +101,23 @@ func (s *OptionSet) FlagSet() *pflag.FlagSet {
 }
 
 // ParseEnv parses the given environment variables into the OptionSet.
-func (s *OptionSet) ParseEnv(globalPrefix string, environ []string) error {
+// Use EnvsWithPrefix to filter out prefixes.
+func (s *OptionSet) ParseEnv(vs []EnvVar) error {
+	if s == nil {
+		return nil
+	}
+
 	var merr *multierror.Error
 
 	// We parse environment variables first instead of using a nested loop to
 	// avoid N*M complexity when there are a lot of options and environment
 	// variables.
 	envs := make(map[string]string)
-	for _, v := range EnvsWithPrefix(environ, globalPrefix) {
+	for _, v := range vs {
 		envs[v.Name] = v.Value
 	}
 
-	for _, opt := range *s {
+	for i, opt := range *s {
 		if opt.Env == "" {
 			continue
 		}
@@ -112,10 +128,15 @@ func (s *OptionSet) ParseEnv(globalPrefix string, environ []string) error {
 		// way for a user to change a Default value to an empty string from
 		// the environment. Unfortunately, we have old configuration files
 		// that rely on the faulty behavior.
+		//
+		// TODO: We should remove this hack in May 2023, when deployments
+		// have had months to migrate to the new behavior.
 		if !ok || envVal == "" {
 			continue
 		}
 
+		opt.envChanged = true
+		(*s)[i] = opt
 		if err := opt.Value.Set(envVal); err != nil {
 			merr = multierror.Append(
 				merr, xerrors.Errorf("parse %q: %w", opt.Name, err),
@@ -126,14 +147,27 @@ func (s *OptionSet) ParseEnv(globalPrefix string, environ []string) error {
 	return merr.ErrorOrNil()
 }
 
-// SetDefaults sets the default values for each Option.
-// It should be called before all parsing (e.g. ParseFlags, ParseEnv).
-func (s *OptionSet) SetDefaults() error {
+// SetDefaults sets the default values for each Option, skipping values
+// that have already been set as indicated by the skip map.
+func (s *OptionSet) SetDefaults(skip map[int]struct{}) error {
+	if s == nil {
+		return nil
+	}
+
 	var merr *multierror.Error
-	for _, opt := range *s {
+
+	for i, opt := range *s {
+		// Skip values that may have already been set by the user.
+		if len(skip) > 0 {
+			if _, ok := skip[i]; ok {
+				continue
+			}
+		}
+
 		if opt.Default == "" {
 			continue
 		}
+
 		if opt.Value == nil {
 			merr = multierror.Append(
 				merr,

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"net/netip"
 	"reflect"
 	"strconv"
@@ -50,13 +51,15 @@ func init() {
 }
 
 type Options struct {
-	Addresses []netip.Prefix
-	DERPMap   *tailcfg.DERPMap
+	Addresses  []netip.Prefix
+	DERPMap    *tailcfg.DERPMap
+	DERPHeader *http.Header
 
 	// BlockEndpoints specifies whether P2P endpoints are blocked.
 	// If so, only DERPs can establish connections.
 	BlockEndpoints bool
 	Logger         slog.Logger
+	ListenPort     uint16
 }
 
 // NewConn constructs a new Wireguard server that will accept connections from the addresses provided.
@@ -135,6 +138,7 @@ func NewConn(options *Options) (conn *Conn, err error) {
 	wireguardEngine, err := wgengine.NewUserspaceEngine(Logger(options.Logger.Named("wgengine")), wgengine.Config{
 		LinkMonitor: wireguardMonitor,
 		Dialer:      dialer,
+		ListenPort:  options.ListenPort,
 	})
 	if err != nil {
 		return nil, xerrors.Errorf("create wgengine: %w", err)
@@ -158,6 +162,9 @@ func NewConn(options *Options) (conn *Conn, err error) {
 	tunDevice, magicConn, dnsManager, ok := wireguardInternals.GetInternals()
 	if !ok {
 		return nil, xerrors.New("get wireguard internals")
+	}
+	if options.DERPHeader != nil {
+		magicConn.SetDERPHeader(options.DERPHeader.Clone())
 	}
 
 	// Update the keys for the magic connection!
@@ -348,6 +355,11 @@ func (c *Conn) SetDERPMap(derpMap *tailcfg.DERPMap) {
 	netMapCopy := *c.netMap
 	c.logger.Debug(context.Background(), "updating network map")
 	c.wireguardEngine.SetNetworkMap(&netMapCopy)
+}
+
+// SetDERPRegionDialer updates the dialer to use for connecting to DERP regions.
+func (c *Conn) SetDERPRegionDialer(dialer func(ctx context.Context, region *tailcfg.DERPRegion) net.Conn) {
+	c.magicConn.SetDERPRegionDialer(dialer)
 }
 
 func (c *Conn) RemoveAllPeers() error {

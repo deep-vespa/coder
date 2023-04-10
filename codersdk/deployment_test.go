@@ -1,8 +1,12 @@
 package codersdk_test
 
 import (
+	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
+	"github.com/coder/coder/cli/clibase"
 	"github.com/coder/coder/codersdk"
 )
 
@@ -98,10 +102,95 @@ func TestDeploymentValues_HighlyConfigurable(t *testing.T) {
 			t.Errorf("Option %q is excluded but has an env name", opt.Name)
 		}
 
+		// Also check all env vars are prefixed with CODER_
+		const prefix = "CODER_"
+		if opt.Env != "" && !strings.HasPrefix(opt.Env, prefix) {
+			t.Errorf("Option %q has an env name (%q) that is not prefixed with %s", opt.Name, opt.Env, prefix)
+		}
+
 		delete(excludes, opt.Name)
 	}
 
 	for opt := range excludes {
 		t.Errorf("Excluded option %q is not in the deployment config. Remove it?", opt)
+	}
+}
+
+func TestSSHConfig_ParseOptions(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		Name          string
+		ConfigOptions clibase.StringArray
+		ExpectError   bool
+		Expect        map[string]string
+	}{
+		{
+			Name:          "Empty",
+			ConfigOptions: []string{},
+			Expect:        map[string]string{},
+		},
+		{
+			Name: "Whitespace",
+			ConfigOptions: []string{
+				"test value",
+			},
+			Expect: map[string]string{
+				"test": "value",
+			},
+		},
+		{
+			Name: "SimpleValueEqual",
+			ConfigOptions: []string{
+				"test=value",
+			},
+			Expect: map[string]string{
+				"test": "value",
+			},
+		},
+		{
+			Name: "SimpleValues",
+			ConfigOptions: []string{
+				"test=value",
+				"foo=bar",
+			},
+			Expect: map[string]string{
+				"test": "value",
+				"foo":  "bar",
+			},
+		},
+		{
+			Name: "ValueWithQuote",
+			ConfigOptions: []string{
+				"bar=buzz=bazz",
+			},
+			Expect: map[string]string{
+				"bar": "buzz=bazz",
+			},
+		},
+		{
+			Name: "NoEquals",
+			ConfigOptions: []string{
+				"foobar",
+			},
+			ExpectError: true,
+		},
+	}
+
+	for _, tt := range testCases {
+		tt := tt
+		t.Run(tt.Name, func(t *testing.T) {
+			t.Parallel()
+			c := codersdk.SSHConfig{
+				SSHConfigOptions: tt.ConfigOptions,
+			}
+			got, err := c.ParseOptions()
+			if tt.ExpectError {
+				require.Error(t, err, tt.ConfigOptions.String())
+			} else {
+				require.NoError(t, err, tt.ConfigOptions.String())
+				require.Equalf(t, tt.Expect, got, tt.ConfigOptions.String())
+			}
+		})
 	}
 }

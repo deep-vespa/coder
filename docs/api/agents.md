@@ -273,18 +273,18 @@ curl -X GET http://coder-server:8080/api/v2/workspaceagents/me/gitsshkey \
 
 To perform this operation, you must be authenticated. [Learn more](authentication.md).
 
-## Get authorized workspace agent metadata
+## Get authorized workspace agent manifest
 
 ### Code samples
 
 ```shell
 # Example request using curl
-curl -X GET http://coder-server:8080/api/v2/workspaceagents/me/metadata \
+curl -X GET http://coder-server:8080/api/v2/workspaceagents/me/manifest \
   -H 'Accept: application/json' \
   -H 'Coder-Session-Token: API_KEY'
 ```
 
-`GET /workspaceagents/me/metadata`
+`GET /workspaceagents/me/manifest`
 
 ### Example responses
 
@@ -368,6 +368,15 @@ curl -X GET http://coder-server:8080/api/v2/workspaceagents/me/metadata \
     "property2": "string"
   },
   "git_auth_configs": 0,
+  "metadata": [
+    {
+      "display_name": "string",
+      "interval": 0,
+      "key": "string",
+      "script": "string",
+      "timeout": 0
+    }
+  ],
   "motd_file": "string",
   "shutdown_script": "string",
   "shutdown_script_timeout": 0,
@@ -381,66 +390,7 @@ curl -X GET http://coder-server:8080/api/v2/workspaceagents/me/metadata \
 
 | Status | Meaning                                                 | Description | Schema                                           |
 | ------ | ------------------------------------------------------- | ----------- | ------------------------------------------------ |
-| 200    | [OK](https://tools.ietf.org/html/rfc7231#section-6.3.1) | OK          | [agentsdk.Metadata](schemas.md#agentsdkmetadata) |
-
-To perform this operation, you must be authenticated. [Learn more](authentication.md).
-
-## Submit workspace agent stats
-
-### Code samples
-
-```shell
-# Example request using curl
-curl -X POST http://coder-server:8080/api/v2/workspaceagents/me/report-stats \
-  -H 'Content-Type: application/json' \
-  -H 'Accept: application/json' \
-  -H 'Coder-Session-Token: API_KEY'
-```
-
-`POST /workspaceagents/me/report-stats`
-
-> Body parameter
-
-```json
-{
-  "connection_count": 0,
-  "connection_median_latency_ms": 0,
-  "connections_by_proto": {
-    "property1": 0,
-    "property2": 0
-  },
-  "rx_bytes": 0,
-  "rx_packets": 0,
-  "session_count_jetbrains": 0,
-  "session_count_reconnecting_pty": 0,
-  "session_count_ssh": 0,
-  "session_count_vscode": 0,
-  "tx_bytes": 0,
-  "tx_packets": 0
-}
-```
-
-### Parameters
-
-| Name   | In   | Type                                       | Required | Description   |
-| ------ | ---- | ------------------------------------------ | -------- | ------------- |
-| `body` | body | [agentsdk.Stats](schemas.md#agentsdkstats) | true     | Stats request |
-
-### Example responses
-
-> 200 Response
-
-```json
-{
-  "report_interval": 0
-}
-```
-
-### Responses
-
-| Status | Meaning                                                 | Description | Schema                                                     |
-| ------ | ------------------------------------------------------- | ----------- | ---------------------------------------------------------- |
-| 200    | [OK](https://tools.ietf.org/html/rfc7231#section-6.3.1) | OK          | [agentsdk.StatsResponse](schemas.md#agentsdkstatsresponse) |
+| 200    | [OK](https://tools.ietf.org/html/rfc7231#section-6.3.1) | OK          | [agentsdk.Manifest](schemas.md#agentsdkmanifest) |
 
 To perform this operation, you must be authenticated. [Learn more](authentication.md).
 
@@ -519,6 +469,8 @@ curl -X GET http://coder-server:8080/api/v2/workspaceagents/{workspaceagent} \
   "resource_id": "4d5215ed-38bb-48ed-879a-fdb9ca58522f",
   "shutdown_script": "string",
   "shutdown_script_timeout_seconds": 0,
+  "startup_logs_length": 0,
+  "startup_logs_overflowed": true,
   "startup_script": "string",
   "startup_script_timeout_seconds": 0,
   "status": "connecting",
@@ -715,5 +667,60 @@ curl -X GET http://coder-server:8080/api/v2/workspaceagents/{workspaceagent}/pty
 | Status | Meaning                                                                  | Description         | Schema |
 | ------ | ------------------------------------------------------------------------ | ------------------- | ------ |
 | 101    | [Switching Protocols](https://tools.ietf.org/html/rfc7231#section-6.2.2) | Switching Protocols |        |
+
+To perform this operation, you must be authenticated. [Learn more](authentication.md).
+
+## Get startup logs by workspace agent
+
+### Code samples
+
+```shell
+# Example request using curl
+curl -X GET http://coder-server:8080/api/v2/workspaceagents/{workspaceagent}/startup-logs \
+  -H 'Accept: application/json' \
+  -H 'Coder-Session-Token: API_KEY'
+```
+
+`GET /workspaceagents/{workspaceagent}/startup-logs`
+
+### Parameters
+
+| Name             | In    | Type         | Required | Description        |
+| ---------------- | ----- | ------------ | -------- | ------------------ |
+| `workspaceagent` | path  | string(uuid) | true     | Workspace agent ID |
+| `before`         | query | integer      | false    | Before log id      |
+| `after`          | query | integer      | false    | After log id       |
+| `follow`         | query | boolean      | false    | Follow log stream  |
+
+### Example responses
+
+> 200 Response
+
+```json
+[
+  {
+    "created_at": "2019-08-24T14:15:22Z",
+    "id": 0,
+    "output": "string"
+  }
+]
+```
+
+### Responses
+
+| Status | Meaning                                                 | Description | Schema                                                                                    |
+| ------ | ------------------------------------------------------- | ----------- | ----------------------------------------------------------------------------------------- |
+| 200    | [OK](https://tools.ietf.org/html/rfc7231#section-6.3.1) | OK          | array of [codersdk.WorkspaceAgentStartupLog](schemas.md#codersdkworkspaceagentstartuplog) |
+
+<h3 id="get-startup-logs-by-workspace-agent-responseschema">Response Schema</h3>
+
+Status Code **200**
+
+| Name           | Type              | Required | Restrictions | Description |
+| -------------- | ----------------- | -------- | ------------ | ----------- |
+| `[array item]` | array             | false    |              |             |
+| `» created_at` | string(date-time) | false    |              |             |
+| `» id`         | integer           | false    |              |             |
+| `» output`     | string            | false    |              |             |
 
 To perform this operation, you must be authenticated. [Learn more](authentication.md).
