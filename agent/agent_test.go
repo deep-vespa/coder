@@ -41,6 +41,7 @@ import (
 	"cdr.dev/slog"
 	"cdr.dev/slog/sloggers/slogtest"
 	"github.com/coder/coder/agent"
+	"github.com/coder/coder/agent/agentssh"
 	"github.com/coder/coder/coderd/httpapi"
 	"github.com/coder/coder/codersdk"
 	"github.com/coder/coder/codersdk/agentsdk"
@@ -131,13 +132,13 @@ func TestAgent_Stats_Magic(t *testing.T) {
 		defer sshClient.Close()
 		session, err := sshClient.NewSession()
 		require.NoError(t, err)
-		session.Setenv(agent.MagicSSHSessionTypeEnvironmentVariable, agent.MagicSSHSessionTypeVSCode)
+		session.Setenv(agentssh.MagicSessionTypeEnvironmentVariable, agentssh.MagicSessionTypeVSCode)
 		defer session.Close()
 
-		command := "sh -c 'echo $" + agent.MagicSSHSessionTypeEnvironmentVariable + "'"
+		command := "sh -c 'echo $" + agentssh.MagicSessionTypeEnvironmentVariable + "'"
 		expected := ""
 		if runtime.GOOS == "windows" {
-			expected = "%" + agent.MagicSSHSessionTypeEnvironmentVariable + "%"
+			expected = "%" + agentssh.MagicSessionTypeEnvironmentVariable + "%"
 			command = "cmd.exe /c echo " + expected
 		}
 		output, err := session.Output(command)
@@ -158,7 +159,7 @@ func TestAgent_Stats_Magic(t *testing.T) {
 		defer sshClient.Close()
 		session, err := sshClient.NewSession()
 		require.NoError(t, err)
-		session.Setenv(agent.MagicSSHSessionTypeEnvironmentVariable, agent.MagicSSHSessionTypeVSCode)
+		session.Setenv(agentssh.MagicSessionTypeEnvironmentVariable, agentssh.MagicSessionTypeVSCode)
 		defer session.Close()
 		stdin, err := session.StdinPipe()
 		require.NoError(t, err)
@@ -1390,6 +1391,22 @@ func TestAgent_Startup(t *testing.T) {
 		require.Equal(t, homeDir, client.getStartup().ExpandedDirectory)
 	})
 
+	t.Run("NotAbsoluteDirectory", func(t *testing.T) {
+		t.Parallel()
+
+		_, client, _, _, _ := setupAgent(t, agentsdk.Manifest{
+			StartupScript:        "true",
+			StartupScriptTimeout: 30 * time.Second,
+			Directory:            "coder/coder",
+		}, 0)
+		assert.Eventually(t, func() bool {
+			return client.getStartup().Version != ""
+		}, testutil.WaitShort, testutil.IntervalFast)
+		homeDir, err := os.UserHomeDir()
+		require.NoError(t, err)
+		require.Equal(t, filepath.Join(homeDir, "coder/coder"), client.getStartup().ExpandedDirectory)
+	})
+
 	t.Run("HomeEnvironmentVariable", func(t *testing.T) {
 		t.Parallel()
 
@@ -1651,7 +1668,7 @@ func setupSSHCommand(t *testing.T, beforeArgs []string, afterArgs []string) *exe
 			}
 			waitGroup.Add(1)
 			go func() {
-				agent.Bicopy(context.Background(), conn, ssh)
+				agentssh.Bicopy(context.Background(), conn, ssh)
 				waitGroup.Done()
 			}()
 		}

@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+	"text/tabwriter"
 	"time"
 
 	"golang.org/x/exp/slices"
@@ -250,6 +251,26 @@ func (r *RootCmd) Command(subcommands []*clibase.Cmd) (*clibase.Cmd, error) {
 		return nil, merr
 	}
 
+	var debugOptions bool
+
+	// Add a wrapper to every command to enable debugging options.
+	cmd.Walk(func(cmd *clibase.Cmd) {
+		h := cmd.Handler
+		cmd.Handler = func(i *clibase.Invocation) error {
+			if !debugOptions {
+				return h(i)
+			}
+
+			tw := tabwriter.NewWriter(i.Stdout, 0, 0, 4, ' ', 0)
+			_, _ = fmt.Fprintf(tw, "Option\tValue Source\n")
+			for _, opt := range cmd.Options {
+				_, _ = fmt.Fprintf(tw, "%q\t%v\n", opt.Name, opt.ValueSource)
+			}
+			tw.Flush()
+			return nil
+		}
+	})
+
 	if r.agentURL == nil {
 		r.agentURL = new(url.URL)
 	}
@@ -267,6 +288,12 @@ func (r *RootCmd) Command(subcommands []*clibase.Cmd) (*clibase.Cmd, error) {
 			Env:         envURL,
 			Description: "URL to a deployment.",
 			Value:       clibase.URLOf(r.clientURL),
+			Group:       globalGroup,
+		},
+		{
+			Flag:        "debug-options",
+			Description: "Print all options, how they're set, then exit.",
+			Value:       clibase.BoolOf(&debugOptions),
 			Group:       globalGroup,
 		},
 		{
@@ -684,7 +711,7 @@ func (h *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return h.transport.RoundTrip(req)
 }
 
-// dumpHandler provides a custom SIGQUIT and SIGTRAP handler that dumps the
+// DumpHandler provides a custom SIGQUIT and SIGTRAP handler that dumps the
 // stacktrace of all goroutines to stderr and a well-known file in the home
 // directory. This is useful for debugging deadlock issues that may occur in
 // production in workspaces, since the default Go runtime will only dump to
@@ -696,7 +723,7 @@ func (h *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 // A SIGQUIT handler will not be registered if GOTRACEBACK=crash.
 //
 // On Windows this immediately returns.
-func dumpHandler(ctx context.Context) {
+func DumpHandler(ctx context.Context) {
 	if runtime.GOOS == "windows" {
 		// free up the goroutine since it'll be permanently blocked anyways
 		return
