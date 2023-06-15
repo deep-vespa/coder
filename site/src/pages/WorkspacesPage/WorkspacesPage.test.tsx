@@ -1,12 +1,9 @@
 import { screen } from "@testing-library/react"
 import { rest } from "msw"
 import * as CreateDayString from "utils/createDayString"
-import {
-  MockWorkspace,
-  MockWorkspacesResponse,
-} from "../../testHelpers/entities"
-import { history, render } from "../../testHelpers/renderHelpers"
-import { server } from "../../testHelpers/server"
+import { MockWorkspace, MockWorkspacesResponse } from "testHelpers/entities"
+import { history, renderWithAuth } from "testHelpers/renderHelpers"
+import { server } from "testHelpers/server"
 import WorkspacesPage from "./WorkspacesPage"
 import { i18n } from "i18n"
 
@@ -29,7 +26,7 @@ describe("WorkspacesPage", () => {
     )
 
     // When
-    render(<WorkspacesPage />)
+    renderWithAuth(<WorkspacesPage />)
 
     // Then
     const text = t("emptyCreateWorkspaceMessage", { ns: "workspacesPage" })
@@ -37,7 +34,7 @@ describe("WorkspacesPage", () => {
   })
 
   it("renders a filled workspaces page", async () => {
-    render(<WorkspacesPage />)
+    renderWithAuth(<WorkspacesPage />)
     await screen.findByText(`${MockWorkspace.name}1`)
     const templateDisplayNames = await screen.findAllByText(
       `${MockWorkspace.template_display_name}`,

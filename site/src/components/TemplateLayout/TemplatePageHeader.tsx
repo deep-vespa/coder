@@ -1,5 +1,5 @@
-import Button from "@material-ui/core/Button"
-import AddCircleOutline from "@material-ui/icons/AddCircleOutline"
+import Button from "@mui/material/Button"
+import AddIcon from "@mui/icons-material/AddOutlined"
 import {
   AuthorizationResponse,
   Template,
@@ -18,20 +18,20 @@ import { FC, useRef, useState } from "react"
 import { Link as RouterLink, useNavigate } from "react-router-dom"
 import { useDeleteTemplate } from "./deleteTemplate"
 import { Margins } from "components/Margins/Margins"
-import MoreVertOutlined from "@material-ui/icons/MoreVertOutlined"
-import Menu from "@material-ui/core/Menu"
-import MenuItem from "@material-ui/core/MenuItem"
-import SettingsOutlined from "@material-ui/icons/SettingsOutlined"
-import DeleteOutlined from "@material-ui/icons/DeleteOutlined"
-import EditOutlined from "@material-ui/icons/EditOutlined"
-import FileCopyOutlined from "@material-ui/icons/FileCopyOutlined"
+import MoreVertOutlined from "@mui/icons-material/MoreVertOutlined"
+import Menu from "@mui/material/Menu"
+import MenuItem from "@mui/material/MenuItem"
+import SettingsOutlined from "@mui/icons-material/SettingsOutlined"
+import DeleteOutlined from "@mui/icons-material/DeleteOutlined"
+import EditOutlined from "@mui/icons-material/EditOutlined"
+import FileCopyOutlined from "@mui/icons-material/FileCopyOutlined"
+import IconButton from "@mui/material/IconButton"
 
 const TemplateMenu: FC<{
   templateName: string
   templateVersion: string
-  canEditFiles: boolean
   onDelete: () => void
-}> = ({ templateName, templateVersion, canEditFiles, onDelete }) => {
+}> = ({ templateName, templateVersion, onDelete }) => {
   const menuTriggerRef = useRef<HTMLButtonElement>(null)
   const [isMenuOpen, setIsMenuOpen] = useState(false)
   const navigate = useNavigate()
@@ -45,15 +45,15 @@ const TemplateMenu: FC<{
 
   return (
     <div>
-      <Button
-        variant="outlined"
+      <IconButton
         aria-controls="template-options"
         aria-haspopup="true"
         onClick={() => setIsMenuOpen(true)}
         ref={menuTriggerRef}
+        arial-label="More options"
       >
         <MoreVertOutlined />
-      </Button>
+      </IconButton>
 
       <Menu
         id="template-options"
@@ -69,28 +69,24 @@ const TemplateMenu: FC<{
           <SettingsOutlined />
           Settings
         </MenuItem>
-        {canEditFiles && (
-          <MenuItem
-            onClick={onMenuItemClick(() =>
-              navigate(`/templates/new?fromTemplate=${templateName}`),
-            )}
-          >
-            <FileCopyOutlined />
-            Duplicate
-          </MenuItem>
-        )}
-        {canEditFiles && (
-          <MenuItem
-            onClick={onMenuItemClick(() =>
-              navigate(
-                `/templates/${templateName}/versions/${templateVersion}/edit`,
-              ),
-            )}
-          >
-            <EditOutlined />
-            Edit files
-          </MenuItem>
-        )}
+        <MenuItem
+          onClick={onMenuItemClick(() =>
+            navigate(`/templates/new?fromTemplate=${templateName}`),
+          )}
+        >
+          <FileCopyOutlined />
+          Duplicate
+        </MenuItem>
+        <MenuItem
+          onClick={onMenuItemClick(() =>
+            navigate(
+              `/templates/${templateName}/versions/${templateVersion}/edit`,
+            ),
+          )}
+        >
+          <EditOutlined />
+          Edit files
+        </MenuItem>
         <MenuItem onClick={onMenuItemClick(onDelete)}>
           <DeleteOutlined />
           Delete
@@ -105,7 +101,8 @@ const CreateWorkspaceButton: FC<{
   className?: string
 }> = ({ templateName }) => (
   <Button
-    startIcon={<AddCircleOutline />}
+    variant="contained"
+    startIcon={<AddIcon />}
     component={RouterLink}
     to={`/templates/${templateName}/workspace`}
   >
@@ -117,7 +114,6 @@ export type TemplatePageHeaderProps = {
   template: Template
   activeVersion: TemplateVersion
   permissions: AuthorizationResponse
-  canEditFiles: boolean
   onDeleteTemplate: () => void
 }
 
@@ -125,7 +121,6 @@ export const TemplatePageHeader: FC<TemplatePageHeaderProps> = ({
   template,
   activeVersion,
   permissions,
-  canEditFiles,
   onDeleteTemplate,
 }) => {
   const hasIcon = template.icon && template.icon !== ""
@@ -142,7 +137,6 @@ export const TemplatePageHeader: FC<TemplatePageHeaderProps> = ({
                 templateVersion={activeVersion.name}
                 templateName={template.name}
                 onDelete={deleteTemplate.openDeleteConfirmation}
-                canEditFiles={canEditFiles}
               />
             </Maybe>
           </>

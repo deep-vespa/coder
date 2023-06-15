@@ -1,14 +1,12 @@
-import Checkbox from "@material-ui/core/Checkbox"
-import { makeStyles } from "@material-ui/core/styles"
-import TextField from "@material-ui/core/TextField"
+import Checkbox from "@mui/material/Checkbox"
+import { makeStyles } from "@mui/styles"
+import TextField from "@mui/material/TextField"
 import {
-  ParameterSchema,
   ProvisionerJobLog,
   Template,
   TemplateExample,
   TemplateVersionVariable,
 } from "api/typesGenerated"
-import { ParameterInput } from "components/ParameterInput/ParameterInput"
 import { Stack } from "components/Stack/Stack"
 import {
   TemplateUpload,
@@ -16,7 +14,7 @@ import {
 } from "pages/CreateTemplatePage/TemplateUpload"
 import { useFormik } from "formik"
 import { SelectedTemplate } from "pages/CreateWorkspacePage/SelectedTemplate"
-import { FC } from "react"
+import { FC, useEffect } from "react"
 import { useTranslation } from "react-i18next"
 import {
   nameValidator,
@@ -31,7 +29,7 @@ import { HelpTooltip, HelpTooltipText } from "components/Tooltips/HelpTooltip"
 import { LazyIconField } from "components/IconField/LazyIconField"
 import { Maybe } from "components/Conditionals/Maybe"
 import i18next from "i18next"
-import Link from "@material-ui/core/Link"
+import Link from "@mui/material/Link"
 import {
   HorizontalForm,
   FormSection,
@@ -73,25 +71,22 @@ const validationSchema = Yup.object({
   ),
   description: Yup.string().max(
     MAX_DESCRIPTION_CHAR_LIMIT,
-    i18next.t("form.error.descriptionMax", { ns: "createTemplatePage" }),
+    "Please enter a description that is less than or equal to 128 characters.",
   ),
   icon: Yup.string().optional(),
   default_ttl_hours: Yup.number()
     .integer()
-    .min(
-      0,
-      i18next.t("form.error.defaultTTLMin", { ns: "templateSettingsPage" }),
-    )
+    .min(0, "Default time until autostop must not be less than 0.")
     .max(
       24 * MAX_TTL_DAYS /* 7 days in hours */,
-      i18next.t("form.error.defaultTTLMax", { ns: "templateSettingsPage" }),
+      "Please enter a limit that is less than or equal to 168 hours (7 days).",
     ),
   max_ttl_hours: Yup.number()
     .integer()
-    .min(0, i18next.t("form.error.maxTTLMin", { ns: "templateSettingsPage" }))
+    .min(0, "Maximum time until autostop must not be less than 0.")
     .max(
       24 * MAX_TTL_DAYS /* 7 days in hours */,
-      i18next.t("form.error.maxTTLMax", { ns: "templateSettingsPage" }),
+      "Please enter a limit that is less than or equal to 168 hours(7 days).",
     ),
 })
 
@@ -112,7 +107,6 @@ const defaultInitialValues: CreateTemplateData = {
 type GetInitialValuesParams = {
   fromExample?: TemplateExample
   fromCopy?: Template
-  parameters?: ParameterSchema[]
   variables?: TemplateVersionVariable[]
   allowAdvancedScheduling: boolean
 }
@@ -122,7 +116,6 @@ const getInitialValues = ({
   fromCopy,
   allowAdvancedScheduling,
   variables,
-  parameters,
 }: GetInitialValuesParams) => {
   let initialValues = defaultInitialValues
 
@@ -166,16 +159,6 @@ const getInitialValues = ({
     })
   }
 
-  if (parameters) {
-    parameters.forEach((parameter) => {
-      if (!initialValues.parameter_values_by_name) {
-        initialValues.parameter_values_by_name = {}
-      }
-      initialValues.parameter_values_by_name[parameter.name] =
-        parameter.default_source_value
-    })
-  }
-
   return initialValues
 }
 
@@ -185,7 +168,6 @@ export interface CreateTemplateFormProps {
   isSubmitting: boolean
   upload: TemplateUploadProps
   starterTemplate?: TemplateExample
-  parameters?: ParameterSchema[]
   variables?: TemplateVersionVariable[]
   error?: unknown
   jobError?: string
@@ -199,7 +181,6 @@ export const CreateTemplateForm: FC<CreateTemplateFormProps> = ({
   onSubmit,
   starterTemplate,
   copiedTemplate,
-  parameters,
   variables,
   isSubmitting,
   upload,
@@ -215,7 +196,6 @@ export const CreateTemplateForm: FC<CreateTemplateFormProps> = ({
       fromExample: starterTemplate,
       fromCopy: copiedTemplate,
       variables,
-      parameters,
     }),
     validationSchema,
     onSubmit,
@@ -224,12 +204,24 @@ export const CreateTemplateForm: FC<CreateTemplateFormProps> = ({
   const { t } = useTranslation("createTemplatePage")
   const { t: commonT } = useTranslation("common")
 
+  useEffect(() => {
+    if (error) {
+      window.scrollTo(0, 0)
+    }
+  }, [error])
+
+  useEffect(() => {
+    if (jobError) {
+      window.scrollTo(0, document.body.scrollHeight)
+    }
+  }, [logs, jobError])
+
   return (
     <HorizontalForm onSubmit={form.handleSubmit}>
       {/* General info */}
       <FormSection
-        title={t("form.generalInfo.title")}
-        description={t("form.generalInfo.description")}
+        title="General info"
+        description="The name is used to identify the template in URLs and the API. It must be unique within your organization."
       >
         <FormFields>
           {starterTemplate ? (
@@ -254,15 +246,14 @@ export const CreateTemplateForm: FC<CreateTemplateFormProps> = ({
             fullWidth
             required
             label={t("form.fields.name")}
-            variant="outlined"
           />
         </FormFields>
       </FormSection>
 
       {/* Display info  */}
       <FormSection
-        title={t("form.displayInfo.title")}
-        description={t("form.displayInfo.description")}
+        title="Display info"
+        description="Give your template a friendly name, description, and icon."
       >
         <FormFields>
           <TextField
@@ -270,7 +261,6 @@ export const CreateTemplateForm: FC<CreateTemplateFormProps> = ({
             disabled={isSubmitting}
             fullWidth
             label={t("form.fields.displayName")}
-            variant="outlined"
           />
 
           <TextField
@@ -280,7 +270,6 @@ export const CreateTemplateForm: FC<CreateTemplateFormProps> = ({
             multiline
             fullWidth
             label={t("form.fields.description")}
-            variant="outlined"
           />
 
           <LazyIconField
@@ -289,7 +278,6 @@ export const CreateTemplateForm: FC<CreateTemplateFormProps> = ({
             onChange={onChangeTrimmed(form)}
             fullWidth
             label={t("form.fields.icon")}
-            variant="outlined"
             onPickEmoji={(value) => form.setFieldValue("icon", value)}
           />
         </FormFields>
@@ -297,8 +285,8 @@ export const CreateTemplateForm: FC<CreateTemplateFormProps> = ({
 
       {/* Schedule */}
       <FormSection
-        title={t("form.schedule.title")}
-        description={t("form.schedule.description")}
+        title="Schedule"
+        description="Define when workspaces created from this template automatically stop."
       >
         <FormFields>
           <Stack direction="row" className={styles.ttlFields}>
@@ -314,7 +302,6 @@ export const CreateTemplateForm: FC<CreateTemplateFormProps> = ({
               onChange={onChangeTrimmed(form)}
               fullWidth
               label={t("form.fields.autostop")}
-              variant="outlined"
               type="number"
             />
 
@@ -339,7 +326,6 @@ export const CreateTemplateForm: FC<CreateTemplateFormProps> = ({
               disabled={isSubmitting || !allowAdvancedScheduling}
               fullWidth
               label={t("form.fields.maxTTL")}
-              variant="outlined"
               type="number"
             />
           </Stack>
@@ -348,7 +334,6 @@ export const CreateTemplateForm: FC<CreateTemplateFormProps> = ({
               <Checkbox
                 id="allow_user_autostart"
                 size="small"
-                color="primary"
                 disabled={isSubmitting || !allowAdvancedScheduling}
                 onChange={async () => {
                   await form.setFieldValue(
@@ -369,7 +354,6 @@ export const CreateTemplateForm: FC<CreateTemplateFormProps> = ({
               <Checkbox
                 id="allow-user-autostop"
                 size="small"
-                color="primary"
                 disabled={isSubmitting || !allowAdvancedScheduling}
                 onChange={async () => {
                   await form.setFieldValue(
@@ -397,14 +381,13 @@ export const CreateTemplateForm: FC<CreateTemplateFormProps> = ({
 
       {/* Operations */}
       <FormSection
-        title={t("form.operations.title")}
-        description={t("form.operations.description")}
+        title="Operations"
+        description="Regulate actions allowed on workspaces created from this template."
       >
         <FormFields>
           <label htmlFor="allow_user_cancel_workspace_jobs">
             <Stack direction="row" spacing={1}>
               <Checkbox
-                color="primary"
                 id="allow_user_cancel_workspace_jobs"
                 name="allow_user_cancel_workspace_jobs"
                 disabled={isSubmitting}
@@ -419,7 +402,7 @@ export const CreateTemplateForm: FC<CreateTemplateFormProps> = ({
                   spacing={0.5}
                   className={styles.optionText}
                 >
-                  {t("form.fields.allowUsersToCancel")}
+                  <strong>{t("form.fields.allowUsersToCancel")}</strong>
 
                   <HelpTooltip>
                     <HelpTooltipText>
@@ -435,30 +418,6 @@ export const CreateTemplateForm: FC<CreateTemplateFormProps> = ({
           </label>
         </FormFields>
       </FormSection>
-
-      {/* Parameters */}
-      {parameters && parameters.length > 0 && (
-        <FormSection
-          title={t("form.parameters.title")}
-          description={t("form.parameters.description")}
-        >
-          <FormFields>
-            {parameters.map((schema) => (
-              <ParameterInput
-                schema={schema}
-                disabled={isSubmitting}
-                key={schema.id}
-                onChange={async (value) => {
-                  await form.setFieldValue(
-                    `parameter_values_by_name.${schema.name}`,
-                    value,
-                  )
-                }}
-              />
-            ))}
-          </FormFields>
-        </FormSection>
-      )}
 
       {/* Variables */}
       {variables && variables.length > 0 && (

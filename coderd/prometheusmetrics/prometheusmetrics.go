@@ -16,10 +16,16 @@ import (
 
 	"cdr.dev/slog"
 
-	"github.com/coder/coder/coderd"
 	"github.com/coder/coder/coderd/database"
+	"github.com/coder/coder/coderd/database/db2sdk"
 	"github.com/coder/coder/coderd/database/dbauthz"
 	"github.com/coder/coder/tailnet"
+)
+
+const (
+	agentNameLabel     = "agent_name"
+	usernameLabel      = "username"
+	workspaceNameLabel = "workspace_name"
 )
 
 // ActiveUsers tracks the number of users that have authenticated within the past hour.
@@ -92,7 +98,32 @@ func Workspaces(ctx context.Context, registerer prometheus.Registerer, db databa
 	ctx, cancelFunc := context.WithCancel(ctx)
 	done := make(chan struct{})
 
-	ticker := time.NewTicker(duration)
+	// Use time.Nanosecond to force an initial tick. It will be reset to the
+	// correct duration after executing once.
+	ticker := time.NewTicker(time.Nanosecond)
+	doTick := func() {
+		defer ticker.Reset(duration)
+
+		builds, err := db.GetLatestWorkspaceBuilds(ctx)
+		if err != nil {
+			return
+		}
+		jobIDs := make([]uuid.UUID, 0, len(builds))
+		for _, build := range builds {
+			jobIDs = append(jobIDs, build.JobID)
+		}
+		jobs, err := db.GetProvisionerJobsByIDs(ctx, jobIDs)
+		if err != nil {
+			return
+		}
+
+		gauge.Reset()
+		for _, job := range jobs {
+			status := db2sdk.ProvisionerJobStatus(job)
+			gauge.WithLabelValues(string(status)).Add(1)
+		}
+	}
+
 	go func() {
 		defer close(done)
 		defer ticker.Stop()
@@ -101,25 +132,7 @@ func Workspaces(ctx context.Context, registerer prometheus.Registerer, db databa
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-			}
-
-			builds, err := db.GetLatestWorkspaceBuilds(ctx)
-			if err != nil {
-				continue
-			}
-			jobIDs := make([]uuid.UUID, 0, len(builds))
-			for _, build := range builds {
-				jobIDs = append(jobIDs, build.JobID)
-			}
-			jobs, err := db.GetProvisionerJobsByIDs(ctx, jobIDs)
-			if err != nil {
-				continue
-			}
-
-			gauge.Reset()
-			for _, job := range jobs {
-				status := coderd.ConvertProvisionerJobStatus(job)
-				gauge.WithLabelValues(string(status)).Add(1)
+				doTick()
 			}
 		}
 	}()
@@ -140,7 +153,7 @@ func Agents(ctx context.Context, logger slog.Logger, registerer prometheus.Regis
 		Subsystem: "agents",
 		Name:      "up",
 		Help:      "The number of active agents per workspace.",
-	}, []string{"username", "workspace_name"}))
+	}, []string{usernameLabel, workspaceNameLabel}))
 	err := registerer.Register(agentsGauge)
 	if err != nil {
 		return nil, err
@@ -151,7 +164,7 @@ func Agents(ctx context.Context, logger slog.Logger, registerer prometheus.Regis
 		Subsystem: "agents",
 		Name:      "connections",
 		Help:      "Agent connections with statuses.",
-	}, []string{"agent_name", "username", "workspace_name", "status", "lifecycle_state", "tailnet_node"}))
+	}, []string{agentNameLabel, usernameLabel, workspaceNameLabel, "status", "lifecycle_state", "tailnet_node"}))
 	err = registerer.Register(agentsConnectionsGauge)
 	if err != nil {
 		return nil, err
@@ -162,7 +175,7 @@ func Agents(ctx context.Context, logger slog.Logger, registerer prometheus.Regis
 		Subsystem: "agents",
 		Name:      "connection_latencies_seconds",
 		Help:      "Agent connection latencies in seconds.",
-	}, []string{"agent_name", "username", "workspace_name", "derp_region", "preferred"}))
+	}, []string{agentNameLabel, usernameLabel, workspaceNameLabel, "derp_region", "preferred"}))
 	err = registerer.Register(agentsConnectionLatenciesGauge)
 	if err != nil {
 		return nil, err
@@ -173,7 +186,7 @@ func Agents(ctx context.Context, logger slog.Logger, registerer prometheus.Regis
 		Subsystem: "agents",
 		Name:      "apps",
 		Help:      "Agent applications with statuses.",
-	}, []string{"agent_name", "username", "workspace_name", "app_name", "health"}))
+	}, []string{agentNameLabel, usernameLabel, workspaceNameLabel, "app_name", "health"}))
 	err = registerer.Register(agentsAppsGauge)
 	if err != nil {
 		return nil, err
@@ -196,7 +209,9 @@ func Agents(ctx context.Context, logger slog.Logger, registerer prometheus.Regis
 	ctx = dbauthz.AsSystemRestricted(ctx)
 	done := make(chan struct{})
 
-	ticker := time.NewTicker(duration)
+	// Use time.Nanosecond to force an initial tick. It will be reset to the
+	// correct duration after executing once.
+	ticker := time.NewTicker(time.Nanosecond)
 	go func() {
 		defer close(done)
 		defer ticker.Stop()
@@ -300,8 +315,7 @@ func Agents(ctx context.Context, logger slog.Logger, registerer prometheus.Regis
 
 		done:
 			logger.Debug(ctx, "Agent metrics collection is done")
-			metricsCollectorAgents.Observe(timer.ObserveDuration().Seconds())
-
+			timer.ObserveDuration()
 			ticker.Reset(duration)
 		}
 	}()
@@ -333,7 +347,7 @@ func AgentStats(ctx context.Context, logger slog.Logger, registerer prometheus.R
 		Subsystem: "agentstats",
 		Name:      "tx_bytes",
 		Help:      "Agent Tx bytes",
-	}, []string{"agent_name", "username", "workspace_name"}))
+	}, []string{agentNameLabel, usernameLabel, workspaceNameLabel}))
 	err = registerer.Register(agentStatsTxBytesGauge)
 	if err != nil {
 		return nil, err
@@ -344,7 +358,7 @@ func AgentStats(ctx context.Context, logger slog.Logger, registerer prometheus.R
 		Subsystem: "agentstats",
 		Name:      "rx_bytes",
 		Help:      "Agent Rx bytes",
-	}, []string{"agent_name", "username", "workspace_name"}))
+	}, []string{agentNameLabel, usernameLabel, workspaceNameLabel}))
 	err = registerer.Register(agentStatsRxBytesGauge)
 	if err != nil {
 		return nil, err
@@ -355,7 +369,7 @@ func AgentStats(ctx context.Context, logger slog.Logger, registerer prometheus.R
 		Subsystem: "agentstats",
 		Name:      "connection_count",
 		Help:      "The number of established connections by agent",
-	}, []string{"agent_name", "username", "workspace_name"}))
+	}, []string{agentNameLabel, usernameLabel, workspaceNameLabel}))
 	err = registerer.Register(agentStatsConnectionCountGauge)
 	if err != nil {
 		return nil, err
@@ -366,7 +380,7 @@ func AgentStats(ctx context.Context, logger slog.Logger, registerer prometheus.R
 		Subsystem: "agentstats",
 		Name:      "connection_median_latency_seconds",
 		Help:      "The median agent connection latency in seconds",
-	}, []string{"agent_name", "username", "workspace_name"}))
+	}, []string{agentNameLabel, usernameLabel, workspaceNameLabel}))
 	err = registerer.Register(agentStatsConnectionMedianLatencyGauge)
 	if err != nil {
 		return nil, err
@@ -377,7 +391,7 @@ func AgentStats(ctx context.Context, logger slog.Logger, registerer prometheus.R
 		Subsystem: "agentstats",
 		Name:      "session_count_jetbrains",
 		Help:      "The number of session established by JetBrains",
-	}, []string{"agent_name", "username", "workspace_name"}))
+	}, []string{agentNameLabel, usernameLabel, workspaceNameLabel}))
 	err = registerer.Register(agentStatsSessionCountJetBrainsGauge)
 	if err != nil {
 		return nil, err
@@ -388,7 +402,7 @@ func AgentStats(ctx context.Context, logger slog.Logger, registerer prometheus.R
 		Subsystem: "agentstats",
 		Name:      "session_count_reconnecting_pty",
 		Help:      "The number of session established by reconnecting PTY",
-	}, []string{"agent_name", "username", "workspace_name"}))
+	}, []string{agentNameLabel, usernameLabel, workspaceNameLabel}))
 	err = registerer.Register(agentStatsSessionCountReconnectingPTYGauge)
 	if err != nil {
 		return nil, err
@@ -399,7 +413,7 @@ func AgentStats(ctx context.Context, logger slog.Logger, registerer prometheus.R
 		Subsystem: "agentstats",
 		Name:      "session_count_ssh",
 		Help:      "The number of session established by SSH",
-	}, []string{"agent_name", "username", "workspace_name"}))
+	}, []string{agentNameLabel, usernameLabel, workspaceNameLabel}))
 	err = registerer.Register(agentStatsSessionCountSSHGauge)
 	if err != nil {
 		return nil, err
@@ -410,7 +424,7 @@ func AgentStats(ctx context.Context, logger slog.Logger, registerer prometheus.R
 		Subsystem: "agentstats",
 		Name:      "session_count_vscode",
 		Help:      "The number of session established by VSCode",
-	}, []string{"agent_name", "username", "workspace_name"}))
+	}, []string{agentNameLabel, usernameLabel, workspaceNameLabel}))
 	err = registerer.Register(agentStatsSessionCountVSCodeGauge)
 	if err != nil {
 		return nil, err
@@ -420,7 +434,9 @@ func AgentStats(ctx context.Context, logger slog.Logger, registerer prometheus.R
 	done := make(chan struct{})
 
 	createdAfter := initialCreateAfter
-	ticker := time.NewTicker(duration)
+	// Use time.Nanosecond to force an initial tick. It will be reset to the
+	// correct duration after executing once.
+	ticker := time.NewTicker(time.Nanosecond)
 	go func() {
 		defer close(done)
 		defer ticker.Stop()
@@ -466,8 +482,8 @@ func AgentStats(ctx context.Context, logger slog.Logger, registerer prometheus.R
 				}
 			}
 
-			logger.Debug(ctx, "Agent metrics collection is done")
-			metricsCollectorAgentStats.Observe(timer.ObserveDuration().Seconds())
+			logger.Debug(ctx, "Agent metrics collection is done", slog.F("len", len(stats)))
+			timer.ObserveDuration()
 
 			createdAfter = checkpoint
 			ticker.Reset(duration)

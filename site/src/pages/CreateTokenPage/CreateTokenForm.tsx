@@ -5,11 +5,11 @@ import {
   FormFooter,
   HorizontalForm,
 } from "components/Form/Form"
-import makeStyles from "@material-ui/core/styles/makeStyles"
+import makeStyles from "@mui/styles/makeStyles"
 import { useTranslation } from "react-i18next"
 import { onChangeTrimmed, getFormHelpers } from "utils/formUtils"
-import TextField from "@material-ui/core/TextField"
-import MenuItem from "@material-ui/core/MenuItem"
+import TextField from "@mui/material/TextField"
+import MenuItem from "@mui/material/MenuItem"
 import {
   NANO_HOUR,
   CreateTokenData,
@@ -62,8 +62,8 @@ export const CreateTokenForm: FC<CreateTokenFormProps> = ({
   return (
     <HorizontalForm onSubmit={form.handleSubmit}>
       <FormSection
-        title={t("createToken.nameSection.title")}
-        description={t("createToken.nameSection.description")}
+        title="Name"
+        description="What is this token for?"
         classes={{ sectionInfo: styles.formSectionInfo }}
       >
         <FormFields>
@@ -74,21 +74,18 @@ export const CreateTokenForm: FC<CreateTokenFormProps> = ({
             onChange={onChangeTrimmed(form, () => setFormError(undefined))}
             autoFocus
             fullWidth
-            variant="outlined"
           />
         </FormFields>
       </FormSection>
       <FormSection
-        title={t("createToken.lifetimeSection.title")}
+        title="Expiration"
         description={
           form.values.lifetime
-            ? t("createToken.lifetimeSection.description", {
-                date: dayjs()
-                  .add(form.values.lifetime, "days")
-                  .utc()
-                  .format("MMMM DD, YYYY"),
-              })
-            : t("createToken.lifetimeSection.emptyDescription")
+            ? `The token will expire on ${dayjs()
+                .add(form.values.lifetime, "days")
+                .utc()
+                .format("MMMM DD, YYYY")}`
+            : "Please set a token expiration."
         }
         classes={{ sectionInfo: styles.formSectionInfo }}
       >
@@ -103,9 +100,6 @@ export const CreateTokenForm: FC<CreateTokenFormProps> = ({
                 void setLifetimeDays(event.target.value)
               }}
               fullWidth
-              InputLabelProps={{
-                shrink: true,
-              }}
             >
               {filterByMaxTokenLifetime(maxTokenLifetime).map((lt) => (
                 <MenuItem key={lt.label} value={lt.value}>
@@ -142,7 +136,6 @@ export const CreateTokenForm: FC<CreateTokenFormProps> = ({
                 }}
                 fullWidth
                 InputLabelProps={{
-                  shrink: true,
                   required: true,
                 }}
               />
@@ -153,11 +146,7 @@ export const CreateTokenForm: FC<CreateTokenFormProps> = ({
       <FormFooter
         onCancel={() => navigate("/settings/tokens")}
         isLoading={isCreating}
-        submitLabel={
-          creationFailed
-            ? t("createToken.footer.retry")
-            : t("createToken.footer.submit")
-        }
+        submitLabel={creationFailed ? "Retry" : "Create token"}
       />
     </HorizontalForm>
   )

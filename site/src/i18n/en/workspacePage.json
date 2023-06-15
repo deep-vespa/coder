@@ -30,7 +30,7 @@
     "stopping": "Stopping...",
     "deleting": "Deleting...",
     "settings": "Settings",
-    "retryDebugMode": "Try again in debug mode"
+    "retryDebugMode": "Try in debug mode"
   },
   "disabledButton": {
     "canceling": "Canceling",
@@ -68,6 +68,6 @@
     "updateWorkspaceLabel": "Update workspace"
   },
   "askParametersDialog": {
-    "message": "It looks like the new version has new parameters that need to be filled in to update the workspace."
+    "message": "The new version has parameters that need to be filled in to update the workspace."
   }
 }

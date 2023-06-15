@@ -1,4 +1,4 @@
-import TextField from "@material-ui/core/TextField"
+import TextField from "@mui/material/TextField"
 import { Template, UpdateTemplateMeta } from "api/typesGenerated"
 import { FormikContextType, FormikTouched, useFormik } from "formik"
 import { FC } from "react"
@@ -7,6 +7,7 @@ import {
   nameValidator,
   templateDisplayNameValidator,
   onChangeTrimmed,
+  iconValidator,
 } from "utils/formUtils"
 import * as Yup from "yup"
 import i18next from "i18next"
@@ -19,9 +20,9 @@ import {
   FormFooter,
 } from "components/Form/Form"
 import { Stack } from "components/Stack/Stack"
-import Checkbox from "@material-ui/core/Checkbox"
+import Checkbox from "@mui/material/Checkbox"
 import { HelpTooltip, HelpTooltipText } from "components/Tooltips/HelpTooltip"
-import { makeStyles } from "@material-ui/core/styles"
+import { makeStyles } from "@mui/styles"
 
 const MAX_DESCRIPTION_CHAR_LIMIT = 128
 
@@ -35,10 +36,12 @@ export const getValidationSchema = (): Yup.AnyObjectSchema =>
     ),
     description: Yup.string().max(
       MAX_DESCRIPTION_CHAR_LIMIT,
-      i18next.t("descriptionMaxError", { ns: "templateSettingsPage" }),
+      i18next
+        .t("descriptionMaxError", { ns: "templateSettingsPage" })
+        .toString(),
     ),
-
     allow_user_cancel_workspace_jobs: Yup.boolean(),
+    icon: iconValidator,
   })
 
 export interface TemplateSettingsForm {
@@ -74,18 +77,18 @@ export const TemplateSettingsForm: FC<TemplateSettingsForm> = ({
       onSubmit,
       initialTouched,
     })
-  const getFieldHelpers = getFormHelpers<UpdateTemplateMeta>(form, error)
+  const getFieldHelpers = getFormHelpers(form, error)
   const { t } = useTranslation("templateSettingsPage")
   const styles = useStyles()
 
   return (
     <HorizontalForm
       onSubmit={form.handleSubmit}
-      aria-label={t("formAriaLabel")}
+      aria-label={t("formAriaLabel").toString()}
     >
       <FormSection
-        title={t("generalInfo.title")}
-        description={t("generalInfo.description")}
+        title={t("generalInfo.title").toString()}
+        description={t("generalInfo.description").toString()}
       >
         <FormFields>
           <TextField
@@ -95,14 +98,13 @@ export const TemplateSettingsForm: FC<TemplateSettingsForm> = ({
             autoFocus
             fullWidth
             label={t("nameLabel")}
-            variant="outlined"
           />
         </FormFields>
       </FormSection>
 
       <FormSection
-        title={t("displayInfo.title")}
-        description={t("displayInfo.description")}
+        title={t("displayInfo.title").toString()}
+        description={t("displayInfo.description").toString()}
       >
         <FormFields>
           <TextField
@@ -110,7 +112,6 @@ export const TemplateSettingsForm: FC<TemplateSettingsForm> = ({
             disabled={isSubmitting}
             fullWidth
             label={t("displayNameLabel")}
-            variant="outlined"
           />
 
           <TextField
@@ -119,7 +120,6 @@ export const TemplateSettingsForm: FC<TemplateSettingsForm> = ({
             disabled={isSubmitting}
             fullWidth
             label={t("descriptionLabel")}
-            variant="outlined"
             rows={2}
           />
 
@@ -129,20 +129,18 @@ export const TemplateSettingsForm: FC<TemplateSettingsForm> = ({
             onChange={onChangeTrimmed(form)}
             fullWidth
             label={t("iconLabel")}
-            variant="outlined"
             onPickEmoji={(value) => form.setFieldValue("icon", value)}
           />
         </FormFields>
       </FormSection>
 
       <FormSection
-        title={t("operations.title")}
-        description={t("operations.description")}
+        title={t("operations.title").toString()}
+        description={t("operations.description").toString()}
       >
         <label htmlFor="allow_user_cancel_workspace_jobs">
           <Stack direction="row" spacing={1}>
             <Checkbox
-              color="primary"
               id="allow_user_cancel_workspace_jobs"
               name="allow_user_cancel_workspace_jobs"
               disabled={isSubmitting}

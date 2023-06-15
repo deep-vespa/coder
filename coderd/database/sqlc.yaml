@@ -8,9 +8,11 @@ overrides:
   go:
     overrides:
       - column: "provisioner_daemons.tags"
-        go_type: "github.com/coder/coder/coderd/database/dbtype.StringMap"
+        go_type:
+          type: "StringMap"
       - column: "provisioner_jobs.tags"
-        go_type: "github.com/coder/coder/coderd/database/dbtype.StringMap"
+        go_type:
+          type: "StringMap"
       - column: "users.rbac_roles"
         go_type: "github.com/lib/pq.StringArray"
       - column: "templates.user_acl"
@@ -51,6 +53,8 @@ overrides:
       template_max_ttl: TemplateMaxTTL
       motd_file: MOTDFile
       uuid: UUID
+      failure_ttl: FailureTTL
+      inactivity_ttl: InactivityTTL
 
 sql:
   - schema: "./dump.sql"

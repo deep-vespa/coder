@@ -876,7 +876,7 @@ func TestWorkspaceAgentsGitAuth(t *testing.T) {
 			}},
 		})
 		resp := coderdtest.RequestGitAuthCallback(t, "github", client)
-		require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+		require.Equal(t, http.StatusSeeOther, resp.StatusCode)
 	})
 	t.Run("AuthorizedCallback", func(t *testing.T) {
 		t.Parallel()
@@ -1268,23 +1268,6 @@ func TestWorkspaceAgent_Metadata(t *testing.T) {
 
 	var update []codersdk.WorkspaceAgentMetadata
 
-	check := func(want codersdk.WorkspaceAgentMetadataResult, got codersdk.WorkspaceAgentMetadata) {
-		require.Equal(t, want.Value, got.Result.Value)
-		require.Equal(t, want.Error, got.Result.Error)
-
-		if testutil.InCI() && (runtime.GOOS == "windows" || testutil.InRaceMode()) {
-			// Avoid testing timings when flake chance is high.
-			return
-		}
-		require.WithinDuration(t, got.Result.CollectedAt, want.CollectedAt, time.Second)
-		ageImpliedNow := got.Result.CollectedAt.Add(time.Duration(got.Result.Age) * time.Second)
-		// We use a long WithinDuration to tolerate slow CI, but we're still making sure
-		// that Age is within the ballpark.
-		require.WithinDuration(
-			t, time.Now(), ageImpliedNow, time.Second*10,
-		)
-	}
-
 	wantMetadata1 := codersdk.WorkspaceAgentMetadataResult{
 		CollectedAt: time.Now(),
 		Value:       "bar",
@@ -1297,17 +1280,38 @@ func TestWorkspaceAgent_Metadata(t *testing.T) {
 
 	recvUpdate := func() []codersdk.WorkspaceAgentMetadata {
 		select {
+		case <-ctx.Done():
+			t.Fatalf("context done: %v", ctx.Err())
 		case err := <-errors:
 			t.Fatalf("error watching metadata: %v", err)
-			return nil
 		case update := <-updates:
 			return update
+		}
+		return nil
+	}
+
+	check := func(want codersdk.WorkspaceAgentMetadataResult, got codersdk.WorkspaceAgentMetadata, retry bool) {
+		// We can't trust the order of the updates due to timers and debounces,
+		// so let's check a few times more.
+		for i := 0; retry && i < 2 && (want.Value != got.Result.Value || want.Error != got.Result.Error); i++ {
+			update = recvUpdate()
+			for _, m := range update {
+				if m.Description.Key == got.Description.Key {
+					got = m
+					break
+				}
+			}
+		}
+		ok1 := assert.Equal(t, want.Value, got.Result.Value)
+		ok2 := assert.Equal(t, want.Error, got.Result.Error)
+		if !ok1 || !ok2 {
+			require.FailNow(t, "check failed")
 		}
 	}
 
 	update = recvUpdate()
 	require.Len(t, update, 3)
-	check(wantMetadata1, update[0])
+	check(wantMetadata1, update[0], false)
 	// The second metadata result is not yet posted.
 	require.Zero(t, update[1].Result.CollectedAt)
 
@@ -1315,14 +1319,14 @@ func TestWorkspaceAgent_Metadata(t *testing.T) {
 	post("foo2", wantMetadata2)
 	update = recvUpdate()
 	require.Len(t, update, 3)
-	check(wantMetadata1, update[0])
-	check(wantMetadata2, update[1])
+	check(wantMetadata1, update[0], true)
+	check(wantMetadata2, update[1], true)
 
 	wantMetadata1.Error = "error"
 	post("foo1", wantMetadata1)
 	update = recvUpdate()
 	require.Len(t, update, 3)
-	check(wantMetadata1, update[0])
+	check(wantMetadata1, update[0], true)
 
 	const maxValueLen = 32 << 10
 	tooLongValueMetadata := wantMetadata1
@@ -1331,10 +1335,95 @@ func TestWorkspaceAgent_Metadata(t *testing.T) {
 	tooLongValueMetadata.CollectedAt = time.Now()
 	post("foo3", tooLongValueMetadata)
 	got := recvUpdate()[2]
+	for i := 0; i < 2 && len(got.Result.Value) != maxValueLen; i++ {
+		got = recvUpdate()[2]
+	}
 	require.Len(t, got.Result.Value, maxValueLen)
 	require.NotEmpty(t, got.Result.Error)
 
 	unknownKeyMetadata := wantMetadata1
 	err = agentClient.PostMetadata(ctx, "unknown", unknownKeyMetadata)
 	require.NoError(t, err)
+}
+
+func TestWorkspaceAgent_Startup(t *testing.T) {
+	t.Parallel()
+
+	t.Run("OK", func(t *testing.T) {
+		t.Parallel()
+
+		client := coderdtest.New(t, &coderdtest.Options{
+			IncludeProvisionerDaemon: true,
+		})
+		user := coderdtest.CreateFirstUser(t, client)
+		authToken := uuid.NewString()
+		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
+			Parse:          echo.ParseComplete,
+			ProvisionPlan:  echo.ProvisionComplete,
+			ProvisionApply: echo.ProvisionApplyWithAgent(authToken),
+		})
+		template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
+		coderdtest.AwaitTemplateVersionJob(t, client, version.ID)
+		workspace := coderdtest.CreateWorkspace(t, client, user.OrganizationID, template.ID)
+		coderdtest.AwaitWorkspaceBuildJob(t, client, workspace.LatestBuild.ID)
+
+		agentClient := agentsdk.New(client.URL)
+		agentClient.SetSessionToken(authToken)
+
+		ctx := testutil.Context(t, testutil.WaitMedium)
+
+		const (
+			expectedVersion   = "v1.2.3"
+			expectedDir       = "/home/coder"
+			expectedSubsystem = codersdk.AgentSubsystemEnvbox
+		)
+
+		err := agentClient.PostStartup(ctx, agentsdk.PostStartupRequest{
+			Version:           expectedVersion,
+			ExpandedDirectory: expectedDir,
+			Subsystem:         expectedSubsystem,
+		})
+		require.NoError(t, err)
+
+		workspace, err = client.Workspace(ctx, workspace.ID)
+		require.NoError(t, err)
+
+		wsagent, err := client.WorkspaceAgent(ctx, workspace.LatestBuild.Resources[0].Agents[0].ID)
+		require.NoError(t, err)
+		require.Equal(t, expectedVersion, wsagent.Version)
+		require.Equal(t, expectedDir, wsagent.ExpandedDirectory)
+		require.Equal(t, expectedSubsystem, wsagent.Subsystem)
+	})
+
+	t.Run("InvalidSemver", func(t *testing.T) {
+		t.Parallel()
+
+		client := coderdtest.New(t, &coderdtest.Options{
+			IncludeProvisionerDaemon: true,
+		})
+		user := coderdtest.CreateFirstUser(t, client)
+		authToken := uuid.NewString()
+		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
+			Parse:          echo.ParseComplete,
+			ProvisionPlan:  echo.ProvisionComplete,
+			ProvisionApply: echo.ProvisionApplyWithAgent(authToken),
+		})
+		template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
+		coderdtest.AwaitTemplateVersionJob(t, client, version.ID)
+		workspace := coderdtest.CreateWorkspace(t, client, user.OrganizationID, template.ID)
+		coderdtest.AwaitWorkspaceBuildJob(t, client, workspace.LatestBuild.ID)
+
+		agentClient := agentsdk.New(client.URL)
+		agentClient.SetSessionToken(authToken)
+
+		ctx := testutil.Context(t, testutil.WaitMedium)
+
+		err := agentClient.PostStartup(ctx, agentsdk.PostStartupRequest{
+			Version: "1.2.3",
+		})
+		require.Error(t, err)
+		cerr, ok := codersdk.AsError(err)
+		require.True(t, ok)
+		require.Equal(t, http.StatusBadRequest, cerr.StatusCode())
+	})
 }

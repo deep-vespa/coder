@@ -20,8 +20,6 @@ import {
   TemplateVariableField,
 } from "components/TemplateVariableField/TemplateVariableField"
 
-export const getValidationSchema = (): Yup.AnyObjectSchema => Yup.object()
-
 export interface TemplateVariablesForm {
   templateVersion: TemplateVersion
   templateVariables: TemplateVersionVariable[]
@@ -71,7 +69,7 @@ export const TemplateVariablesForm: FC<TemplateVariablesForm> = ({
   return (
     <HorizontalForm
       onSubmit={form.handleSubmit}
-      aria-label={t("formAriaLabel")}
+      aria-label={t("formAriaLabel").toString()}
     >
       {templateVariables.map((templateVariable, index) => {
         let fieldHelpers
@@ -98,8 +96,8 @@ export const TemplateVariablesForm: FC<TemplateVariablesForm> = ({
                 templateVersionVariable={templateVariable}
                 initialValue={initialUserVariableValues[index].value}
                 disabled={isSubmitting}
-                onChange={(value) => {
-                  form.setFieldValue("user_variable_values." + index, {
+                onChange={async (value) => {
+                  await form.setFieldValue("user_variable_values." + index, {
                     name: templateVariable.name,
                     value: value,
                   })
@@ -177,7 +175,7 @@ const ValidationSchemaForTemplateVariables = (
             if (!val || val.length === 0) {
               return ctx.createError({
                 path: ctx.path,
-                message: t("validationRequiredVariable"),
+                message: t("validationRequiredVariable").toString(),
               })
             }
           }
