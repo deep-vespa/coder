@@ -55,15 +55,16 @@ export interface WorkspaceContext {
   template?: TypesGen.Template
   permissions?: Permissions
   templateVersion?: TypesGen.TemplateVersion
+  deploymentValues?: TypesGen.DeploymentValues
   build?: TypesGen.WorkspaceBuild
   // Builds
   builds?: TypesGen.WorkspaceBuild[]
-  getBuildsError?: Error | unknown
+  getBuildsError?: unknown
   missedParameters?: TypesGen.TemplateVersionParameter[]
   // error creating a new WorkspaceBuild
-  buildError?: Error | unknown
+  buildError?: unknown
   cancellationMessage?: Types.Message
-  cancellationError?: Error | unknown
+  cancellationError?: unknown
   // debug
   createBuildLogLevel?: TypesGen.CreateWorkspaceBuildRequest["log_level"]
   // SSH Config
@@ -74,7 +75,7 @@ export interface WorkspaceContext {
 
 export type WorkspaceEvent =
   | { type: "REFRESH_WORKSPACE"; data: TypesGen.ServerSentEvent["data"] }
-  | { type: "START" }
+  | { type: "START"; buildParameters?: TypesGen.WorkspaceBuildParameter[] }
   | { type: "STOP" }
   | { type: "ASK_DELETE" }
   | { type: "DELETE" }
@@ -91,15 +92,17 @@ export type WorkspaceEvent =
       checkRefresh?: boolean
       data?: TypesGen.ServerSentEvent["data"]
     }
-  | { type: "EVENT_SOURCE_ERROR"; error: Error | unknown }
+  | { type: "EVENT_SOURCE_ERROR"; error: unknown }
   | { type: "INCREASE_DEADLINE"; hours: number }
   | { type: "DECREASE_DEADLINE"; hours: number }
   | { type: "RETRY_BUILD" }
+  | { type: "ACTIVATE" }
 
 export const checks = {
   readWorkspace: "readWorkspace",
   updateWorkspace: "updateWorkspace",
   updateTemplate: "updateTemplate",
+  viewDeploymentValues: "viewDeploymentValues",
 } as const
 
 const permissionsToCheck = (
@@ -130,7 +133,13 @@ const permissionsToCheck = (
       },
       action: "update",
     },
-  } as const)
+    [checks.viewDeploymentValues]: {
+      object: {
+        resource_type: "deployment_config",
+      },
+      action: "read",
+    },
+  }) as const
 
 export const workspaceMachine = createMachine(
   {
@@ -143,9 +152,6 @@ export const workspaceMachine = createMachine(
       services: {} as {
         loadInitialWorkspaceData: {
           data: Awaited<ReturnType<typeof loadInitialWorkspaceData>>
-        }
-        getTemplateParameters: {
-          data: TypesGen.TemplateVersionParameter[]
         }
         updateWorkspace: {
           data: TypesGen.WorkspaceBuild
@@ -163,6 +169,9 @@ export const workspaceMachine = createMachine(
           data: TypesGen.WorkspaceBuild
         }
         cancelWorkspace: {
+          data: Types.Message
+        }
+        activateWorkspace: {
           data: Types.Message
         }
         listening: {
@@ -255,6 +264,7 @@ export const workspaceMachine = createMachine(
                       actions: ["enableDebugMode"],
                     },
                   ],
+                  ACTIVATE: "requestingActivate",
                 },
               },
               askingDelete: {
@@ -400,6 +410,18 @@ export const workspaceMachine = createMachine(
                   ],
                 },
               },
+              requestingActivate: {
+                entry: ["clearBuildError"],
+                invoke: {
+                  src: "activateWorkspace",
+                  id: "activateWorkspace",
+                  onDone: "idle",
+                  onError: {
+                    target: "idle",
+                    actions: ["displayActivateError"],
+                  },
+                },
+              },
             },
           },
           timeline: {
@@ -488,6 +510,7 @@ export const workspaceMachine = createMachine(
         template: (_, event) => event.data.template,
         templateVersion: (_, event) => event.data.templateVersion,
         permissions: (_, event) => event.data.permissions as Permissions,
+        deploymentValues: (_, event) => event.data.deploymentValues,
       }),
       assignError: assign({
         error: (_, event) => event.data,
@@ -553,7 +576,10 @@ export const workspaceMachine = createMachine(
         )
         displayError(message)
       },
-
+      displayActivateError: (_, { data }) => {
+        const message = getErrorMessage(data, "Error activate workspace.")
+        displayError(message)
+      },
       assignMissedParameters: assign({
         missedParameters: (_, { data }) => {
           if (!(data instanceof API.MissingBuildParameters)) {
@@ -620,12 +646,13 @@ export const workspaceMachine = createMachine(
           send({ type: "REFRESH_TIMELINE" })
           return build
         },
-      startWorkspace: (context) => async (send) => {
+      startWorkspace: (context, data) => async (send) => {
         if (context.workspace) {
           const startWorkspacePromise = await API.startWorkspace(
             context.workspace.id,
             context.workspace.latest_build.template_version_id,
             context.createBuildLogLevel,
+            "buildParameters" in data ? data.buildParameters : undefined,
           )
           send({ type: "REFRESH_TIMELINE" })
           return startWorkspacePromise
@@ -666,6 +693,18 @@ export const workspaceMachine = createMachine(
           return cancelWorkspacePromise
         } else {
           throw Error("Cannot cancel workspace without build id")
+        }
+      },
+      activateWorkspace: (context) => async (send) => {
+        if (context.workspace) {
+          const activateWorkspacePromise = await API.updateWorkspaceDormancy(
+            context.workspace.id,
+            false,
+          )
+          send({ type: "REFRESH_WORKSPACE", data: activateWorkspacePromise })
+          return activateWorkspacePromise
+        } else {
+          throw Error("Cannot activate workspace without workspace id")
         }
       },
       listening: (context) => (send) => {
@@ -740,10 +779,17 @@ async function loadInitialWorkspaceData({
     }),
   ])
 
+  const canViewDeploymentValues = Boolean(
+    (permissions as Permissions)?.viewDeploymentValues,
+  )
+  const deploymentValues = canViewDeploymentValues
+    ? (await API.getDeploymentValues())?.config
+    : undefined
   return {
     workspace,
     template,
     templateVersion,
     permissions,
+    deploymentValues,
   }
 }

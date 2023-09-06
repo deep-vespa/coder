@@ -74,6 +74,8 @@ export const useFilter = ({
   }
 }
 
+export type UseFilterResult = ReturnType<typeof useFilter>
+
 const parseFilterQuery = (filterQuery: string): FilterValues => {
   if (filterQuery === "") {
     return {}
@@ -135,12 +137,16 @@ export const Filter = ({
   skeleton,
   options,
   learnMoreLink,
+  learnMoreLabel2,
+  learnMoreLink2,
   presets,
 }: {
   filter: ReturnType<typeof useFilter>
   skeleton: ReactNode
   isLoading: boolean
   learnMoreLink: string
+  learnMoreLabel2?: string
+  learnMoreLink2?: string
   error?: unknown
   options?: ReactNode
   presets: PresetFilter[]
@@ -148,9 +154,14 @@ export const Filter = ({
   const shouldDisplayError = hasError(error) && isApiValidationError(error)
   const hasFilterQuery = filter.query !== ""
   const [searchQuery, setSearchQuery] = useState(filter.query)
+  const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    setSearchQuery(filter.query)
+    // We don't want to update this while the user is typing something or has the focus in the input
+    const isFocused = document.activeElement === inputRef.current
+    if (!isFocused) {
+      setSearchQuery(filter.query)
+    }
   }, [filter.query])
 
   return (
@@ -171,6 +182,8 @@ export const Filter = ({
               onSelect={(query) => filter.update(query)}
               presets={presets}
               learnMoreLink={learnMoreLink}
+              learnMoreLabel2={learnMoreLabel2}
+              learnMoreLink2={learnMoreLink2}
             />
             <TextField
               fullWidth
@@ -186,6 +199,7 @@ export const Filter = ({
                 name: "query",
                 placeholder: "Search...",
                 value: searchQuery,
+                ref: inputRef,
                 onChange: (e) => {
                   setSearchQuery(e.target.value)
                   filter.debounceUpdate(e.target.value)
@@ -203,6 +217,9 @@ export const Filter = ({
                   },
                   "& .MuiInputAdornment-root": {
                     marginLeft: 0,
+                  },
+                  "&.Mui-error": {
+                    zIndex: 3,
                   },
                 },
                 startAdornment: (
@@ -242,10 +259,14 @@ export const Filter = ({
 const PresetMenu = ({
   presets,
   learnMoreLink,
+  learnMoreLabel2,
+  learnMoreLink2,
   onSelect,
 }: {
   presets: PresetFilter[]
   learnMoreLink: string
+  learnMoreLabel2?: string
+  learnMoreLink2?: string
   onSelect: (query: string) => void
 }) => {
   const [isOpen, setIsOpen] = useState(false)
@@ -306,6 +327,22 @@ const PresetMenu = ({
           <OpenInNewOutlined sx={{ fontSize: "14px !important" }} />
           View advanced filtering
         </MenuItem>
+        {learnMoreLink2 && learnMoreLabel2 && (
+          <>
+            <MenuItem
+              component="a"
+              href={learnMoreLink2}
+              target="_blank"
+              sx={{ fontSize: 13, fontWeight: 500 }}
+              onClick={() => {
+                setIsOpen(false)
+              }}
+            >
+              <OpenInNewOutlined sx={{ fontSize: "14px !important" }} />
+              {learnMoreLabel2}
+            </MenuItem>
+          </>
+        )}
       </Menu>
     </>
   )

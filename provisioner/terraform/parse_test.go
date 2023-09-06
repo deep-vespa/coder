@@ -4,13 +4,11 @@ package terraform_test
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/coder/coder/provisionersdk/proto"
+	"github.com/coder/coder/v2/provisionersdk/proto"
 )
 
 func TestParse(t *testing.T) {
@@ -21,9 +19,8 @@ func TestParse(t *testing.T) {
 	testCases := []struct {
 		Name     string
 		Files    map[string]string
-		Response *proto.Parse_Response
-		// If ErrorContains is not empty, then response.Recv() should return an
-		// error containing this string before a Complete response is returned.
+		Response *proto.ParseComplete
+		// If ErrorContains is not empty, then the ParseComplete should have an Error containing the given string
 		ErrorContains string
 	}{
 		{
@@ -31,20 +28,14 @@ func TestParse(t *testing.T) {
 			Files: map[string]string{
 				"main.tf": `variable "A" {
 				description = "Testing!"
-			}
-
-			provider "coder" { feature_use_managed_variables = "true" }`,
+			}`,
 			},
-			Response: &proto.Parse_Response{
-				Type: &proto.Parse_Response_Complete{
-					Complete: &proto.Parse_Complete{
-						TemplateVariables: []*proto.TemplateVariable{
-							{
-								Name:        "A",
-								Description: "Testing!",
-								Required:    true,
-							},
-						},
+			Response: &proto.ParseComplete{
+				TemplateVariables: []*proto.TemplateVariable{
+					{
+						Name:        "A",
+						Description: "Testing!",
+						Required:    true,
 					},
 				},
 			},
@@ -54,19 +45,13 @@ func TestParse(t *testing.T) {
 			Files: map[string]string{
 				"main.tf": `variable "A" {
 				default = "wow"
-			}
-
-			provider "coder" { feature_use_managed_variables = "true" }`,
+			}`,
 			},
-			Response: &proto.Parse_Response{
-				Type: &proto.Parse_Response_Complete{
-					Complete: &proto.Parse_Complete{
-						TemplateVariables: []*proto.TemplateVariable{
-							{
-								Name:         "A",
-								DefaultValue: "wow",
-							},
-						},
+			Response: &proto.ParseComplete{
+				TemplateVariables: []*proto.TemplateVariable{
+					{
+						Name:         "A",
+						DefaultValue: "wow",
 					},
 				},
 			},
@@ -78,19 +63,13 @@ func TestParse(t *testing.T) {
 				validation {
 					condition = var.A == "value"
 				}
-			}
-
-			provider "coder" { feature_use_managed_variables = "true" }`,
+			}`,
 			},
-			Response: &proto.Parse_Response{
-				Type: &proto.Parse_Response_Complete{
-					Complete: &proto.Parse_Complete{
-						TemplateVariables: []*proto.TemplateVariable{
-							{
-								Name:     "A",
-								Required: true,
-							},
-						},
+			Response: &proto.ParseComplete{
+				TemplateVariables: []*proto.TemplateVariable{
+					{
+						Name:     "A",
+						Required: true,
 					},
 				},
 			},
@@ -106,156 +85,118 @@ func TestParse(t *testing.T) {
 			Name: "multiple-variables",
 			Files: map[string]string{
 				"main1.tf": `variable "foo" { }
-				variable "bar" { }
-
-				provider "coder" { feature_use_managed_variables = "true" }`,
+				variable "bar" { }`,
 				"main2.tf": `variable "baz" { }
 				variable "quux" { }`,
 			},
-			Response: &proto.Parse_Response{
-				Type: &proto.Parse_Response_Complete{
-					Complete: &proto.Parse_Complete{
-						TemplateVariables: []*proto.TemplateVariable{
-							{
-								Name:     "foo",
-								Required: true,
-							},
-							{
-								Name:     "bar",
-								Required: true,
-							},
-							{
-								Name:     "baz",
-								Required: true,
-							},
-							{
-								Name:     "quux",
-								Required: true,
-							},
-						},
+			Response: &proto.ParseComplete{
+				TemplateVariables: []*proto.TemplateVariable{
+					{
+						Name:     "foo",
+						Required: true,
+					},
+					{
+						Name:     "bar",
+						Required: true,
+					},
+					{
+						Name:     "baz",
+						Required: true,
+					},
+					{
+						Name:     "quux",
+						Required: true,
 					},
 				},
 			},
 		},
 		{
-			Name: "enable-managed-variables-with-default-bool",
+			Name: "template-variables-with-default-bool",
 			Files: map[string]string{
 				"main.tf": `variable "A" {
 				description = "Testing!"
 				type = 	bool
 				default = true
 				sensitive = true
-			}
-
-			provider "coder" {
-				feature_use_managed_variables = true
 			}`,
 			},
-			Response: &proto.Parse_Response{
-				Type: &proto.Parse_Response_Complete{
-					Complete: &proto.Parse_Complete{
-						TemplateVariables: []*proto.TemplateVariable{
-							{
-								Name:         "A",
-								Description:  "Testing!",
-								Type:         "bool",
-								DefaultValue: "true",
-								Required:     false,
-								Sensitive:    true,
-							},
-						},
+			Response: &proto.ParseComplete{
+				TemplateVariables: []*proto.TemplateVariable{
+					{
+						Name:         "A",
+						Description:  "Testing!",
+						Type:         "bool",
+						DefaultValue: "true",
+						Required:     false,
+						Sensitive:    true,
 					},
 				},
 			},
 		},
 		{
-			Name: "enable-managed-variables-with-default-string",
+			Name: "template-variables-with-default-string",
 			Files: map[string]string{
 				"main.tf": `variable "A" {
 				description = "Testing!"
 				type = 	string
 				default = "abc"
 				sensitive = true
-			}
-
-			provider "coder" {
-				feature_use_managed_variables = true
 			}`,
 			},
-			Response: &proto.Parse_Response{
-				Type: &proto.Parse_Response_Complete{
-					Complete: &proto.Parse_Complete{
-						TemplateVariables: []*proto.TemplateVariable{
-							{
-								Name:         "A",
-								Description:  "Testing!",
-								Type:         "string",
-								DefaultValue: "abc",
-								Required:     false,
-								Sensitive:    true,
-							},
-						},
+			Response: &proto.ParseComplete{
+				TemplateVariables: []*proto.TemplateVariable{
+					{
+						Name:         "A",
+						Description:  "Testing!",
+						Type:         "string",
+						DefaultValue: "abc",
+						Required:     false,
+						Sensitive:    true,
 					},
 				},
 			},
 		},
 		{
-			Name: "enable-managed-variables-with-default-empty-string",
+			Name: "template-variables-with-default-empty-string",
 			Files: map[string]string{
 				"main.tf": `variable "A" {
 				description = "Testing!"
 				type = 	string
 				default = ""
 				sensitive = true
-			}
-
-			provider "coder" {
-				feature_use_managed_variables = true
 			}`,
 			},
-			Response: &proto.Parse_Response{
-				Type: &proto.Parse_Response_Complete{
-					Complete: &proto.Parse_Complete{
-						TemplateVariables: []*proto.TemplateVariable{
-							{
-								Name:         "A",
-								Description:  "Testing!",
-								Type:         "string",
-								DefaultValue: "",
-								Required:     false,
-								Sensitive:    true,
-							},
-						},
+			Response: &proto.ParseComplete{
+				TemplateVariables: []*proto.TemplateVariable{
+					{
+						Name:         "A",
+						Description:  "Testing!",
+						Type:         "string",
+						DefaultValue: "",
+						Required:     false,
+						Sensitive:    true,
 					},
 				},
 			},
 		},
 		{
-			Name: "enable-managed-variables-without-default",
+			Name: "template-variables-without-default",
 			Files: map[string]string{
 				"main2.tf": `variable "A" {
 				description = "Testing!"
 				type = string
 				sensitive = true
-			}
-
-			provider "coder" {
-				feature_use_managed_variables = true
 			}`,
 			},
-			Response: &proto.Parse_Response{
-				Type: &proto.Parse_Response_Complete{
-					Complete: &proto.Parse_Complete{
-						TemplateVariables: []*proto.TemplateVariable{
-							{
-								Name:         "A",
-								Description:  "Testing!",
-								Type:         "string",
-								DefaultValue: "",
-								Required:     true,
-								Sensitive:    true,
-							},
-						},
+			Response: &proto.ParseComplete{
+				TemplateVariables: []*proto.TemplateVariable{
+					{
+						Name:         "A",
+						Description:  "Testing!",
+						Type:         "string",
+						DefaultValue: "",
+						Required:     true,
+						Sensitive:    true,
 					},
 				},
 			},
@@ -267,40 +208,31 @@ func TestParse(t *testing.T) {
 		t.Run(testCase.Name, func(t *testing.T) {
 			t.Parallel()
 
-			// Write all files to the temporary test directory.
-			directory := t.TempDir()
-			for path, content := range testCase.Files {
-				err := os.WriteFile(filepath.Join(directory, path), []byte(content), 0o600)
-				require.NoError(t, err)
-			}
-
-			response, err := api.Parse(ctx, &proto.Parse_Request{
-				Directory: directory,
+			session := configure(ctx, t, api, &proto.Config{
+				TemplateSourceArchive: makeTar(t, testCase.Files),
 			})
+
+			err := session.Send(&proto.Request{Type: &proto.Request_Parse{Parse: &proto.ParseRequest{}}})
 			require.NoError(t, err)
 
 			for {
-				msg, err := response.Recv()
-				if err != nil {
-					if testCase.ErrorContains != "" {
-						require.ErrorContains(t, err, testCase.ErrorContains)
-						break
-					}
+				msg, err := session.Recv()
+				require.NoError(t, err)
 
-					require.NoError(t, err)
-				}
-
-				if msg.GetComplete() == nil {
-					continue
-				}
 				if testCase.ErrorContains != "" {
-					t.Fatal("expected error but job completed successfully")
+					require.Contains(t, msg.GetParse().GetError(), testCase.ErrorContains)
+					break
+				}
+
+				// Ignore logs in this test
+				if msg.GetLog() != nil {
+					continue
 				}
 
 				// Ensure the want and got are equivalent!
 				want, err := json.Marshal(testCase.Response)
 				require.NoError(t, err)
-				got, err := json.Marshal(msg)
+				got, err := json.Marshal(msg.GetParse())
 				require.NoError(t, err)
 
 				require.Equal(t, string(want), string(got))

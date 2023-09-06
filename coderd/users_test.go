@@ -4,23 +4,30 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"sort"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/coder/coder/v2/coderd"
+	"github.com/coder/coder/v2/coderd/coderdtest/oidctest"
+
+	"github.com/golang-jwt/jwt/v4"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/exp/slices"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/coder/coder/cli/clibase"
-	"github.com/coder/coder/coderd/audit"
-	"github.com/coder/coder/coderd/coderdtest"
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/coderd/rbac"
-	"github.com/coder/coder/codersdk"
-	"github.com/coder/coder/testutil"
+	"github.com/coder/coder/v2/cli/clibase"
+	"github.com/coder/coder/v2/coderd/audit"
+	"github.com/coder/coder/v2/coderd/coderdtest"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/database/dbauthz"
+	"github.com/coder/coder/v2/coderd/database/dbtime"
+	"github.com/coder/coder/v2/coderd/rbac"
+	"github.com/coder/coder/v2/coderd/util/slice"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/testutil"
 )
 
 func TestFirstUser(t *testing.T) {
@@ -400,6 +407,7 @@ func TestPostLogout(t *testing.T) {
 	})
 }
 
+// nolint:bodyclose
 func TestPostUsers(t *testing.T) {
 	t.Parallel()
 	t.Run("NoAuth", func(t *testing.T) {
@@ -558,11 +566,70 @@ func TestPostUsers(t *testing.T) {
 		// should be Never since they haven't performed a request.
 		for _, user := range allUsersRes.Users {
 			if user.ID == firstUser.ID {
-				require.WithinDuration(t, firstUser.LastSeenAt, database.Now(), testutil.WaitShort)
+				require.WithinDuration(t, firstUser.LastSeenAt, dbtime.Now(), testutil.WaitShort)
 			} else {
 				require.Zero(t, user.LastSeenAt)
 			}
 		}
+	})
+
+	t.Run("CreateNoneLoginType", func(t *testing.T) {
+		t.Parallel()
+		client := coderdtest.New(t, nil)
+		first := coderdtest.CreateFirstUser(t, client)
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
+		defer cancel()
+
+		user, err := client.CreateUser(ctx, codersdk.CreateUserRequest{
+			OrganizationID: first.OrganizationID,
+			Email:          "another@user.org",
+			Username:       "someone-else",
+			Password:       "",
+			UserLoginType:  codersdk.LoginTypeNone,
+		})
+		require.NoError(t, err)
+
+		found, err := client.User(ctx, user.ID.String())
+		require.NoError(t, err)
+		require.Equal(t, found.LoginType, codersdk.LoginTypeNone)
+	})
+
+	t.Run("CreateOIDCLoginType", func(t *testing.T) {
+		t.Parallel()
+		email := "another@user.org"
+		fake := oidctest.NewFakeIDP(t,
+			oidctest.WithServing(),
+		)
+		cfg := fake.OIDCConfig(t, nil, func(cfg *coderd.OIDCConfig) {
+			cfg.AllowSignups = true
+		})
+
+		client := coderdtest.New(t, &coderdtest.Options{
+			OIDCConfig: cfg,
+		})
+		first := coderdtest.CreateFirstUser(t, client)
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
+		defer cancel()
+
+		_, err := client.CreateUser(ctx, codersdk.CreateUserRequest{
+			OrganizationID: first.OrganizationID,
+			Email:          email,
+			Username:       "someone-else",
+			Password:       "",
+			UserLoginType:  codersdk.LoginTypeOIDC,
+		})
+		require.NoError(t, err)
+
+		// Try to log in with OIDC.
+		userClient, _ := fake.Login(t, client, jwt.MapClaims{
+			"email": email,
+		})
+
+		found, err := userClient.User(ctx, "me")
+		require.NoError(t, err)
+		require.Equal(t, found.LoginType, codersdk.LoginTypeOIDC)
 	})
 }
 
@@ -1047,6 +1114,35 @@ func TestPutUserSuspend(t *testing.T) {
 	})
 }
 
+func TestActivateDormantUser(t *testing.T) {
+	t.Parallel()
+	client := coderdtest.New(t, nil)
+
+	// Create users
+	me := coderdtest.CreateFirstUser(t, client)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
+	defer cancel()
+	anotherUser, err := client.CreateUser(ctx, codersdk.CreateUserRequest{
+		Email:          "coder@coder.com",
+		Username:       "coder",
+		Password:       "SomeStrongPassword!",
+		OrganizationID: me.OrganizationID,
+	})
+	require.NoError(t, err)
+
+	// Ensure that new user has dormant account
+	require.Equal(t, codersdk.UserStatusDormant, anotherUser.Status)
+
+	// Activate user account
+	_, err = client.UpdateUserStatus(ctx, anotherUser.Username, codersdk.UserStatusActive)
+	require.NoError(t, err)
+
+	// Verify if the account is active now
+	anotherUser, err = client.User(ctx, anotherUser.Username)
+	require.NoError(t, err)
+	require.Equal(t, codersdk.UserStatusActive, anotherUser.Status)
+}
+
 func TestGetUser(t *testing.T) {
 	t.Parallel()
 
@@ -1102,7 +1198,7 @@ func TestGetUser(t *testing.T) {
 func TestUsersFilter(t *testing.T) {
 	t.Parallel()
 
-	client := coderdtest.New(t, &coderdtest.Options{IncludeProvisionerDaemon: true})
+	client, _, api := coderdtest.NewWithAPI(t, &coderdtest.Options{IncludeProvisionerDaemon: true})
 	first := coderdtest.CreateFirstUser(t, client)
 
 	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
@@ -1111,6 +1207,13 @@ func TestUsersFilter(t *testing.T) {
 	firstUser, err := client.User(ctx, codersdk.Me)
 	require.NoError(t, err, "fetch me")
 
+	// Noon on Jan 18 is the "now" for this test for last_seen timestamps.
+	// All these values are equal
+	// 2023-01-18T12:00:00Z (UTC)
+	// 2023-01-18T07:00:00-05:00 (America/New_York)
+	// 2023-01-18T13:00:00+01:00 (Europe/Madrid)
+	// 2023-01-16T00:00:00+12:00 (Asia/Anadyr)
+	lastSeenNow := time.Date(2023, 1, 18, 12, 0, 0, 0, time.UTC)
 	users := make([]codersdk.User, 0)
 	users = append(users, firstUser)
 	for i := 0; i < 15; i++ {
@@ -1121,7 +1224,16 @@ func TestUsersFilter(t *testing.T) {
 		if i%3 == 0 {
 			roles = append(roles, "auditor")
 		}
-		userClient, _ := coderdtest.CreateAnotherUser(t, client, first.OrganizationID, roles...)
+		userClient, userData := coderdtest.CreateAnotherUser(t, client, first.OrganizationID, roles...)
+		// Set the last seen for each user to a unique day
+		// nolint:gocritic // Unit test
+		_, err := api.Database.UpdateUserLastSeenAt(dbauthz.AsSystemRestricted(ctx), database.UpdateUserLastSeenAtParams{
+			ID:         userData.ID,
+			LastSeenAt: lastSeenNow.Add(-1 * time.Hour * 24 * time.Duration(i)),
+			UpdatedAt:  time.Now(),
+		})
+		require.NoError(t, err, "set a last seen")
+
 		user, err := userClient.User(ctx, codersdk.Me)
 		require.NoError(t, err, "fetch me")
 
@@ -1262,6 +1374,26 @@ func TestUsersFilter(t *testing.T) {
 				return false
 			},
 		},
+		{
+			Name: "LastSeenBeforeNow",
+			Filter: codersdk.UsersRequest{
+				SearchQuery: `last_seen_before:"2023-01-16T00:00:00+12:00"`,
+			},
+			FilterF: func(_ codersdk.UsersRequest, u codersdk.User) bool {
+				return u.LastSeenAt.Before(lastSeenNow)
+			},
+		},
+		{
+			Name: "LastSeenLastWeek",
+			Filter: codersdk.UsersRequest{
+				SearchQuery: `last_seen_before:"2023-01-14T23:59:59Z" last_seen_after:"2023-01-08T00:00:00Z"`,
+			},
+			FilterF: func(_ codersdk.UsersRequest, u codersdk.User) bool {
+				start := time.Date(2023, 1, 8, 0, 0, 0, 0, time.UTC)
+				end := time.Date(2023, 1, 14, 23, 59, 59, 0, time.UTC)
+				return u.LastSeenAt.Before(end) && u.LastSeenAt.After(start)
+			},
+		},
 	}
 
 	for _, c := range testCases {
@@ -1331,17 +1463,21 @@ func TestGetUsers(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		bruno, err := client.CreateUser(ctx, codersdk.CreateUserRequest{
-			Email:          "bruno@email.com",
-			Username:       "bruno",
+		_, err = client.UpdateUserStatus(ctx, alice.Username, codersdk.UserStatusSuspended)
+		require.NoError(t, err)
+
+		// Tom will be active
+		tom, err := client.CreateUser(ctx, codersdk.CreateUserRequest{
+			Email:          "tom@email.com",
+			Username:       "tom",
 			Password:       "MySecurePassword!",
 			OrganizationID: first.OrganizationID,
 		})
 		require.NoError(t, err)
-		active = append(active, bruno)
 
-		_, err = client.UpdateUserStatus(ctx, alice.Username, codersdk.UserStatusSuspended)
+		tom, err = client.UpdateUserStatus(ctx, tom.Username, codersdk.UserStatusActive)
 		require.NoError(t, err)
+		active = append(active, tom)
 
 		res, err := client.Users(ctx, codersdk.UsersRequest{
 			Status: codersdk.UserStatusActive,
@@ -1394,7 +1530,7 @@ func TestGetUsersPagination(t *testing.T) {
 	require.Equal(t, res.Count, 2)
 
 	// if offset is higher than the count postgres returns an empty array
-	// and not an ErrNoRows error. This also means the count must be 0.
+	// and not an ErrNoRows error.
 	res, err = client.Users(ctx, codersdk.UsersRequest{
 		Pagination: codersdk.Pagination{
 			Offset: 3,
@@ -1471,6 +1607,44 @@ func TestWorkspacesByUser(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, res.Workspaces, 1)
 	})
+}
+
+func TestDormantUser(t *testing.T) {
+	t.Parallel()
+
+	client := coderdtest.New(t, &coderdtest.Options{IncludeProvisionerDaemon: true})
+	user := coderdtest.CreateFirstUser(t, client)
+
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
+	defer cancel()
+
+	// Create a new user
+	newUser, err := client.CreateUser(ctx, codersdk.CreateUserRequest{
+		Email:          "test@coder.com",
+		Username:       "someone",
+		Password:       "MySecurePassword!",
+		OrganizationID: user.OrganizationID,
+	})
+	require.NoError(t, err)
+
+	// User should be dormant as they haven't logged in yet
+	users, err := client.Users(ctx, codersdk.UsersRequest{Search: newUser.Username})
+	require.NoError(t, err)
+	require.Len(t, users.Users, 1)
+	require.Equal(t, codersdk.UserStatusDormant, users.Users[0].Status)
+
+	// User logs in now
+	_, err = client.LoginWithPassword(ctx, codersdk.LoginWithPasswordRequest{
+		Email:    newUser.Email,
+		Password: "MySecurePassword!",
+	})
+	require.NoError(t, err)
+
+	// User status should be active now
+	users, err = client.Users(ctx, codersdk.UsersRequest{Search: newUser.Username})
+	require.NoError(t, err)
+	require.Len(t, users.Users, 1)
+	require.Equal(t, codersdk.UserStatusActive, users.Users[0].Status)
 }
 
 // TestSuspendedPagination is when the after_id is a suspended record.
@@ -1696,8 +1870,8 @@ func assertPagination(ctx context.Context, t *testing.T, client *codersdk.Client
 
 // sortUsers sorts by (created_at, id)
 func sortUsers(users []codersdk.User) {
-	sort.Slice(users, func(i, j int) bool {
-		return strings.ToLower(users[i].Username) < strings.ToLower(users[j].Username)
+	slices.SortFunc(users, func(a, b codersdk.User) int {
+		return slice.Ascending(strings.ToLower(a.Username), strings.ToLower(b.Username))
 	})
 }
 

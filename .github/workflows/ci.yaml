@@ -14,7 +14,7 @@ permissions:
   contents: read
   deployments: none
   issues: none
-  packages: none
+  packages: write
   pull-requests: none
   repository-projects: none
   security-events: none
@@ -24,7 +24,7 @@ permissions:
 # additional changes
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   changes:
@@ -35,10 +35,16 @@ jobs:
       ts: ${{ steps.filter.outputs.ts }}
       k8s: ${{ steps.filter.outputs.k8s }}
       ci: ${{ steps.filter.outputs.ci }}
+      offlinedocs-only: ${{ steps.filter.outputs.offlinedocs_count == steps.filter.outputs.all_count }}
+      offlinedocs: ${{ steps.filter.outputs.offlinedocs }}
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 1
       # For pull requests it's not necessary to checkout the code
-      - uses: dorny/paths-filter@v2
+      - name: check changed files
+        uses: dorny/paths-filter@v2
         id: filter
         with:
           filters: |
@@ -47,8 +53,10 @@ jobs:
             docs:
               - "docs/**"
               - "README.md"
-              # For testing:
-              # - ".github/**"
+              - "examples/templates/**"
+              - "examples/web-server/**"
+              - "examples/monitoring/**"
+              - "examples/lima/**"
             go:
               - "**.sql"
               - "**.go"
@@ -70,7 +78,7 @@ jobs:
               - "cmd/**"
               - "coderd/**"
               - "enterprise/**"
-              - "examples/**"
+              - "examples/*"
               - "provisioner/**"
               - "provisionerd/**"
               - "provisionersdk/**"
@@ -87,20 +95,30 @@ jobs:
               - "scripts/Dockerfile.base"
               - "scripts/helm.sh"
             ci:
-              - ".github/**"
+              - ".github/actions/**"
+              - ".github/workflows/ci.yaml"
+            offlinedocs:
+              - "offlinedocs/**"
+
       - id: debug
         run: |
           echo "${{ toJSON(steps.filter )}}"
 
   lint:
+    needs: changes
+    if: needs.changes.outputs.offlinedocs-only == 'false' || needs.changes.outputs.ci == 'true' || github.ref == 'refs/heads/main'
     runs-on: ${{ github.repository_owner == 'coder' && 'buildjet-8vcpu-ubuntu-2204' || 'ubuntu-latest' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v3
+        with:
+          fetch-depth: 1
 
-      - uses: ./.github/actions/setup-go
+      - name: Setup Node
+        uses: ./.github/actions/setup-node
 
-      - uses: ./.github/actions/setup-node
+      - name: Setup Go
+        uses: ./.github/actions/setup-go
 
       - name: Get golangci-lint cache dir
         run: |
@@ -119,7 +137,7 @@ jobs:
 
       # Check for any typos
       - name: Check for typos
-        uses: crate-ci/typos@v1.14.12
+        uses: crate-ci/typos@v1.16.10
         with:
           config: .github/workflows/typos.toml
 
@@ -146,14 +164,19 @@ jobs:
     needs: changes
     if: needs.changes.outputs.docs-only == 'false' || needs.changes.outputs.ci == 'true' || github.ref == 'refs/heads/main'
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 1
 
-      - uses: ./.github/actions/setup-node
-      - uses: ./.github/actions/setup-go
+      - name: Setup Node
+        uses: ./.github/actions/setup-node
 
-      - name: Install sqlc
-        run: |
-          curl -sSL https://github.com/kyleconroy/sqlc/releases/download/v1.17.2/sqlc_1.17.2_linux_amd64.tar.gz | sudo tar -C /usr/bin -xz sqlc
+      - name: Setup Go
+        uses: ./.github/actions/setup-go
+
+      - name: Setup sqlc
+        uses: ./.github/actions/setup-sqlc
 
       - name: go install tools
         run: |
@@ -165,16 +188,13 @@ jobs:
 
       - name: Install Protoc
         run: |
-          # protoc must be in lockstep with our dogfood Dockerfile or the
-          # version in the comments will differ. This is also defined in
-          # security.yaml
-          set -x
-          cd dogfood
-          DOCKER_BUILDKIT=1 docker build . --target proto -t protoc
-          protoc_path=/usr/local/bin/protoc
-          docker run --rm --entrypoint cat protoc /tmp/bin/protoc > $protoc_path
-          chmod +x $protoc_path
-          protoc --version
+          mkdir -p /tmp/proto
+          pushd /tmp/proto
+          curl -L -o protoc.zip https://github.com/protocolbuffers/protobuf/releases/download/v23.3/protoc-23.3-linux-x86_64.zip
+          unzip protoc.zip
+          cp -r ./bin/* /usr/local/bin
+          cp -r ./include /usr/local/bin/include
+          popd
 
       - name: make gen
         run: "make --output-sync -j -B gen"
@@ -183,24 +203,25 @@ jobs:
         run: ./scripts/check_unstaged.sh
 
   fmt:
+    needs: changes
+    if: needs.changes.outputs.offlinedocs-only == 'false' || needs.changes.outputs.ci == 'true' || github.ref == 'refs/heads/main'
     runs-on: ${{ github.repository_owner == 'coder' && 'buildjet-8vcpu-ubuntu-2204' || 'ubuntu-latest' }}
-    timeout-minutes: 5
+    timeout-minutes: 7
     steps:
       - name: Checkout
         uses: actions/checkout@v3
-
-      - uses: buildjet/setup-node@v3
         with:
-          node-version: 16.16.0
+          fetch-depth: 1
 
-      - uses: buildjet/setup-go@v4
+      - name: Setup Node
+        uses: ./.github/actions/setup-node
+
+      - name: Setup Go
+        uses: buildjet/setup-go@v4
         with:
           # This doesn't need caching. It's super fast anyways!
           cache: false
-          go-version: 1.20.5
-
-      - name: Install prettier
-        run: npm install -g prettier
+          go-version: 1.20.7
 
       - name: Install shfmt
         run: go install mvdan.cc/sh/v3/cmd/shfmt@v3.5.0
@@ -219,20 +240,23 @@ jobs:
     if: needs.changes.outputs.go == 'true' || needs.changes.outputs.ci == 'true' || github.ref == 'refs/heads/main'
     timeout-minutes: 20
     strategy:
+      fail-fast: false
       matrix:
         os:
           - ubuntu-latest
           - macos-latest
           - windows-2019
     steps:
-      - uses: actions/checkout@v3
-
-      - uses: ./.github/actions/setup-go
-
-      - uses: hashicorp/setup-terraform@v2
+      - name: Checkout
+        uses: actions/checkout@v3
         with:
-          terraform_version: 1.1.9
-          terraform_wrapper: false
+          fetch-depth: 1
+
+      - name: Setup Go
+        uses: ./.github/actions/setup-go
+
+      - name: Setup Terraform
+        uses: ./.github/actions/setup-tf
 
       - name: Test with Mock Database
         id: test
@@ -263,12 +287,14 @@ jobs:
           # so we need to print the test stats to the log.
           go run ./scripts/ci-report/main.go gotests.json | tee gotests_stats.json
 
-      - uses: ./.github/actions/upload-datadog
+      - name: Upload test stats to Datadog
+        uses: ./.github/actions/upload-datadog
         if: success() || failure()
         with:
           api-key: ${{ secrets.DATADOG_API_KEY }}
 
-      - uses: codecov/codecov-action@v3
+      - name: Check code coverage
+        uses: codecov/codecov-action@v3
         # This action has a tendency to error out unexpectedly, it has
         # the `fail_ci_if_error` option that defaults to `false`, but
         # that is no guarantee, see:
@@ -290,14 +316,16 @@ jobs:
     # even if some of the preceding steps are slow.
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v3
-
-      - uses: ./.github/actions/setup-go
-
-      - uses: hashicorp/setup-terraform@v2
+      - name: Checkout
+        uses: actions/checkout@v3
         with:
-          terraform_version: 1.1.9
-          terraform_wrapper: false
+          fetch-depth: 1
+
+      - name: Setup Go
+        uses: ./.github/actions/setup-go
+
+      - name: Setup Terraform
+        uses: ./.github/actions/setup-tf
 
       - name: Test with PostgreSQL Database
         run: |
@@ -311,12 +339,14 @@ jobs:
           # so we need to print the test stats to the log.
           go run ./scripts/ci-report/main.go gotests.json | tee gotests_stats.json
 
-      - uses: ./.github/actions/upload-datadog
+      - name: Upload test stats to Datadog
+        uses: ./.github/actions/upload-datadog
         if: success() || failure()
         with:
           api-key: ${{ secrets.DATADOG_API_KEY }}
 
-      - uses: codecov/codecov-action@v3
+      - name: Check code coverage
+        uses: codecov/codecov-action@v3
         # This action has a tendency to error out unexpectedly, it has
         # the `fail_ci_if_error` option that defaults to `false`, but
         # that is no guarantee, see:
@@ -334,15 +364,23 @@ jobs:
     if: needs.changes.outputs.go == 'true' || needs.changes.outputs.ci == 'true' || github.ref == 'refs/heads/main'
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 1
 
-      - uses: ./.github/actions/setup-go
+      - name: Setup Go
+        uses: ./.github/actions/setup-go
+
+      - name: Setup Terraform
+        uses: ./.github/actions/setup-tf
 
       - name: Run Tests
         run: |
           gotestsum --junitfile="gotests.xml" -- -race ./...
 
-      - uses: ./.github/actions/upload-datadog
+      - name: Upload test stats to Datadog
+        uses: ./.github/actions/upload-datadog
         if: always()
         with:
           api-key: ${{ secrets.DATADOG_API_KEY }}
@@ -359,7 +397,8 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v3
         with:
           fetch-depth: 0
 
@@ -372,8 +411,11 @@ jobs:
       - name: Set up Google Cloud SDK
         uses: google-github-actions/setup-gcloud@v1
 
-      - uses: ./.github/actions/setup-go
-      - uses: ./.github/actions/setup-node
+      - name: Setup Node
+        uses: ./.github/actions/setup-node
+
+      - name: Setup Go
+        uses: ./.github/actions/setup-go
 
       - name: Install goimports
         run: go install golang.org/x/tools/cmd/goimports@latest
@@ -427,7 +469,8 @@ jobs:
             echo "::endgroup::"
           done
 
-      - uses: actions/upload-artifact@v3
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v3
         with:
           name: coder
           path: |
@@ -442,14 +485,19 @@ jobs:
     if: needs.changes.outputs.ts == 'true' || needs.changes.outputs.ci == 'true' || github.ref == 'refs/heads/main'
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 1
 
-      - uses: ./.github/actions/setup-node
+      - name: Setup Node
+        uses: ./.github/actions/setup-node
 
-      - run: yarn test:ci --max-workers $(nproc)
+      - run: pnpm test:ci --max-workers $(nproc)
         working-directory: site
 
-      - uses: codecov/codecov-action@v3
+      - name: Check code coverage
+        uses: codecov/codecov-action@v3
         # This action has a tendency to error out unexpectedly, it has
         # the `fail_ci_if_error` option that defaults to `false`, but
         # that is no guarantee, see:
@@ -467,25 +515,46 @@ jobs:
     if: needs.changes.outputs.go == 'true' || needs.changes.outputs.ts == 'true' || needs.changes.outputs.ci == 'true' || github.ref == 'refs/heads/main'
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v3
-
-      - uses: ./.github/actions/setup-node
-      - uses: ./.github/actions/setup-go
-
-      - uses: hashicorp/setup-terraform@v2
+      - name: Checkout
+        uses: actions/checkout@v3
         with:
-          terraform_version: 1.1.9
-          terraform_wrapper: false
+          fetch-depth: 1
+
+      - name: Setup Node
+        uses: ./.github/actions/setup-node
+
+      - name: Setup Go
+        uses: ./.github/actions/setup-go
+
+      - name: Setup Terraform
+        uses: ./.github/actions/setup-tf
+
+      - name: go install tools
+        run: |
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.30
+          go install storj.io/drpc/cmd/protoc-gen-go-drpc@v0.0.33
+          go install golang.org/x/tools/cmd/goimports@latest
+          go install github.com/mikefarah/yq/v4@v4.30.6
+          go install github.com/golang/mock/mockgen@v1.6.0
+
+      - name: Install Protoc
+        run: |
+          mkdir -p /tmp/proto
+          pushd /tmp/proto
+          curl -L -o protoc.zip https://github.com/protocolbuffers/protobuf/releases/download/v23.3/protoc-23.3-linux-x86_64.zip
+          unzip protoc.zip
+          cp -r ./bin/* /usr/local/bin
+          cp -r ./include /usr/local/bin/include
+          popd
 
       - name: Build
         run: |
-          sudo npm install -g prettier
           make -B site/out/index.html
 
-      - run: yarn playwright:install
+      - run: pnpm playwright:install
         working-directory: site
 
-      - run: yarn playwright:test
+      - run: pnpm playwright:test --workers 1
         env:
           DEBUG: pw:api
         working-directory: site
@@ -498,19 +567,29 @@ jobs:
           path: ./site/test-results/**/*.webm
           retention-days: 7
 
+      - name: Upload pprof dumps
+        if: always() && github.actor != 'dependabot[bot]' && runner.os == 'Linux' && !github.event.pull_request.head.repo.fork
+        uses: actions/upload-artifact@v3
+        with:
+          name: debug-pprof-dumps
+          path: ./site/test-results/**/debug-pprof-*.txt
+          retention-days: 7
+
   chromatic:
     # REMARK: this is only used to build storybook and deploy it to Chromatic.
     runs-on: ubuntu-latest
     needs: changes
-    if: needs.changes.outputs.ts == 'true' || needs.changes.outputs.ci == 'true' || github.ref == 'refs/heads/main'
+    if: needs.changes.outputs.ts == 'true' || needs.changes.outputs.ci == 'true'
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v3
         with:
           # Required by Chromatic for build-over-build history, otherwise we
           # only get 1 commit on shallow checkout.
           fetch-depth: 0
 
-      - uses: ./.github/actions/setup-node
+      - name: Setup Node
+        uses: ./.github/actions/setup-node
 
       # This step is not meant for mainline because any detected changes to
       # storybook snapshots will require manual approval/review in order for
@@ -524,10 +603,18 @@ jobs:
         with:
           buildScriptName: "storybook:build"
           exitOnceUploaded: true
+          # This will prevent CI from failing when Chromatic detects visual changes
+          exitZeroOnChanges: true
           # Chromatic states its fine to make this token public. See:
           # https://www.chromatic.com/docs/github-actions#forked-repositories
           projectToken: 695c25b6cb65
           workingDir: "./site"
+          storybookBaseDir: "./site"
+          # Prevent excessive build runs on minor version changes
+          skip: "@(renovate/**|dependabot/**)"
+          # Run TurboSnap to trace file dependencies to related stories
+          # and tell chromatic to only take snapshots of relevent stories
+          onlyChanged: true
 
       # This is a separate step for mainline only that auto accepts and changes
       # instead of holding CI up. Since we squash/merge, this is defensive to
@@ -543,13 +630,69 @@ jobs:
           STORYBOOK: true
         with:
           autoAcceptChanges: true
+          # This will prevent CI from failing when Chromatic detects visual changes
+          exitZeroOnChanges: true
           buildScriptName: "storybook:build"
           projectToken: 695c25b6cb65
           workingDir: "./site"
+          storybookBaseDir: "./site"
+          # Run TurboSnap to trace file dependencies to related stories
+          # and tell chromatic to only take snapshots of relevent stories
+          onlyChanged: true
+
+  offlinedocs:
+    name: offlinedocs
+    needs: changes
+    runs-on: ${{ github.repository_owner == 'coder' && 'buildjet-8vcpu-ubuntu-2204' || 'ubuntu-latest' }}
+    if: needs.changes.outputs.offlinedocs == 'true' || needs.changes.outputs.ci == 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          # 0 is required here for version.sh to work.
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: ./.github/actions/setup-node
+        with:
+          directory: offlinedocs
+
+      - name: Setup Go
+        uses: ./.github/actions/setup-go
+
+      - name: Install go tools
+        run: |
+          go install github.com/golang/mock/mockgen@v1.6.0
+
+      - name: Setup sqlc
+        uses: ./.github/actions/setup-sqlc
+
+      - name: Format
+        run: |
+          cd offlinedocs
+          pnpm format:check
+
+      - name: Lint
+        run: |
+          cd offlinedocs
+          pnpm lint
+
+      - name: Build
+        run: |
+          make -j build/coder_docs_"$(./scripts/version.sh)".tgz
 
   required:
     runs-on: ubuntu-latest
-    needs: [fmt, lint, gen, test-go, test-go-pg, test-go-race, test-js]
+    needs:
+      - fmt
+      - lint
+      - gen
+      - test-go
+      - test-go-pg
+      - test-go-race
+      - test-js
+      - test-e2e
+      - offlinedocs
     # Allow this job to run even if the needed jobs fail, are skipped or
     # cancelled.
     if: always()
@@ -573,3 +716,66 @@ jobs:
           fi
 
           echo "Required checks have passed"
+
+  build-main-image:
+    # This build and publihes ghcr.io/coder/coder-preview:main for each merge commit to main branch.
+    # We are only building this for amd64 plateform. (>95% pulls are for amd64)
+    needs: changes
+    if: github.ref == 'refs/heads/main' && needs.changes.outputs.docs-only == 'false'
+    runs-on: ${{ github.repository_owner == 'coder' && 'buildjet-8vcpu-ubuntu-2204' || 'ubuntu-latest' }}
+    env:
+      DOCKER_CLI_EXPERIMENTAL: "enabled"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: ./.github/actions/setup-node
+
+      - name: Setup Go
+        uses: ./.github/actions/setup-go
+
+      - name: Setup sqlc
+        uses: ./.github/actions/setup-sqlc
+
+      - name: GHCR Login
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Linux amd64 Docker image
+        id: build_and_push
+        run: |
+          set -euxo pipefail
+          go mod download
+          make gen/mark-fresh
+          export DOCKER_IMAGE_NO_PREREQUISITES=true
+          version="$(./scripts/version.sh)"
+          export CODER_IMAGE_BUILD_BASE_TAG="$(CODER_IMAGE_BASE=coder-base ./scripts/image_tag.sh --version "$version")"
+          make -j build/coder_linux_amd64
+          ./scripts/build_docker.sh \
+            --arch amd64 \
+            --target ghcr.io/coder/coder-preview:main \
+            --version $version \
+            --push \
+            build/coder_linux_amd64
+
+          # Tag image with new package tag and push
+          tag=$(echo "$version" | sed 's/+/-/g')
+          docker tag ghcr.io/coder/coder-preview:main ghcr.io/coder/coder-preview:main-$tag
+          docker push ghcr.io/coder/coder-preview:main-$tag
+
+      - name: Prune old images
+        uses: vlaurin/action-ghcr-prune@v0.5.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          organization: coder
+          container: coder-preview
+          keep-younger-than: 7 # days
+          keep-tags-regexes: ^pr
+          prune-tags-regexes: ^main-
+          prune-untagged: true

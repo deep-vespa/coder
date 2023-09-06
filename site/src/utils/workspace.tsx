@@ -37,7 +37,7 @@ export const getDisplayWorkspaceBuildStatus = (
     case "succeeded":
       return {
         type: "success",
-        color: theme.palette.success.main,
+        color: theme.palette.success.light,
         status: DisplayWorkspaceBuildStatusLanguage.succeeded,
       } as const
     case "pending":
@@ -194,6 +194,7 @@ export const getDisplayWorkspaceTemplateName = (
 
 export const getDisplayWorkspaceStatus = (
   workspaceStatus: TypesGen.WorkspaceStatus,
+  provisionerJob?: TypesGen.ProvisionerJob,
 ) => {
   const { t } = i18next
 
@@ -260,12 +261,31 @@ export const getDisplayWorkspaceStatus = (
     case "pending":
       return {
         type: "info",
-        text: t("workspaceStatus.pending", { ns: "common" }),
+        text: getPendingWorkspaceStatusText(provisionerJob),
         icon: <QueuedIcon />,
       } as const
   }
 }
 
+const getPendingWorkspaceStatusText = (
+  provisionerJob?: TypesGen.ProvisionerJob,
+): string => {
+  const { t } = i18next
+
+  if (!provisionerJob || provisionerJob.queue_size === 0) {
+    return t("workspaceStatus.pending", { ns: "common" })
+  }
+  return "Position in queue: " + provisionerJob.queue_position
+}
+
 const LoadingIcon = () => {
   return <CircularProgress size={10} style={{ color: "#FFF" }} />
 }
+
+export const hasJobError = (workspace: TypesGen.Workspace) => {
+  return workspace.latest_build.job.error !== undefined
+}
+
+export const paramsUsedToCreateWorkspace = (
+  param: TypesGen.TemplateVersionParameter,
+) => !param.ephemeral

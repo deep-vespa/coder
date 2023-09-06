@@ -10,12 +10,13 @@ import (
 	"strconv"
 
 	"github.com/google/uuid"
-	"github.com/tabbed/pqtype"
+	"github.com/sqlc-dev/pqtype"
 
 	"cdr.dev/slog"
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/coderd/httpmw"
-	"github.com/coder/coder/coderd/tracing"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/database/dbtime"
+	"github.com/coder/coder/v2/coderd/httpmw"
+	"github.com/coder/coder/v2/coderd/tracing"
 )
 
 type RequestParams struct {
@@ -33,12 +34,14 @@ type Request[T Auditable] struct {
 	Old T
 	New T
 
-	// This optional field can be passed in when the userID cannot be determined from the API Key
-	// such as in the case of login, when the audit log is created prior the API Key's existence.
+	// UserID is an optional field can be passed in when the userID cannot be
+	// determined from the API Key such as in the case of login, when the audit
+	// log is created prior the API Key's existence.
 	UserID uuid.UUID
 
-	// This optional field can be passed in if the AuditAction must be overridden
-	// such as in the case of new user authentication when the Audit Action is 'register', not 'login'.
+	// Action is an optional field can be passed in if the AuditAction must be
+	// overridden such as in the case of new user authentication when the Audit
+	// Action is 'register', not 'login'.
 	Action database.AuditAction
 }
 
@@ -84,6 +87,8 @@ func ResourceTarget[T Auditable](tgt T) string {
 		return strconv.Itoa(int(typed.ID))
 	case database.WorkspaceProxy:
 		return typed.Name
+	case database.AuditOAuthConvertState:
+		return string(typed.ToLoginType)
 	default:
 		panic(fmt.Sprintf("unknown resource %T", tgt))
 	}
@@ -111,6 +116,9 @@ func ResourceID[T Auditable](tgt T) uuid.UUID {
 		return typed.UUID
 	case database.WorkspaceProxy:
 		return typed.ID
+	case database.AuditOAuthConvertState:
+		// The merge state is for the given user
+		return typed.UserID
 	default:
 		panic(fmt.Sprintf("unknown resource %T", tgt))
 	}
@@ -138,6 +146,8 @@ func ResourceType[T Auditable](tgt T) database.ResourceType {
 		return database.ResourceTypeLicense
 	case database.WorkspaceProxy:
 		return database.ResourceTypeWorkspaceProxy
+	case database.AuditOAuthConvertState:
+		return database.ResourceTypeConvertLogin
 	default:
 		panic(fmt.Sprintf("unknown resource %T", typed))
 	}
@@ -210,7 +220,7 @@ func InitRequest[T Auditable](w http.ResponseWriter, p *RequestParams) (*Request
 		ip := parseIP(p.Request.RemoteAddr)
 		auditLog := database.AuditLog{
 			ID:               uuid.New(),
-			Time:             database.Now(),
+			Time:             dbtime.Now(),
 			UserID:           userID,
 			Ip:               ip,
 			UserAgent:        sql.NullString{String: p.Request.UserAgent(), Valid: true},
@@ -255,7 +265,7 @@ func BuildAudit[T Auditable](ctx context.Context, p *BuildAuditParams[T]) {
 
 	auditLog := database.AuditLog{
 		ID:               uuid.New(),
-		Time:             database.Now(),
+		Time:             dbtime.Now(),
 		UserID:           p.UserID,
 		Ip:               ip,
 		UserAgent:        sql.NullString{},

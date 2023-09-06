@@ -12,7 +12,6 @@ import (
 	"github.com/hashicorp/yamux"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
-	"github.com/spf13/afero"
 	"github.com/valyala/fasthttp/fasthttputil"
 	"go.opentelemetry.io/otel/attribute"
 	semconv "go.opentelemetry.io/otel/semconv/v1.14.0"
@@ -21,20 +20,14 @@ import (
 	"golang.org/x/xerrors"
 
 	"cdr.dev/slog"
-	"github.com/coder/coder/coderd/tracing"
-	"github.com/coder/coder/coderd/util/ptr"
-	"github.com/coder/coder/cryptorand"
-	"github.com/coder/coder/provisionerd/proto"
-	"github.com/coder/coder/provisionerd/runner"
-	sdkproto "github.com/coder/coder/provisionersdk/proto"
+	"github.com/coder/coder/v2/coderd/tracing"
+	"github.com/coder/coder/v2/coderd/util/ptr"
+	"github.com/coder/coder/v2/cryptorand"
+	"github.com/coder/coder/v2/provisionerd/proto"
+	"github.com/coder/coder/v2/provisionerd/runner"
+	sdkproto "github.com/coder/coder/v2/provisionersdk/proto"
 	"github.com/coder/retry"
 )
-
-// IsMissingParameterErrorCode returns whether the error is a missing parameter error.
-// This can indicate to consumers that they should check parameters.
-func IsMissingParameterErrorCode(code string) bool {
-	return code == runner.MissingParameterErrorCode
-}
 
 // Dialer represents the function to create a daemon client connection.
 type Dialer func(ctx context.Context) (proto.DRPCProvisionerDaemonClient, error)
@@ -44,7 +37,6 @@ type Provisioners map[string]sdkproto.DRPCProvisionerClient
 
 // Options provides customizations to the behavior of a provisioner daemon.
 type Options struct {
-	Filesystem     afero.Fs
 	Logger         slog.Logger
 	TracerProvider trace.TracerProvider
 	Metrics        *Metrics
@@ -56,8 +48,6 @@ type Options struct {
 	JobPollJitter       time.Duration
 	JobPollDebounce     time.Duration
 	Provisioners        Provisioners
-	// WorkDirectory must not be used by multiple processes at once.
-	WorkDirectory string
 }
 
 // New creates and starts a provisioner daemon.
@@ -79,9 +69,6 @@ func New(clientDialer Dialer, opts *Options) *Server {
 	}
 	if opts.LogBufferInterval == 0 {
 		opts.LogBufferInterval = 250 * time.Millisecond
-	}
-	if opts.Filesystem == nil {
-		opts.Filesystem = afero.NewOsFs()
 	}
 	if opts.TracerProvider == nil {
 		opts.TracerProvider = trace.NewNoopTracerProvider()
@@ -190,7 +177,7 @@ func (p *Server) connect(ctx context.Context) {
 			if p.isClosed() {
 				return
 			}
-			p.opts.Logger.Warn(context.Background(), "failed to dial", slog.Error(err))
+			p.opts.Logger.Warn(context.Background(), "coderd client failed to dial", slog.Error(err))
 			continue
 		}
 		// Ensure connection is not left hanging during a race between
@@ -204,7 +191,7 @@ func (p *Server) connect(ctx context.Context) {
 		p.clientValue.Store(ptr.Ref(client))
 		p.mutex.Unlock()
 
-		p.opts.Logger.Debug(context.Background(), "connected")
+		p.opts.Logger.Debug(ctx, "successfully connected to coderd")
 		break
 	}
 	select {
@@ -303,7 +290,7 @@ func (p *Server) acquireJob(ctx context.Context) {
 		return
 	}
 	if p.isShutdown() {
-		p.opts.Logger.Debug(context.Background(), "skipping acquire; provisionerd is shutting down...")
+		p.opts.Logger.Debug(context.Background(), "skipping acquire; provisionerd is shutting down")
 		return
 	}
 
@@ -315,6 +302,7 @@ func (p *Server) acquireJob(ctx context.Context) {
 	lastAcquireMutex.RLock()
 	if !lastAcquire.IsZero() && time.Since(lastAcquire) < p.opts.JobPollDebounce {
 		lastAcquireMutex.RUnlock()
+		p.opts.Logger.Debug(ctx, "debounce acquire job")
 		return
 	}
 	lastAcquireMutex.RUnlock()
@@ -326,6 +314,7 @@ func (p *Server) acquireJob(ctx context.Context) {
 	}
 
 	job, err := client.AcquireJob(ctx, &proto.Empty{})
+	p.opts.Logger.Debug(ctx, "called AcquireJob on client", slog.F("job_id", job.GetJobId()), slog.Error(err))
 	if err != nil {
 		if errors.Is(err, context.Canceled) ||
 			errors.Is(err, yamux.ErrSessionShutdown) ||
@@ -333,7 +322,7 @@ func (p *Server) acquireJob(ctx context.Context) {
 			return
 		}
 
-		p.opts.Logger.Warn(ctx, "acquire job", slog.Error(err))
+		p.opts.Logger.Warn(ctx, "provisionerd was unable to acquire job", slog.Error(err))
 		return
 	}
 	if job.JobId == "" {
@@ -384,7 +373,7 @@ func (p *Server) acquireJob(ctx context.Context) {
 		)
 	}
 
-	p.opts.Logger.Info(ctx, "acquired job", fields...)
+	p.opts.Logger.Debug(ctx, "acquired job", fields...)
 
 	provisioner, ok := p.opts.Provisioners[job.Provisioner]
 	if !ok {
@@ -393,7 +382,7 @@ func (p *Server) acquireJob(ctx context.Context) {
 			Error: fmt.Sprintf("no provisioner %s", job.Provisioner),
 		})
 		if err != nil {
-			p.opts.Logger.Error(ctx, "fail job", slog.F("job_id", job.JobId), slog.Error(err))
+			p.opts.Logger.Error(ctx, "provisioner job failed", slog.F("job_id", job.JobId), slog.Error(err))
 		}
 		return
 	}
@@ -404,9 +393,7 @@ func (p *Server) acquireJob(ctx context.Context) {
 		runner.Options{
 			Updater:             p,
 			QuotaCommitter:      p,
-			Logger:              p.opts.Logger,
-			Filesystem:          p.opts.Filesystem,
-			WorkDirectory:       p.opts.WorkDirectory,
+			Logger:              p.opts.Logger.Named("runner"),
 			Provisioner:         provisioner,
 			UpdateInterval:      p.opts.UpdateInterval,
 			ForceCancelInterval: p.opts.ForceCancelInterval,

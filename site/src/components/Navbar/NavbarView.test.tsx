@@ -4,7 +4,7 @@ import {
   MockUser,
   MockUser2,
 } from "../../testHelpers/entities"
-import { render } from "../../testHelpers/renderHelpers"
+import { renderWithAuth } from "../../testHelpers/renderHelpers"
 import { Language as navLanguage, NavbarView } from "./NavbarView"
 import { ProxyContextValue } from "contexts/ProxyContext"
 import { action } from "@storybook/addon-actions"
@@ -41,13 +41,14 @@ describe("NavbarView", () => {
   })
 
   it("workspaces nav link has the correct href", async () => {
-    render(
+    renderWithAuth(
       <NavbarView
         proxyContextValue={proxyContextValue}
         user={MockUser}
         onSignOut={noop}
         canViewAuditLog
         canViewDeployment
+        canViewAllUsers
       />,
     )
     const workspacesLink = await screen.findByText(navLanguage.workspaces)
@@ -55,13 +56,14 @@ describe("NavbarView", () => {
   })
 
   it("templates nav link has the correct href", async () => {
-    render(
+    renderWithAuth(
       <NavbarView
         proxyContextValue={proxyContextValue}
         user={MockUser}
         onSignOut={noop}
         canViewAuditLog
         canViewDeployment
+        canViewAllUsers
       />,
     )
     const templatesLink = await screen.findByText(navLanguage.templates)
@@ -69,13 +71,14 @@ describe("NavbarView", () => {
   })
 
   it("users nav link has the correct href", async () => {
-    render(
+    renderWithAuth(
       <NavbarView
         proxyContextValue={proxyContextValue}
         user={MockUser}
         onSignOut={noop}
         canViewAuditLog
         canViewDeployment
+        canViewAllUsers
       />,
     )
     const userLink = await screen.findByText(navLanguage.users)
@@ -91,13 +94,14 @@ describe("NavbarView", () => {
     }
 
     // When
-    render(
+    renderWithAuth(
       <NavbarView
         proxyContextValue={proxyContextValue}
         user={mockUser}
         onSignOut={noop}
         canViewAuditLog
         canViewDeployment
+        canViewAllUsers
       />,
     )
 
@@ -108,13 +112,14 @@ describe("NavbarView", () => {
   })
 
   it("audit nav link has the correct href", async () => {
-    render(
+    renderWithAuth(
       <NavbarView
         proxyContextValue={proxyContextValue}
         user={MockUser}
         onSignOut={noop}
         canViewAuditLog
         canViewDeployment
+        canViewAllUsers
       />,
     )
     const auditLink = await screen.findByText(navLanguage.audit)
@@ -122,13 +127,14 @@ describe("NavbarView", () => {
   })
 
   it("audit nav link is hidden for members", async () => {
-    render(
+    renderWithAuth(
       <NavbarView
         proxyContextValue={proxyContextValue}
         user={MockUser2}
         onSignOut={noop}
         canViewAuditLog={false}
         canViewDeployment
+        canViewAllUsers
       />,
     )
     const auditLink = screen.queryByText(navLanguage.audit)
@@ -136,29 +142,31 @@ describe("NavbarView", () => {
   })
 
   it("deployment nav link has the correct href", async () => {
-    render(
+    renderWithAuth(
       <NavbarView
         proxyContextValue={proxyContextValue}
         user={MockUser}
         onSignOut={noop}
         canViewAuditLog
         canViewDeployment
+        canViewAllUsers
       />,
     )
     const auditLink = await screen.findByText(navLanguage.deployment)
     expect((auditLink as HTMLAnchorElement).href).toContain(
-      "/settings/deployment/general",
+      "/deployment/general",
     )
   })
 
   it("deployment nav link is hidden for members", async () => {
-    render(
+    renderWithAuth(
       <NavbarView
         proxyContextValue={proxyContextValue}
         user={MockUser2}
         onSignOut={noop}
         canViewAuditLog={false}
         canViewDeployment={false}
+        canViewAllUsers
       />,
     )
     const auditLink = screen.queryByText(navLanguage.deployment)

@@ -5,8 +5,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/coder/coder/coderd/coderdtest"
-	"github.com/coder/coder/enterprise/coderd/coderdenttest"
+	"github.com/coder/coder/v2/coderd/coderdtest"
+	"github.com/coder/coder/v2/enterprise/coderd/coderdenttest"
 )
 
 func TestEnterpriseEndpointsDocumented(t *testing.T) {
@@ -16,6 +16,7 @@ func TestEnterpriseEndpointsDocumented(t *testing.T) {
 	require.NoError(t, err, "can't parse swagger comments")
 	require.NotEmpty(t, swaggerComments, "swagger comments must be present")
 
-	_, _, api := coderdenttest.NewWithAPI(t, nil)
+	//nolint: dogsled
+	_, _, api, _ := coderdenttest.NewWithAPI(t, nil)
 	coderdtest.VerifySwaggerDefinitions(t, api.AGPL.APIHandler, swaggerComments)
 }

@@ -1,5 +1,4 @@
 import Button from "@mui/material/Button"
-import Link from "@mui/material/Link"
 import { makeStyles } from "@mui/styles"
 import Table from "@mui/material/Table"
 import TableBody from "@mui/material/TableBody"
@@ -25,7 +24,10 @@ import {
   PageHeaderTitle,
 } from "../../components/PageHeader/PageHeader"
 import { Stack } from "../../components/Stack/Stack"
-import { TableLoaderSkeleton } from "../../components/TableLoader/TableLoader"
+import {
+  TableLoaderSkeleton,
+  TableRowSkeleton,
+} from "../../components/TableLoader/TableLoader"
 import {
   HelpTooltip,
   HelpTooltipLink,
@@ -42,6 +44,10 @@ import { colors } from "theme/colors"
 import ArrowForwardOutlined from "@mui/icons-material/ArrowForwardOutlined"
 import { Avatar } from "components/Avatar/Avatar"
 import { ErrorAlert } from "components/Alert/ErrorAlert"
+import { docs } from "utils/docs"
+import Skeleton from "@mui/material/Skeleton"
+import { Box } from "@mui/system"
+import { AvatarDataSkeleton } from "components/AvatarData/AvatarDataSkeleton"
 
 export const Language = {
   developerCount: (activeCount: number): string => {
@@ -65,7 +71,7 @@ const TemplateHelpTooltip: React.FC = () => {
       <HelpTooltipTitle>{Language.templateTooltipTitle}</HelpTooltipTitle>
       <HelpTooltipText>{Language.templateTooltipText}</HelpTooltipText>
       <HelpTooltipLinksGroup>
-        <HelpTooltipLink href="https://coder.com/docs/coder-oss/latest/templates#manage-templates">
+        <HelpTooltipLink href={docs("/templates#manage-templates")}>
           {Language.templateTooltipLink}
         </HelpTooltipLink>
       </HelpTooltipLinksGroup>
@@ -127,7 +133,7 @@ const TemplateRow: FC<{ template: Template }> = ({ template }) => {
             navigate(`/templates/${template.name}/workspace`)
           }}
         >
-          Use template
+          Create Workspace
         </Button>
       </TableCell>
     </TableRow>
@@ -151,7 +157,7 @@ export const TemplatesPageView: FC<
         actions={
           <Maybe condition={permissions.createTemplates}>
             <Button component={RouterLink} to="/starter-templates">
-              Starter templates
+              Starter Templates
             </Button>
             <Button
               startIcon={<AddIcon />}
@@ -159,7 +165,7 @@ export const TemplatesPageView: FC<
               to="new"
               variant="contained"
             >
-              Add template
+              Create Template
             </Button>
           </Maybe>
         }
@@ -172,21 +178,7 @@ export const TemplatesPageView: FC<
         </PageHeaderTitle>
         <Maybe condition={Boolean(templates && templates.length > 0)}>
           <PageHeaderSubtitle>
-            Choose a template to create a new workspace
-            {permissions.createTemplates ? (
-              <>
-                , or{" "}
-                <Link
-                  href="https://coder.com/docs/coder-oss/latest/templates#add-a-template"
-                  target="_blank"
-                >
-                  manage templates
-                </Link>{" "}
-                from the CLI.
-              </>
-            ) : (
-              "."
-            )}
+            Select a template to create a workspace.
           </PageHeaderSubtitle>
         </Maybe>
       </PageHeader>
@@ -210,7 +202,7 @@ export const TemplatesPageView: FC<
               </TableHead>
               <TableBody>
                 <Maybe condition={isLoading}>
-                  <TableLoaderSkeleton columns={5} useAvatarData />
+                  <TableLoader />
                 </Maybe>
 
                 <ChooseOne>
@@ -233,6 +225,32 @@ export const TemplatesPageView: FC<
         </Cond>
       </ChooseOne>
     </Margins>
+  )
+}
+
+const TableLoader = () => {
+  return (
+    <TableLoaderSkeleton>
+      <TableRowSkeleton>
+        <TableCell>
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+            <AvatarDataSkeleton />
+          </Box>
+        </TableCell>
+        <TableCell>
+          <Skeleton variant="text" width="25%" />
+        </TableCell>
+        <TableCell>
+          <Skeleton variant="text" width="25%" />
+        </TableCell>
+        <TableCell>
+          <Skeleton variant="text" width="25%" />
+        </TableCell>
+        <TableCell>
+          <Skeleton variant="text" width="25%" />
+        </TableCell>
+      </TableRowSkeleton>
+    </TableLoaderSkeleton>
   )
 }
 

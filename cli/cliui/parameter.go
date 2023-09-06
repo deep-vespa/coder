@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/coder/coder/cli/clibase"
-	"github.com/coder/coder/codersdk"
+	"github.com/coder/coder/v2/cli/clibase"
+	"github.com/coder/coder/v2/codersdk"
 )
 
 func RichParameter(inv *clibase.Invocation, templateVersionParameter codersdk.TemplateVersionParameter) (string, error) {
@@ -15,7 +15,12 @@ func RichParameter(inv *clibase.Invocation, templateVersionParameter codersdk.Te
 		label = templateVersionParameter.DisplayName
 	}
 
+	if templateVersionParameter.Ephemeral {
+		label += DefaultStyles.Warn.Render(" (build option)")
+	}
+
 	_, _ = fmt.Fprintln(inv.Stdout, DefaultStyles.Bold.Render(label))
+
 	if templateVersionParameter.DescriptionPlaintext != "" {
 		_, _ = fmt.Fprintln(inv.Stdout, "  "+strings.TrimSpace(strings.Join(strings.Split(templateVersionParameter.DescriptionPlaintext, "\n"), "\n  "))+"\n")
 	}

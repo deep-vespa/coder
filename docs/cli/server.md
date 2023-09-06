@@ -30,6 +30,16 @@ coder server [flags]
 
 The URL that users will use to access the Coder deployment.
 
+### --block-direct-connections
+
+|             |                                          |
+| ----------- | ---------------------------------------- |
+| Type        | <code>bool</code>                        |
+| Environment | <code>$CODER_BLOCK_DIRECT</code>         |
+| YAML        | <code>networking.derp.blockDirect</code> |
+
+Block peer-to-peer (aka. direct) workspace connections. All workspace connections from the CLI will be proxied through Coder (or custom configured DERP servers) and will never be peer-to-peer when enabled. Workspaces may still reach out to STUN servers to get their address until they are restarted after this change has been made, but new connections will still be proxied regardless.
+
 ### --browser-only
 
 |             |                                     |
@@ -59,7 +69,7 @@ The directory to cache temporary files. If unspecified and $CACHE_DIRECTORY is s
 | Environment | <code>$CODER_TRACE_LOGS</code>                 |
 | YAML        | <code>introspection.tracing.captureLogs</code> |
 
-Enables capturing of logs as events in traces. This is useful for debugging, but may result in a very large amount of events being sent to the tracing backend which may incur significant costs. If the verbose flag was supplied, debug-level logs will be included.
+Enables capturing of logs as events in traces. This is useful for debugging, but may result in a very large amount of events being sent to the tracing backend which may incur significant costs.
 
 ### -c, --config
 
@@ -108,6 +118,16 @@ Path to read a DERP mapping from. See: https://tailscale.com/kb/1118/custom-derp
 
 URL to fetch a DERP mapping on startup. See: https://tailscale.com/kb/1118/custom-derp-servers/.
 
+### --derp-force-websockets
+
+|             |                                              |
+| ----------- | -------------------------------------------- |
+| Type        | <code>bool</code>                            |
+| Environment | <code>$CODER_DERP_FORCE_WEBSOCKETS</code>    |
+| YAML        | <code>networking.derp.forceWebSockets</code> |
+
+Force clients and agents to always use WebSocket to connect to DERP relay servers. By default, DERP uses `Upgrade: derp`, which may cause issues with some reverse proxies. Clients may automatically fallback to WebSocket if they detect an issue with `Upgrade: derp`, but this does not work in all situations.
+
 ### --derp-server-enable
 
 |             |                                        |
@@ -118,28 +138,6 @@ URL to fetch a DERP mapping on startup. See: https://tailscale.com/kb/1118/custo
 | Default     | <code>true</code>                      |
 
 Whether to enable or disable the embedded DERP relay server.
-
-### --derp-server-region-code
-
-|             |                                             |
-| ----------- | ------------------------------------------- |
-| Type        | <code>string</code>                         |
-| Environment | <code>$CODER_DERP_SERVER_REGION_CODE</code> |
-| YAML        | <code>networking.derp.regionCode</code>     |
-| Default     | <code>coder</code>                          |
-
-Region code to use for the embedded DERP server.
-
-### --derp-server-region-id
-
-|             |                                           |
-| ----------- | ----------------------------------------- |
-| Type        | <code>int</code>                          |
-| Environment | <code>$CODER_DERP_SERVER_REGION_ID</code> |
-| YAML        | <code>networking.derp.regionID</code>     |
-| Default     | <code>999</code>                          |
-
-Region ID to use for the embedded DERP server.
 
 ### --derp-server-region-name
 
@@ -164,14 +162,24 @@ An HTTP URL that is accessible by other replicas to relay DERP traffic. Required
 
 ### --derp-server-stun-addresses
 
-|             |                                                |
-| ----------- | ---------------------------------------------- |
-| Type        | <code>string-array</code>                      |
-| Environment | <code>$CODER_DERP_SERVER_STUN_ADDRESSES</code> |
-| YAML        | <code>networking.derp.stunAddresses</code>     |
-| Default     | <code>stun.l.google.com:19302</code>           |
+|             |                                                                                                                                          |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| Type        | <code>string-array</code>                                                                                                                |
+| Environment | <code>$CODER_DERP_SERVER_STUN_ADDRESSES</code>                                                                                           |
+| YAML        | <code>networking.derp.stunAddresses</code>                                                                                               |
+| Default     | <code>stun.l.google.com:19302,stun1.l.google.com:19302,stun2.l.google.com:19302,stun3.l.google.com:19302,stun4.l.google.com:19302</code> |
 
-Addresses for STUN servers to establish P2P connections. Use special value 'disable' to turn off STUN.
+Addresses for STUN servers to establish P2P connections. It's recommended to have at least two STUN servers to give users the best chance of connecting P2P to workspaces. Each STUN server will get it's own DERP region, with region IDs starting at `--derp-server-region-id + 1`. Use special value 'disable' to turn off STUN completely.
+
+### --default-quiet-hours-schedule
+
+|             |                                                               |
+| ----------- | ------------------------------------------------------------- |
+| Type        | <code>string</code>                                           |
+| Environment | <code>$CODER_QUIET_HOURS_DEFAULT_SCHEDULE</code>              |
+| YAML        | <code>userQuietHoursSchedule.defaultQuietHoursSchedule</code> |
+
+The default daily cron schedule applied to users that haven't set a custom quiet hours schedule themselves. The quiet hours schedule determines when workspaces will be force stopped due to the template's max TTL, and will round the max TTL up to be within the user's quiet hours window (or default). The format is the same as the standard cron format, but the day-of-month, month and day-of-week must be \*. Only one hour and minute can be specified (ranges or comma separated values are not supported).
 
 ### --disable-owner-workspace-access
 
@@ -212,6 +220,38 @@ Disable workspace apps that are not served from subdomains. Path-based apps can 
 | YAML        | <code>networking.http.disableSessionExpiryRefresh</code> |
 
 Disable automatic session expiry bumping due to activity. This forces all sessions to become invalid after the session expiry duration has been reached.
+
+### --docs-url
+
+|             |                                 |
+| ----------- | ------------------------------- |
+| Type        | <code>url</code>                |
+| Environment | <code>$CODER_DOCS_URL</code>    |
+| YAML        | <code>networking.docsURL</code> |
+
+Specifies the custom docs URL.
+
+### --oidc-group-auto-create
+
+|             |                                            |
+| ----------- | ------------------------------------------ |
+| Type        | <code>bool</code>                          |
+| Environment | <code>$CODER_OIDC_GROUP_AUTO_CREATE</code> |
+| YAML        | <code>oidc.enableGroupAutoCreate</code>    |
+| Default     | <code>false</code>                         |
+
+Automatically creates missing groups from a user's groups claim.
+
+### --enable-terraform-debug-mode
+
+|             |                                                             |
+| ----------- | ----------------------------------------------------------- |
+| Type        | <code>bool</code>                                           |
+| Environment | <code>$CODER_ENABLE_TERRAFORM_DEBUG_MODE</code>             |
+| YAML        | <code>introspection.logging.enableTerraformDebugMode</code> |
+| Default     | <code>false</code>                                          |
+
+Allow administrators to enable Terraform debug output.
 
 ### --swagger-enable
 
@@ -275,6 +315,16 @@ Output human-readable logs to a given file.
 | YAML        | <code>introspection.logging.jsonPath</code> |
 
 Output JSON logs to a given file.
+
+### -l, --log-filter
+
+|             |                                           |
+| ----------- | ----------------------------------------- |
+| Type        | <code>string-array</code>                 |
+| Environment | <code>$CODER_LOG_FILTER</code>            |
+| YAML        | <code>introspection.logging.filter</code> |
+
+Filter debug logs by matching against a given regex. Use .\* to match all debug logs.
 
 ### --max-token-lifetime
 
@@ -378,6 +428,16 @@ Whether new users can sign up with OIDC.
 
 OIDC auth URL parameters to pass to the upstream provider.
 
+### --oidc-client-cert-file
+
+|             |                                           |
+| ----------- | ----------------------------------------- |
+| Type        | <code>string</code>                       |
+| Environment | <code>$CODER_OIDC_CLIENT_CERT_FILE</code> |
+| YAML        | <code>oidc.oidcClientCertFile</code>      |
+
+Pem encoded certificate file to use for oauth2 PKI/JWT authorization. The public certificate that accompanies oidc-client-key-file. A standard x509 certificate is expected.
+
 ### --oidc-client-id
 
 |             |                                    |
@@ -387,6 +447,16 @@ OIDC auth URL parameters to pass to the upstream provider.
 | YAML        | <code>oidc.clientID</code>         |
 
 Client ID to use for Login with OIDC.
+
+### --oidc-client-key-file
+
+|             |                                          |
+| ----------- | ---------------------------------------- |
+| Type        | <code>string</code>                      |
+| Environment | <code>$CODER_OIDC_CLIENT_KEY_FILE</code> |
+| YAML        | <code>oidc.oidcClientKeyFile</code>      |
+
+Pem encoded RSA private key to use for oauth2 PKI/JWT authorization. This can be used instead of oidc-client-secret if your IDP supports it.
 
 ### --oidc-client-secret
 
@@ -470,6 +540,17 @@ Ignore the userinfo endpoint and only use the ID token for user information.
 
 Issuer URL to use for Login with OIDC.
 
+### --oidc-group-regex-filter
+
+|             |                                             |
+| ----------- | ------------------------------------------- |
+| Type        | <code>regexp</code>                         |
+| Environment | <code>$CODER_OIDC_GROUP_REGEX_FILTER</code> |
+| YAML        | <code>oidc.groupRegexFilter</code>          |
+| Default     | <code>.\*</code>                            |
+
+If provided any group name not matching the regex is ignored. This allows for filtering out groups that are not needed. This filter is applied after the group mapping.
+
 ### --oidc-scopes
 
 |             |                                   |
@@ -480,6 +561,37 @@ Issuer URL to use for Login with OIDC.
 | Default     | <code>openid,profile,email</code> |
 
 Scopes to grant when authenticating with OIDC.
+
+### --oidc-user-role-default
+
+|             |                                            |
+| ----------- | ------------------------------------------ |
+| Type        | <code>string-array</code>                  |
+| Environment | <code>$CODER_OIDC_USER_ROLE_DEFAULT</code> |
+| YAML        | <code>oidc.userRoleDefault</code>          |
+
+If user role sync is enabled, these roles are always included for all authenticated users. The 'member' role is always assigned.
+
+### --oidc-user-role-field
+
+|             |                                          |
+| ----------- | ---------------------------------------- |
+| Type        | <code>string</code>                      |
+| Environment | <code>$CODER_OIDC_USER_ROLE_FIELD</code> |
+| YAML        | <code>oidc.userRoleField</code>          |
+
+This field must be set if using the user roles sync feature. Set this to the name of the claim used to store the user's role. The roles should be sent as an array of strings.
+
+### --oidc-user-role-mapping
+
+|             |                                            |
+| ----------- | ------------------------------------------ |
+| Type        | <code>struct[map[string][]string]</code>   |
+| Environment | <code>$CODER_OIDC_USER_ROLE_MAPPING</code> |
+| YAML        | <code>oidc.userRoleMapping</code>          |
+| Default     | <code>{}</code>                            |
+
+A map of the OIDC passed in user roles and the groups in Coder it should map to. This is useful if the group names do not match. If mapped to the empty string, the role will ignored.
 
 ### --oidc-username-field
 
@@ -511,7 +623,7 @@ The text to show on the OpenID Connect sign in button.
 | Environment | <code>$CODER_OIDC_ICON_URL</code> |
 | YAML        | <code>oidc.iconURL</code>         |
 
-URL pointing to the icon to use on the OepnID Connect login button.
+URL pointing to the icon to use on the OpenID Connect login button.
 
 ### --provisioner-daemon-poll-interval
 
@@ -565,6 +677,17 @@ The bind address to serve prometheus metrics.
 
 Collect agent stats (may increase charges for metrics storage).
 
+### --prometheus-collect-db-metrics
+
+|             |                                                          |
+| ----------- | -------------------------------------------------------- |
+| Type        | <code>bool</code>                                        |
+| Environment | <code>$CODER_PROMETHEUS_COLLECT_DB_METRICS</code>        |
+| YAML        | <code>introspection.prometheus.collect_db_metrics</code> |
+| Default     | <code>false</code>                                       |
+
+Collect database metrics (may increase charges for metrics storage).
+
 ### --prometheus-enable
 
 |             |                                              |
@@ -574,6 +697,16 @@ Collect agent stats (may increase charges for metrics storage).
 | YAML        | <code>introspection.prometheus.enable</code> |
 
 Serve prometheus metrics on the address defined by prometheus address.
+
+### --provisioner-daemon-psk
+
+|             |                                            |
+| ----------- | ------------------------------------------ |
+| Type        | <code>string</code>                        |
+| Environment | <code>$CODER_PROVISIONER_DAEMON_PSK</code> |
+| YAML        | <code>provisioning.daemonPSK</code>        |
+
+Pre-shared key to authenticate external provisioner daemons to Coder server.
 
 ### --provisioner-daemons
 
@@ -864,16 +997,6 @@ Enables trace exporting to Honeycomb.io using the provided API Key.
 | Default     | <code>false</code>               |
 
 Periodically check for new releases of Coder and inform the owner. The check is performed once per day.
-
-### -v, --verbose
-
-|             |                                            |
-| ----------- | ------------------------------------------ |
-| Type        | <code>bool</code>                          |
-| Environment | <code>$CODER_VERBOSE</code>                |
-| YAML        | <code>introspection.logging.verbose</code> |
-
-Output debug-level logs.
 
 ### --wildcard-access-url
 

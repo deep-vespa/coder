@@ -15,13 +15,20 @@ import { AvatarData } from "components/AvatarData/AvatarData"
 import { ChooseOne, Cond } from "components/Conditionals/ChooseOne"
 import { EmptyState } from "components/EmptyState/EmptyState"
 import { Stack } from "components/Stack/Stack"
-import { TableLoaderSkeleton } from "components/TableLoader/TableLoader"
+import {
+  TableLoaderSkeleton,
+  TableRowSkeleton,
+} from "components/TableLoader/TableLoader"
 import { UserAvatar } from "components/UserAvatar/UserAvatar"
 import { FC } from "react"
 import { Link as RouterLink, useNavigate } from "react-router-dom"
 import { Paywall } from "components/Paywall/Paywall"
 import { Group } from "api/typesGenerated"
 import { GroupAvatar } from "components/GroupAvatar/GroupAvatar"
+import { docs } from "utils/docs"
+import Skeleton from "@mui/material/Skeleton"
+import { Box } from "@mui/system"
+import { AvatarDataSkeleton } from "components/AvatarData/AvatarDataSkeleton"
 
 export type GroupsPageViewProps = {
   groups: Group[] | undefined
@@ -44,22 +51,22 @@ export const GroupsPageView: FC<GroupsPageViewProps> = ({
       <ChooseOne>
         <Cond condition={!isTemplateRBACEnabled}>
           <Paywall
-            message="User groups"
-            description="Organize the users into groups and manage their permissions. To use this feature, you have to upgrade your account."
+            message="Groups"
+            description="Organize users into groups with restricted access to templates. You need an Enterprise license to use this feature."
             cta={
               <Stack direction="row" alignItems="center">
                 <Button
-                  href="https://coder.com/docs/coder-oss/latest/enterprise"
+                  href={docs("/enterprise")}
                   target="_blank"
                   rel="noreferrer"
                   startIcon={<ArrowRightAltOutlined />}
                   variant="contained"
                 >
-                  See how to upgrade
+                  Learn about Enterprise
                 </Button>
 
                 <Link
-                  href="https://coder.com/docs/coder-oss/latest/admin/groups"
+                  href={docs("/admin/groups")}
                   target="_blank"
                   rel="noreferrer"
                 >
@@ -82,7 +89,7 @@ export const GroupsPageView: FC<GroupsPageViewProps> = ({
               <TableBody>
                 <ChooseOne>
                   <Cond condition={isLoading}>
-                    <TableLoaderSkeleton columns={3} useAvatarData />
+                    <TableLoader />
                   </Cond>
 
                   <Cond condition={isEmpty}>
@@ -136,11 +143,11 @@ export const GroupsPageView: FC<GroupsPageViewProps> = ({
                             <AvatarData
                               avatar={
                                 <GroupAvatar
-                                  name={group.name}
+                                  name={group.display_name || group.name}
                                   avatarURL={group.avatar_url}
                                 />
                               }
-                              title={group.name}
+                              title={group.display_name || group.name}
                               subtitle={`${group.members.length} members`}
                             />
                           </TableCell>
@@ -180,6 +187,26 @@ export const GroupsPageView: FC<GroupsPageViewProps> = ({
         </Cond>
       </ChooseOne>
     </>
+  )
+}
+
+const TableLoader = () => {
+  return (
+    <TableLoaderSkeleton>
+      <TableRowSkeleton>
+        <TableCell>
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+            <AvatarDataSkeleton />
+          </Box>
+        </TableCell>
+        <TableCell>
+          <Skeleton variant="text" width="25%" />
+        </TableCell>
+        <TableCell>
+          <Skeleton variant="text" width="25%" />
+        </TableCell>
+      </TableRowSkeleton>
+    </TableLoaderSkeleton>
   )
 }
 

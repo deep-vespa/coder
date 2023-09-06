@@ -8,12 +8,13 @@ import (
 
 	"golang.org/x/xerrors"
 
-	"github.com/coder/coder/coderd/rbac"
+	"github.com/coder/coder/v2/coderd/database/db2sdk"
+	"github.com/coder/coder/v2/coderd/rbac"
 
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/coderd/httpapi"
-	"github.com/coder/coder/coderd/httpmw"
-	"github.com/coder/coder/codersdk"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/httpapi"
+	"github.com/coder/coder/v2/coderd/httpmw"
+	"github.com/coder/coder/v2/codersdk"
 )
 
 // @Summary Assign role to organization member
@@ -104,7 +105,7 @@ func convertOrganizationMember(mem database.OrganizationMember) codersdk.Organiz
 
 	for _, roleName := range mem.Roles {
 		rbacRole, _ := rbac.RoleByName(roleName)
-		convertedMember.Roles = append(convertedMember.Roles, convertRole(rbacRole))
+		convertedMember.Roles = append(convertedMember.Roles, db2sdk.Role(rbacRole))
 	}
 	return convertedMember
 }

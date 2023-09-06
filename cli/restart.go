@@ -4,12 +4,16 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/coder/coder/cli/clibase"
-	"github.com/coder/coder/cli/cliui"
-	"github.com/coder/coder/codersdk"
+	"golang.org/x/xerrors"
+
+	"github.com/coder/coder/v2/cli/clibase"
+	"github.com/coder/coder/v2/cli/cliui"
+	"github.com/coder/coder/v2/codersdk"
 )
 
 func (r *RootCmd) restart() *clibase.Cmd {
+	var parameterFlags workspaceParameterFlags
+
 	client := new(codersdk.Client)
 	cmd := &clibase.Cmd{
 		Annotations: workspaceCommand,
@@ -19,22 +23,48 @@ func (r *RootCmd) restart() *clibase.Cmd {
 			clibase.RequireNArgs(1),
 			r.InitClient(client),
 		),
-		Options: clibase.OptionSet{
-			cliui.SkipPromptOption(),
-		},
+		Options: append(parameterFlags.cliBuildOptions(), cliui.SkipPromptOption()),
 		Handler: func(inv *clibase.Invocation) error {
 			ctx := inv.Context()
 			out := inv.Stdout
 
-			_, err := cliui.Prompt(inv, cliui.PromptOptions{
-				Text:      "Confirm restart workspace?",
-				IsConfirm: true,
+			workspace, err := namedWorkspace(inv.Context(), client, inv.Args[0])
+			if err != nil {
+				return err
+			}
+
+			lastBuildParameters, err := client.WorkspaceBuildParameters(inv.Context(), workspace.LatestBuild.ID)
+			if err != nil {
+				return err
+			}
+
+			template, err := client.Template(inv.Context(), workspace.TemplateID)
+			if err != nil {
+				return err
+			}
+
+			buildOptions, err := asWorkspaceBuildParameters(parameterFlags.buildOptions)
+			if err != nil {
+				return xerrors.Errorf("can't parse build options: %w", err)
+			}
+
+			buildParameters, err := prepStartWorkspace(inv, client, prepStartWorkspaceArgs{
+				Action:   WorkspaceRestart,
+				Template: template,
+
+				LastBuildParameters: lastBuildParameters,
+
+				PromptBuildOptions: parameterFlags.promptBuildOptions,
+				BuildOptions:       buildOptions,
 			})
 			if err != nil {
 				return err
 			}
 
-			workspace, err := namedWorkspace(inv.Context(), client, inv.Args[0])
+			_, err = cliui.Prompt(inv, cliui.PromptOptions{
+				Text:      "Confirm restart workspace?",
+				IsConfirm: true,
+			})
 			if err != nil {
 				return err
 			}
@@ -51,7 +81,8 @@ func (r *RootCmd) restart() *clibase.Cmd {
 			}
 
 			build, err = client.CreateWorkspaceBuild(ctx, workspace.ID, codersdk.CreateWorkspaceBuildRequest{
-				Transition: codersdk.WorkspaceTransitionStart,
+				Transition:          codersdk.WorkspaceTransitionStart,
+				RichParameterValues: buildParameters,
 			})
 			if err != nil {
 				return err

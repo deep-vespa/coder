@@ -134,6 +134,7 @@ curl -X GET http://coder-server:8080/api/v2/entitlements \
     }
   },
   "has_license": true,
+  "refreshed_at": "2019-08-24T14:15:22Z",
   "require_telemetry": true,
   "trial": true,
   "warnings": ["string"]
@@ -148,7 +149,7 @@ curl -X GET http://coder-server:8080/api/v2/entitlements \
 
 To perform this operation, you must be authenticated. [Learn more](authentication.md).
 
-## Get group by name
+## Get group by ID
 
 ### Code samples
 
@@ -165,7 +166,7 @@ curl -X GET http://coder-server:8080/api/v2/groups/{group} \
 
 | Name    | In   | Type   | Required | Description |
 | ------- | ---- | ------ | -------- | ----------- |
-| `group` | path | string | true     | Group name  |
+| `group` | path | string | true     | Group id    |
 
 ### Example responses
 
@@ -174,6 +175,7 @@ curl -X GET http://coder-server:8080/api/v2/groups/{group} \
 ```json
 {
   "avatar_url": "string",
+  "display_name": "string",
   "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
   "members": [
     {
@@ -182,6 +184,7 @@ curl -X GET http://coder-server:8080/api/v2/groups/{group} \
       "email": "user@example.com",
       "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
       "last_seen_at": "2019-08-24T14:15:22Z",
+      "login_type": "",
       "organization_ids": ["497f6eca-6276-4993-bfeb-53cbbbba6f08"],
       "roles": [
         {
@@ -195,7 +198,8 @@ curl -X GET http://coder-server:8080/api/v2/groups/{group} \
   ],
   "name": "string",
   "organization_id": "7c60d51f-b44e-4682-87d6-449835ea4de6",
-  "quota_allowance": 0
+  "quota_allowance": 0,
+  "source": "user"
 }
 ```
 
@@ -233,6 +237,7 @@ curl -X DELETE http://coder-server:8080/api/v2/groups/{group} \
 ```json
 {
   "avatar_url": "string",
+  "display_name": "string",
   "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
   "members": [
     {
@@ -241,6 +246,7 @@ curl -X DELETE http://coder-server:8080/api/v2/groups/{group} \
       "email": "user@example.com",
       "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
       "last_seen_at": "2019-08-24T14:15:22Z",
+      "login_type": "",
       "organization_ids": ["497f6eca-6276-4993-bfeb-53cbbbba6f08"],
       "roles": [
         {
@@ -254,7 +260,8 @@ curl -X DELETE http://coder-server:8080/api/v2/groups/{group} \
   ],
   "name": "string",
   "organization_id": "7c60d51f-b44e-4682-87d6-449835ea4de6",
-  "quota_allowance": 0
+  "quota_allowance": 0,
+  "source": "user"
 }
 ```
 
@@ -273,17 +280,32 @@ To perform this operation, you must be authenticated. [Learn more](authenticatio
 ```shell
 # Example request using curl
 curl -X PATCH http://coder-server:8080/api/v2/groups/{group} \
+  -H 'Content-Type: application/json' \
   -H 'Accept: application/json' \
   -H 'Coder-Session-Token: API_KEY'
 ```
 
 `PATCH /groups/{group}`
 
+> Body parameter
+
+```json
+{
+  "add_users": ["string"],
+  "avatar_url": "string",
+  "display_name": "string",
+  "name": "string",
+  "quota_allowance": 0,
+  "remove_users": ["string"]
+}
+```
+
 ### Parameters
 
-| Name    | In   | Type   | Required | Description |
-| ------- | ---- | ------ | -------- | ----------- |
-| `group` | path | string | true     | Group name  |
+| Name    | In   | Type                                                               | Required | Description         |
+| ------- | ---- | ------------------------------------------------------------------ | -------- | ------------------- |
+| `group` | path | string                                                             | true     | Group name          |
+| `body`  | body | [codersdk.PatchGroupRequest](schemas.md#codersdkpatchgrouprequest) | true     | Patch group request |
 
 ### Example responses
 
@@ -292,6 +314,7 @@ curl -X PATCH http://coder-server:8080/api/v2/groups/{group} \
 ```json
 {
   "avatar_url": "string",
+  "display_name": "string",
   "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
   "members": [
     {
@@ -300,6 +323,7 @@ curl -X PATCH http://coder-server:8080/api/v2/groups/{group} \
       "email": "user@example.com",
       "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
       "last_seen_at": "2019-08-24T14:15:22Z",
+      "login_type": "",
       "organization_ids": ["497f6eca-6276-4993-bfeb-53cbbbba6f08"],
       "roles": [
         {
@@ -313,7 +337,8 @@ curl -X PATCH http://coder-server:8080/api/v2/groups/{group} \
   ],
   "name": "string",
   "organization_id": "7c60d51f-b44e-4682-87d6-449835ea4de6",
-  "quota_allowance": 0
+  "quota_allowance": 0,
+  "source": "user"
 }
 ```
 
@@ -426,6 +451,7 @@ curl -X GET http://coder-server:8080/api/v2/organizations/{organization}/groups 
 [
   {
     "avatar_url": "string",
+    "display_name": "string",
     "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
     "members": [
       {
@@ -434,6 +460,7 @@ curl -X GET http://coder-server:8080/api/v2/organizations/{organization}/groups 
         "email": "user@example.com",
         "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
         "last_seen_at": "2019-08-24T14:15:22Z",
+        "login_type": "",
         "organization_ids": ["497f6eca-6276-4993-bfeb-53cbbbba6f08"],
         "roles": [
           {
@@ -447,7 +474,8 @@ curl -X GET http://coder-server:8080/api/v2/organizations/{organization}/groups 
     ],
     "name": "string",
     "organization_id": "7c60d51f-b44e-4682-87d6-449835ea4de6",
-    "quota_allowance": 0
+    "quota_allowance": 0,
+    "source": "user"
   }
 ]
 ```
@@ -462,33 +490,44 @@ curl -X GET http://coder-server:8080/api/v2/organizations/{organization}/groups 
 
 Status Code **200**
 
-| Name                  | Type                                                 | Required | Restrictions | Description |
-| --------------------- | ---------------------------------------------------- | -------- | ------------ | ----------- |
-| `[array item]`        | array                                                | false    |              |             |
-| `» avatar_url`        | string                                               | false    |              |             |
-| `» id`                | string(uuid)                                         | false    |              |             |
-| `» members`           | array                                                | false    |              |             |
-| `»» avatar_url`       | string(uri)                                          | false    |              |             |
-| `»» created_at`       | string(date-time)                                    | true     |              |             |
-| `»» email`            | string(email)                                        | true     |              |             |
-| `»» id`               | string(uuid)                                         | true     |              |             |
-| `»» last_seen_at`     | string(date-time)                                    | false    |              |             |
-| `»» organization_ids` | array                                                | false    |              |             |
-| `»» roles`            | array                                                | false    |              |             |
-| `»»» display_name`    | string                                               | false    |              |             |
-| `»»» name`            | string                                               | false    |              |             |
-| `»» status`           | [codersdk.UserStatus](schemas.md#codersdkuserstatus) | false    |              |             |
-| `»» username`         | string                                               | true     |              |             |
-| `» name`              | string                                               | false    |              |             |
-| `» organization_id`   | string(uuid)                                         | false    |              |             |
-| `» quota_allowance`   | integer                                              | false    |              |             |
+| Name                  | Type                                                   | Required | Restrictions | Description |
+| --------------------- | ------------------------------------------------------ | -------- | ------------ | ----------- |
+| `[array item]`        | array                                                  | false    |              |             |
+| `» avatar_url`        | string                                                 | false    |              |             |
+| `» display_name`      | string                                                 | false    |              |             |
+| `» id`                | string(uuid)                                           | false    |              |             |
+| `» members`           | array                                                  | false    |              |             |
+| `»» avatar_url`       | string(uri)                                            | false    |              |             |
+| `»» created_at`       | string(date-time)                                      | true     |              |             |
+| `»» email`            | string(email)                                          | true     |              |             |
+| `»» id`               | string(uuid)                                           | true     |              |             |
+| `»» last_seen_at`     | string(date-time)                                      | false    |              |             |
+| `»» login_type`       | [codersdk.LoginType](schemas.md#codersdklogintype)     | false    |              |             |
+| `»» organization_ids` | array                                                  | false    |              |             |
+| `»» roles`            | array                                                  | false    |              |             |
+| `»»» display_name`    | string                                                 | false    |              |             |
+| `»»» name`            | string                                                 | false    |              |             |
+| `»» status`           | [codersdk.UserStatus](schemas.md#codersdkuserstatus)   | false    |              |             |
+| `»» username`         | string                                                 | true     |              |             |
+| `» name`              | string                                                 | false    |              |             |
+| `» organization_id`   | string(uuid)                                           | false    |              |             |
+| `» quota_allowance`   | integer                                                | false    |              |             |
+| `» source`            | [codersdk.GroupSource](schemas.md#codersdkgroupsource) | false    |              |             |
 
 #### Enumerated Values
 
-| Property | Value       |
-| -------- | ----------- |
-| `status` | `active`    |
-| `status` | `suspended` |
+| Property     | Value       |
+| ------------ | ----------- |
+| `login_type` | ``          |
+| `login_type` | `password`  |
+| `login_type` | `github`    |
+| `login_type` | `oidc`      |
+| `login_type` | `token`     |
+| `login_type` | `none`      |
+| `status`     | `active`    |
+| `status`     | `suspended` |
+| `source`     | `user`      |
+| `source`     | `oidc`      |
 
 To perform this operation, you must be authenticated. [Learn more](authentication.md).
 
@@ -511,6 +550,7 @@ curl -X POST http://coder-server:8080/api/v2/organizations/{organization}/groups
 ```json
 {
   "avatar_url": "string",
+  "display_name": "string",
   "name": "string",
   "quota_allowance": 0
 }
@@ -530,6 +570,7 @@ curl -X POST http://coder-server:8080/api/v2/organizations/{organization}/groups
 ```json
 {
   "avatar_url": "string",
+  "display_name": "string",
   "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
   "members": [
     {
@@ -538,6 +579,7 @@ curl -X POST http://coder-server:8080/api/v2/organizations/{organization}/groups
       "email": "user@example.com",
       "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
       "last_seen_at": "2019-08-24T14:15:22Z",
+      "login_type": "",
       "organization_ids": ["497f6eca-6276-4993-bfeb-53cbbbba6f08"],
       "roles": [
         {
@@ -551,7 +593,8 @@ curl -X POST http://coder-server:8080/api/v2/organizations/{organization}/groups
   ],
   "name": "string",
   "organization_id": "7c60d51f-b44e-4682-87d6-449835ea4de6",
-  "quota_allowance": 0
+  "quota_allowance": 0,
+  "source": "user"
 }
 ```
 
@@ -590,6 +633,7 @@ curl -X GET http://coder-server:8080/api/v2/organizations/{organization}/groups/
 ```json
 {
   "avatar_url": "string",
+  "display_name": "string",
   "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
   "members": [
     {
@@ -598,6 +642,7 @@ curl -X GET http://coder-server:8080/api/v2/organizations/{organization}/groups/
       "email": "user@example.com",
       "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
       "last_seen_at": "2019-08-24T14:15:22Z",
+      "login_type": "",
       "organization_ids": ["497f6eca-6276-4993-bfeb-53cbbbba6f08"],
       "roles": [
         {
@@ -611,7 +656,8 @@ curl -X GET http://coder-server:8080/api/v2/organizations/{organization}/groups/
   ],
   "name": "string",
   "organization_id": "7c60d51f-b44e-4682-87d6-449835ea4de6",
-  "quota_allowance": 0
+  "quota_allowance": 0,
+  "source": "user"
 }
 ```
 
@@ -959,6 +1005,7 @@ curl -X PATCH http://coder-server:8080/api/v2/scim/v2/Users/{id} \
   "email": "user@example.com",
   "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
   "last_seen_at": "2019-08-24T14:15:22Z",
+  "login_type": "",
   "organization_ids": ["497f6eca-6276-4993-bfeb-53cbbbba6f08"],
   "roles": [
     {
@@ -1010,6 +1057,7 @@ curl -X GET http://coder-server:8080/api/v2/templates/{template}/acl \
     "email": "user@example.com",
     "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
     "last_seen_at": "2019-08-24T14:15:22Z",
+    "login_type": "",
     "organization_ids": ["497f6eca-6276-4993-bfeb-53cbbbba6f08"],
     "role": "admin",
     "roles": [
@@ -1042,6 +1090,7 @@ Status Code **200**
 | `» email`            | string(email)                                            | true     |              |             |
 | `» id`               | string(uuid)                                             | true     |              |             |
 | `» last_seen_at`     | string(date-time)                                        | false    |              |             |
+| `» login_type`       | [codersdk.LoginType](schemas.md#codersdklogintype)       | false    |              |             |
 | `» organization_ids` | array                                                    | false    |              |             |
 | `» role`             | [codersdk.TemplateRole](schemas.md#codersdktemplaterole) | false    |              |             |
 | `» roles`            | array                                                    | false    |              |             |
@@ -1052,12 +1101,18 @@ Status Code **200**
 
 #### Enumerated Values
 
-| Property | Value       |
-| -------- | ----------- |
-| `role`   | `admin`     |
-| `role`   | `use`       |
-| `status` | `active`    |
-| `status` | `suspended` |
+| Property     | Value       |
+| ------------ | ----------- |
+| `login_type` | ``          |
+| `login_type` | `password`  |
+| `login_type` | `github`    |
+| `login_type` | `oidc`      |
+| `login_type` | `token`     |
+| `login_type` | `none`      |
+| `role`       | `admin`     |
+| `role`       | `use`       |
+| `status`     | `active`    |
+| `status`     | `suspended` |
 
 To perform this operation, you must be authenticated. [Learn more](authentication.md).
 
@@ -1080,12 +1135,12 @@ curl -X PATCH http://coder-server:8080/api/v2/templates/{template}/acl \
 ```json
 {
   "group_perms": {
-    "property1": "admin",
-    "property2": "admin"
+    "8bd26b20-f3e8-48be-a903-46bb920cf671": "use",
+    "<user_id>>": "admin"
   },
   "user_perms": {
-    "property1": "admin",
-    "property2": "admin"
+    "4df59e74-c027-470b-ab4d-cbba8963a5e9": "use",
+    "<group_id>": "admin"
   }
 }
 ```
@@ -1119,6 +1174,260 @@ curl -X PATCH http://coder-server:8080/api/v2/templates/{template}/acl \
 | Status | Meaning                                                 | Description | Schema                                           |
 | ------ | ------------------------------------------------------- | ----------- | ------------------------------------------------ |
 | 200    | [OK](https://tools.ietf.org/html/rfc7231#section-6.3.1) | OK          | [codersdk.Response](schemas.md#codersdkresponse) |
+
+To perform this operation, you must be authenticated. [Learn more](authentication.md).
+
+## Get template available acl users/groups
+
+### Code samples
+
+```shell
+# Example request using curl
+curl -X GET http://coder-server:8080/api/v2/templates/{template}/acl/available \
+  -H 'Accept: application/json' \
+  -H 'Coder-Session-Token: API_KEY'
+```
+
+`GET /templates/{template}/acl/available`
+
+### Parameters
+
+| Name       | In   | Type         | Required | Description |
+| ---------- | ---- | ------------ | -------- | ----------- |
+| `template` | path | string(uuid) | true     | Template ID |
+
+### Example responses
+
+> 200 Response
+
+```json
+[
+  {
+    "groups": [
+      {
+        "avatar_url": "string",
+        "display_name": "string",
+        "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
+        "members": [
+          {
+            "avatar_url": "http://example.com",
+            "created_at": "2019-08-24T14:15:22Z",
+            "email": "user@example.com",
+            "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
+            "last_seen_at": "2019-08-24T14:15:22Z",
+            "login_type": "",
+            "organization_ids": ["497f6eca-6276-4993-bfeb-53cbbbba6f08"],
+            "roles": [
+              {
+                "display_name": "string",
+                "name": "string"
+              }
+            ],
+            "status": "active",
+            "username": "string"
+          }
+        ],
+        "name": "string",
+        "organization_id": "7c60d51f-b44e-4682-87d6-449835ea4de6",
+        "quota_allowance": 0,
+        "source": "user"
+      }
+    ],
+    "users": [
+      {
+        "avatar_url": "http://example.com",
+        "created_at": "2019-08-24T14:15:22Z",
+        "email": "user@example.com",
+        "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
+        "last_seen_at": "2019-08-24T14:15:22Z",
+        "login_type": "",
+        "organization_ids": ["497f6eca-6276-4993-bfeb-53cbbbba6f08"],
+        "roles": [
+          {
+            "display_name": "string",
+            "name": "string"
+          }
+        ],
+        "status": "active",
+        "username": "string"
+      }
+    ]
+  }
+]
+```
+
+### Responses
+
+| Status | Meaning                                                 | Description | Schema                                                            |
+| ------ | ------------------------------------------------------- | ----------- | ----------------------------------------------------------------- |
+| 200    | [OK](https://tools.ietf.org/html/rfc7231#section-6.3.1) | OK          | array of [codersdk.ACLAvailable](schemas.md#codersdkaclavailable) |
+
+<h3 id="get-template-available-acl-users/groups-responseschema">Response Schema</h3>
+
+Status Code **200**
+
+| Name                   | Type                                                   | Required | Restrictions | Description |
+| ---------------------- | ------------------------------------------------------ | -------- | ------------ | ----------- |
+| `[array item]`         | array                                                  | false    |              |             |
+| `» groups`             | array                                                  | false    |              |             |
+| `»» avatar_url`        | string                                                 | false    |              |             |
+| `»» display_name`      | string                                                 | false    |              |             |
+| `»» id`                | string(uuid)                                           | false    |              |             |
+| `»» members`           | array                                                  | false    |              |             |
+| `»»» avatar_url`       | string(uri)                                            | false    |              |             |
+| `»»» created_at`       | string(date-time)                                      | true     |              |             |
+| `»»» email`            | string(email)                                          | true     |              |             |
+| `»»» id`               | string(uuid)                                           | true     |              |             |
+| `»»» last_seen_at`     | string(date-time)                                      | false    |              |             |
+| `»»» login_type`       | [codersdk.LoginType](schemas.md#codersdklogintype)     | false    |              |             |
+| `»»» organization_ids` | array                                                  | false    |              |             |
+| `»»» roles`            | array                                                  | false    |              |             |
+| `»»»» display_name`    | string                                                 | false    |              |             |
+| `»»»» name`            | string                                                 | false    |              |             |
+| `»»» status`           | [codersdk.UserStatus](schemas.md#codersdkuserstatus)   | false    |              |             |
+| `»»» username`         | string                                                 | true     |              |             |
+| `»» name`              | string                                                 | false    |              |             |
+| `»» organization_id`   | string(uuid)                                           | false    |              |             |
+| `»» quota_allowance`   | integer                                                | false    |              |             |
+| `»» source`            | [codersdk.GroupSource](schemas.md#codersdkgroupsource) | false    |              |             |
+| `» users`              | array                                                  | false    |              |             |
+
+#### Enumerated Values
+
+| Property     | Value       |
+| ------------ | ----------- |
+| `login_type` | ``          |
+| `login_type` | `password`  |
+| `login_type` | `github`    |
+| `login_type` | `oidc`      |
+| `login_type` | `token`     |
+| `login_type` | `none`      |
+| `status`     | `active`    |
+| `status`     | `suspended` |
+| `source`     | `user`      |
+| `source`     | `oidc`      |
+
+To perform this operation, you must be authenticated. [Learn more](authentication.md).
+
+## Get user quiet hours schedule
+
+### Code samples
+
+```shell
+# Example request using curl
+curl -X GET http://coder-server:8080/api/v2/users/{user}/quiet-hours \
+  -H 'Accept: application/json' \
+  -H 'Coder-Session-Token: API_KEY'
+```
+
+`GET /users/{user}/quiet-hours`
+
+### Parameters
+
+| Name   | In   | Type         | Required | Description |
+| ------ | ---- | ------------ | -------- | ----------- |
+| `user` | path | string(uuid) | true     | User ID     |
+
+### Example responses
+
+> 200 Response
+
+```json
+[
+  {
+    "next": "2019-08-24T14:15:22Z",
+    "raw_schedule": "string",
+    "time": "string",
+    "timezone": "string",
+    "user_set": true
+  }
+]
+```
+
+### Responses
+
+| Status | Meaning                                                 | Description | Schema                                                                                                |
+| ------ | ------------------------------------------------------- | ----------- | ----------------------------------------------------------------------------------------------------- |
+| 200    | [OK](https://tools.ietf.org/html/rfc7231#section-6.3.1) | OK          | array of [codersdk.UserQuietHoursScheduleResponse](schemas.md#codersdkuserquiethoursscheduleresponse) |
+
+<h3 id="get-user-quiet-hours-schedule-responseschema">Response Schema</h3>
+
+Status Code **200**
+
+| Name             | Type              | Required | Restrictions | Description                                                                                                            |
+| ---------------- | ----------------- | -------- | ------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| `[array item]`   | array             | false    |              |                                                                                                                        |
+| `» next`         | string(date-time) | false    |              | Next is the next time that the quiet hours window will start.                                                          |
+| `» raw_schedule` | string            | false    |              |                                                                                                                        |
+| `» time`         | string            | false    |              | Time is the time of day that the quiet hours window starts in the given Timezone each day.                             |
+| `» timezone`     | string            | false    |              | raw format from the cron expression, UTC if unspecified                                                                |
+| `» user_set`     | boolean           | false    |              | User set is true if the user has set their own quiet hours schedule. If false, the user is using the default schedule. |
+
+To perform this operation, you must be authenticated. [Learn more](authentication.md).
+
+## Update user quiet hours schedule
+
+### Code samples
+
+```shell
+# Example request using curl
+curl -X PUT http://coder-server:8080/api/v2/users/{user}/quiet-hours \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json' \
+  -H 'Coder-Session-Token: API_KEY'
+```
+
+`PUT /users/{user}/quiet-hours`
+
+> Body parameter
+
+```json
+{
+  "schedule": "string"
+}
+```
+
+### Parameters
+
+| Name   | In   | Type                                                                                                   | Required | Description             |
+| ------ | ---- | ------------------------------------------------------------------------------------------------------ | -------- | ----------------------- |
+| `user` | path | string(uuid)                                                                                           | true     | User ID                 |
+| `body` | body | [codersdk.UpdateUserQuietHoursScheduleRequest](schemas.md#codersdkupdateuserquiethoursschedulerequest) | true     | Update schedule request |
+
+### Example responses
+
+> 200 Response
+
+```json
+[
+  {
+    "next": "2019-08-24T14:15:22Z",
+    "raw_schedule": "string",
+    "time": "string",
+    "timezone": "string",
+    "user_set": true
+  }
+]
+```
+
+### Responses
+
+| Status | Meaning                                                 | Description | Schema                                                                                                |
+| ------ | ------------------------------------------------------- | ----------- | ----------------------------------------------------------------------------------------------------- |
+| 200    | [OK](https://tools.ietf.org/html/rfc7231#section-6.3.1) | OK          | array of [codersdk.UserQuietHoursScheduleResponse](schemas.md#codersdkuserquiethoursscheduleresponse) |
+
+<h3 id="update-user-quiet-hours-schedule-responseschema">Response Schema</h3>
+
+Status Code **200**
+
+| Name             | Type              | Required | Restrictions | Description                                                                                                            |
+| ---------------- | ----------------- | -------- | ------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| `[array item]`   | array             | false    |              |                                                                                                                        |
+| `» next`         | string(date-time) | false    |              | Next is the next time that the quiet hours window will start.                                                          |
+| `» raw_schedule` | string            | false    |              |                                                                                                                        |
+| `» time`         | string            | false    |              | Time is the time of day that the quiet hours window starts in the given Timezone each day.                             |
+| `» timezone`     | string            | false    |              | raw format from the cron expression, UTC if unspecified                                                                |
+| `» user_set`     | boolean           | false    |              | User set is true if the user has set their own quiet hours schedule. If false, the user is using the default schedule. |
 
 To perform this operation, you must be authenticated. [Learn more](authentication.md).
 
@@ -1180,55 +1489,66 @@ curl -X GET http://coder-server:8080/api/v2/workspaceproxies \
 ```json
 [
   {
-    "created_at": "2019-08-24T14:15:22Z",
-    "deleted": true,
-    "display_name": "string",
-    "icon": "string",
-    "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
-    "name": "string",
-    "status": {
-      "checked_at": "2019-08-24T14:15:22Z",
-      "report": {
-        "errors": ["string"],
-        "warnings": ["string"]
-      },
-      "status": "ok"
-    },
-    "updated_at": "2019-08-24T14:15:22Z",
-    "url": "string",
-    "wildcard_hostname": "string"
+    "regions": [
+      {
+        "created_at": "2019-08-24T14:15:22Z",
+        "deleted": true,
+        "derp_enabled": true,
+        "derp_only": true,
+        "display_name": "string",
+        "healthy": true,
+        "icon_url": "string",
+        "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
+        "name": "string",
+        "path_app_url": "string",
+        "status": {
+          "checked_at": "2019-08-24T14:15:22Z",
+          "report": {
+            "errors": ["string"],
+            "warnings": ["string"]
+          },
+          "status": "ok"
+        },
+        "updated_at": "2019-08-24T14:15:22Z",
+        "wildcard_hostname": "string"
+      }
+    ]
   }
 ]
 ```
 
 ### Responses
 
-| Status | Meaning                                                 | Description | Schema                                                                |
-| ------ | ------------------------------------------------------- | ----------- | --------------------------------------------------------------------- |
-| 200    | [OK](https://tools.ietf.org/html/rfc7231#section-6.3.1) | OK          | array of [codersdk.WorkspaceProxy](schemas.md#codersdkworkspaceproxy) |
+| Status | Meaning                                                 | Description | Schema                                                                                                                  |
+| ------ | ------------------------------------------------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------- |
+| 200    | [OK](https://tools.ietf.org/html/rfc7231#section-6.3.1) | OK          | array of [codersdk.RegionsResponse-codersdk_WorkspaceProxy](schemas.md#codersdkregionsresponse-codersdk_workspaceproxy) |
 
 <h3 id="get-workspace-proxies-responseschema">Response Schema</h3>
 
 Status Code **200**
 
-| Name                  | Type                                                                     | Required | Restrictions | Description                                                                                                                                                                   |
-| --------------------- | ------------------------------------------------------------------------ | -------- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `[array item]`        | array                                                                    | false    |              |                                                                                                                                                                               |
-| `» created_at`        | string(date-time)                                                        | false    |              |                                                                                                                                                                               |
-| `» deleted`           | boolean                                                                  | false    |              |                                                                                                                                                                               |
-| `» display_name`      | string                                                                   | false    |              |                                                                                                                                                                               |
-| `» icon`              | string                                                                   | false    |              |                                                                                                                                                                               |
-| `» id`                | string(uuid)                                                             | false    |              |                                                                                                                                                                               |
-| `» name`              | string                                                                   | false    |              |                                                                                                                                                                               |
-| `» status`            | [codersdk.WorkspaceProxyStatus](schemas.md#codersdkworkspaceproxystatus) | false    |              | Status is the latest status check of the proxy. This will be empty for deleted proxies. This value can be used to determine if a workspace proxy is healthy and ready to use. |
-| `»» checked_at`       | string(date-time)                                                        | false    |              |                                                                                                                                                                               |
-| `»» report`           | [codersdk.ProxyHealthReport](schemas.md#codersdkproxyhealthreport)       | false    |              | Report provides more information about the health of the workspace proxy.                                                                                                     |
-| `»»» errors`          | array                                                                    | false    |              | Errors are problems that prevent the workspace proxy from being healthy                                                                                                       |
-| `»»» warnings`        | array                                                                    | false    |              | Warnings do not prevent the workspace proxy from being healthy, but should be addressed.                                                                                      |
-| `»» status`           | [codersdk.ProxyHealthStatus](schemas.md#codersdkproxyhealthstatus)       | false    |              |                                                                                                                                                                               |
-| `» updated_at`        | string(date-time)                                                        | false    |              |                                                                                                                                                                               |
-| `» url`               | string                                                                   | false    |              | Full URL including scheme of the proxy api url: https://us.example.com                                                                                                        |
-| `» wildcard_hostname` | string                                                                   | false    |              | Wildcard hostname with the wildcard for subdomain based app hosting: \*.us.example.com                                                                                        |
+| Name                   | Type                                                                     | Required | Restrictions | Description                                                                                                                                                                         |
+| ---------------------- | ------------------------------------------------------------------------ | -------- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `[array item]`         | array                                                                    | false    |              |                                                                                                                                                                                     |
+| `» regions`            | array                                                                    | false    |              |                                                                                                                                                                                     |
+| `»» created_at`        | string(date-time)                                                        | false    |              |                                                                                                                                                                                     |
+| `»» deleted`           | boolean                                                                  | false    |              |                                                                                                                                                                                     |
+| `»» derp_enabled`      | boolean                                                                  | false    |              |                                                                                                                                                                                     |
+| `»» derp_only`         | boolean                                                                  | false    |              |                                                                                                                                                                                     |
+| `»» display_name`      | string                                                                   | false    |              |                                                                                                                                                                                     |
+| `»» healthy`           | boolean                                                                  | false    |              |                                                                                                                                                                                     |
+| `»» icon_url`          | string                                                                   | false    |              |                                                                                                                                                                                     |
+| `»» id`                | string(uuid)                                                             | false    |              |                                                                                                                                                                                     |
+| `»» name`              | string                                                                   | false    |              |                                                                                                                                                                                     |
+| `»» path_app_url`      | string                                                                   | false    |              | »path app URL is the URL to the base path for path apps. Optional unless wildcard_hostname is set. E.g. https://us.example.com                                                      |
+| `»» status`            | [codersdk.WorkspaceProxyStatus](schemas.md#codersdkworkspaceproxystatus) | false    |              | Status is the latest status check of the proxy. This will be empty for deleted proxies. This value can be used to determine if a workspace proxy is healthy and ready to use.       |
+| `»»» checked_at`       | string(date-time)                                                        | false    |              |                                                                                                                                                                                     |
+| `»»» report`           | [codersdk.ProxyHealthReport](schemas.md#codersdkproxyhealthreport)       | false    |              | Report provides more information about the health of the workspace proxy.                                                                                                           |
+| `»»»» errors`          | array                                                                    | false    |              | Errors are problems that prevent the workspace proxy from being healthy                                                                                                             |
+| `»»»» warnings`        | array                                                                    | false    |              | Warnings do not prevent the workspace proxy from being healthy, but should be addressed.                                                                                            |
+| `»»» status`           | [codersdk.ProxyHealthStatus](schemas.md#codersdkproxyhealthstatus)       | false    |              |                                                                                                                                                                                     |
+| `»» updated_at`        | string(date-time)                                                        | false    |              |                                                                                                                                                                                     |
+| `»» wildcard_hostname` | string                                                                   | false    |              | »wildcard hostname is the wildcard hostname for subdomain apps. E.g. _.us.example.com E.g. _--suffix.au.example.com Optional. Does not need to be on the same domain as PathAppURL. |
 
 #### Enumerated Values
 
@@ -1279,10 +1599,14 @@ curl -X POST http://coder-server:8080/api/v2/workspaceproxies \
 {
   "created_at": "2019-08-24T14:15:22Z",
   "deleted": true,
+  "derp_enabled": true,
+  "derp_only": true,
   "display_name": "string",
-  "icon": "string",
+  "healthy": true,
+  "icon_url": "string",
   "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
   "name": "string",
+  "path_app_url": "string",
   "status": {
     "checked_at": "2019-08-24T14:15:22Z",
     "report": {
@@ -1292,7 +1616,6 @@ curl -X POST http://coder-server:8080/api/v2/workspaceproxies \
     "status": "ok"
   },
   "updated_at": "2019-08-24T14:15:22Z",
-  "url": "string",
   "wildcard_hostname": "string"
 }
 ```
@@ -1332,10 +1655,14 @@ curl -X GET http://coder-server:8080/api/v2/workspaceproxies/{workspaceproxy} \
 {
   "created_at": "2019-08-24T14:15:22Z",
   "deleted": true,
+  "derp_enabled": true,
+  "derp_only": true,
   "display_name": "string",
-  "icon": "string",
+  "healthy": true,
+  "icon_url": "string",
   "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
   "name": "string",
+  "path_app_url": "string",
   "status": {
     "checked_at": "2019-08-24T14:15:22Z",
     "report": {
@@ -1345,7 +1672,6 @@ curl -X GET http://coder-server:8080/api/v2/workspaceproxies/{workspaceproxy} \
     "status": "ok"
   },
   "updated_at": "2019-08-24T14:15:22Z",
-  "url": "string",
   "wildcard_hostname": "string"
 }
 ```
@@ -1443,10 +1769,14 @@ curl -X PATCH http://coder-server:8080/api/v2/workspaceproxies/{workspaceproxy} 
 {
   "created_at": "2019-08-24T14:15:22Z",
   "deleted": true,
+  "derp_enabled": true,
+  "derp_only": true,
   "display_name": "string",
-  "icon": "string",
+  "healthy": true,
+  "icon_url": "string",
   "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
   "name": "string",
+  "path_app_url": "string",
   "status": {
     "checked_at": "2019-08-24T14:15:22Z",
     "report": {
@@ -1456,7 +1786,6 @@ curl -X PATCH http://coder-server:8080/api/v2/workspaceproxies/{workspaceproxy} 
     "status": "ok"
   },
   "updated_at": "2019-08-24T14:15:22Z",
-  "url": "string",
   "wildcard_hostname": "string"
 }
 ```

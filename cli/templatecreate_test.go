@@ -4,40 +4,67 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/coder/coder/cli/clitest"
-	"github.com/coder/coder/coderd/coderdtest"
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/provisioner/echo"
-	"github.com/coder/coder/provisionersdk/proto"
-	"github.com/coder/coder/pty/ptytest"
-	"github.com/coder/coder/testutil"
+	"github.com/coder/coder/v2/cli/clitest"
+	"github.com/coder/coder/v2/coderd/coderdtest"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/provisioner/echo"
+	"github.com/coder/coder/v2/provisionersdk/proto"
+	"github.com/coder/coder/v2/pty/ptytest"
+	"github.com/coder/coder/v2/testutil"
 )
 
-var provisionCompleteWithAgent = []*proto.Provision_Response{
-	{
-		Type: &proto.Provision_Response_Complete{
-			Complete: &proto.Provision_Complete{
-				Resources: []*proto.Resource{
-					{
-						Type: "compute",
-						Name: "main",
-						Agents: []*proto.Agent{
+func completeWithAgent() *echo.Responses {
+	return &echo.Responses{
+		Parse: echo.ParseComplete,
+		ProvisionPlan: []*proto.Response{
+			{
+				Type: &proto.Response_Plan{
+					Plan: &proto.PlanComplete{
+						Resources: []*proto.Resource{
 							{
-								Name:            "smith",
-								OperatingSystem: "linux",
-								Architecture:    "i386",
+								Type: "compute",
+								Name: "main",
+								Agents: []*proto.Agent{
+									{
+										Name:            "smith",
+										OperatingSystem: "linux",
+										Architecture:    "i386",
+									},
+								},
 							},
 						},
 					},
 				},
 			},
 		},
-	},
+		ProvisionApply: []*proto.Response{
+			{
+				Type: &proto.Response_Apply{
+					Apply: &proto.ApplyComplete{
+						Resources: []*proto.Resource{
+							{
+								Type: "compute",
+								Name: "main",
+								Agents: []*proto.Agent{
+									{
+										Name:            "smith",
+										OperatingSystem: "linux",
+										Architecture:    "i386",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
 }
 
 func TestTemplateCreate(t *testing.T) {
@@ -46,10 +73,7 @@ func TestTemplateCreate(t *testing.T) {
 		t.Parallel()
 		client := coderdtest.New(t, &coderdtest.Options{IncludeProvisionerDaemon: true})
 		coderdtest.CreateFirstUser(t, client)
-		source := clitest.CreateTemplateVersionSource(t, &echo.Responses{
-			Parse:          echo.ParseComplete,
-			ProvisionApply: provisionCompleteWithAgent,
-		})
+		source := clitest.CreateTemplateVersionSource(t, completeWithAgent())
 		args := []string{
 			"templates",
 			"create",
@@ -80,15 +104,87 @@ func TestTemplateCreate(t *testing.T) {
 			}
 		}
 	})
+	t.Run("CreateNoLockfile", func(t *testing.T) {
+		t.Parallel()
+		client := coderdtest.New(t, &coderdtest.Options{IncludeProvisionerDaemon: true})
+		coderdtest.CreateFirstUser(t, client)
+		source := clitest.CreateTemplateVersionSource(t, completeWithAgent())
+		require.NoError(t, os.Remove(filepath.Join(source, ".terraform.lock.hcl")))
+		args := []string{
+			"templates",
+			"create",
+			"my-template",
+			"--directory", source,
+			"--test.provisioner", string(database.ProvisionerTypeEcho),
+			"--default-ttl", "24h",
+		}
+		inv, root := clitest.New(t, args...)
+		clitest.SetupConfig(t, client, root)
+		pty := ptytest.New(t).Attach(inv)
+
+		execDone := make(chan error)
+		go func() {
+			execDone <- inv.Run()
+		}()
+
+		matches := []struct {
+			match string
+			write string
+		}{
+			{match: "No .terraform.lock.hcl file found"},
+			{match: "Upload", write: "no"},
+		}
+		for _, m := range matches {
+			pty.ExpectMatch(m.match)
+			if len(m.write) > 0 {
+				pty.WriteLine(m.write)
+			}
+		}
+
+		// cmd should error once we say no.
+		require.Error(t, <-execDone)
+	})
+	t.Run("CreateNoLockfileIgnored", func(t *testing.T) {
+		t.Parallel()
+		client := coderdtest.New(t, &coderdtest.Options{IncludeProvisionerDaemon: true})
+		coderdtest.CreateFirstUser(t, client)
+		source := clitest.CreateTemplateVersionSource(t, completeWithAgent())
+		require.NoError(t, os.Remove(filepath.Join(source, ".terraform.lock.hcl")))
+		args := []string{
+			"templates",
+			"create",
+			"my-template",
+			"--directory", source,
+			"--test.provisioner", string(database.ProvisionerTypeEcho),
+			"--default-ttl", "24h",
+			"--ignore-lockfile",
+		}
+		inv, root := clitest.New(t, args...)
+		clitest.SetupConfig(t, client, root)
+		pty := ptytest.New(t).Attach(inv)
+
+		execDone := make(chan error)
+		go func() {
+			execDone <- inv.Run()
+		}()
+
+		{
+			ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitMedium)
+			defer cancel()
+
+			pty.ExpectNoMatchBefore(ctx, "No .terraform.lock.hcl file found", "Upload")
+			pty.WriteLine("no")
+		}
+
+		// cmd should error once we say no.
+		require.Error(t, <-execDone)
+	})
 
 	t.Run("CreateStdin", func(t *testing.T) {
 		t.Parallel()
 		client := coderdtest.New(t, &coderdtest.Options{IncludeProvisionerDaemon: true})
 		coderdtest.CreateFirstUser(t, client)
-		source, err := echo.Tar(&echo.Responses{
-			Parse:          echo.ParseComplete,
-			ProvisionApply: provisionCompleteWithAgent,
-		})
+		source, err := echo.Tar(completeWithAgent())
 		require.NoError(t, err)
 
 		args := []string{
@@ -114,10 +210,7 @@ func TestTemplateCreate(t *testing.T) {
 		coderdtest.CreateFirstUser(t, client)
 
 		create := func() error {
-			source := clitest.CreateTemplateVersionSource(t, &echo.Responses{
-				Parse:          echo.ParseComplete,
-				ProvisionApply: provisionCompleteWithAgent,
-			})
+			source := clitest.CreateTemplateVersionSource(t, completeWithAgent())
 			args := []string{
 				"templates",
 				"create",

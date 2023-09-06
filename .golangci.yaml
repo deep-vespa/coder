@@ -2,8 +2,16 @@
 # Over time we should try tightening some of these.
 
 linters-settings:
+  dupl:
+    # goal: 100
+    threshold: 412
+
+  exhaustruct:
+    include:
+      # Gradually extend to cover more of the codebase.
+      - 'httpmw\.\w+'
   gocognit:
-    min-complexity: 46 # Min code complexity (def 30).
+    min-complexity: 300
 
   goconst:
     min-len: 4 # Min length of string consts (def 3).
@@ -114,9 +122,6 @@ linters-settings:
   goimports:
     local-prefixes: coder.com,cdr.dev,go.coder.com,github.com/cdr,github.com/coder
 
-  gocyclo:
-    min-complexity: 50
-
   importas:
     no-unaliased: true
 
@@ -126,7 +131,8 @@ linters-settings:
       - trialer
 
   nestif:
-    min-complexity: 4 # Min complexity of if statements (def 5, goal 4)
+    # goal: 10
+    min-complexity: 20
 
   revive:
     # see https://github.com/mgechev/revive#available-rules for details.
@@ -194,6 +200,10 @@ issues:
         # We use assertions rather than explicitly checking errors in tests
         - errcheck
         - forcetypeassert
+        - exhaustruct # This is unhelpful in tests.
+    - path: scripts/*
+      linters:
+        - exhaustruct
 
   fix: true
   max-issues-per-linter: 0
@@ -202,6 +212,7 @@ issues:
 run:
   skip-dirs:
     - node_modules
+    - .git
   skip-files:
     - scripts/rules.go
   timeout: 10m
@@ -218,10 +229,16 @@ linters:
     - errcheck
     - errname
     - errorlint
+    - exhaustruct
     - exportloopref
     - forcetypeassert
     - gocritic
-    - gocyclo
+    # gocyclo is may be useful in the future when we start caring
+    # about testing complexity, but for the time being we should
+    # create a good culture around cognitive complexity.
+    # - gocyclo
+    - gocognit
+    - nestif
     - goimports
     - gomodguard
     - gosec
@@ -257,3 +274,4 @@ linters:
     - typecheck
     - unconvert
     - unused
+    - dupl

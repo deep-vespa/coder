@@ -7,7 +7,21 @@ import (
 
 	"github.com/go-chi/cors"
 
-	"github.com/coder/coder/coderd/httpapi"
+	"github.com/coder/coder/v2/coderd/httpapi"
+)
+
+const (
+	// Server headers.
+	AccessControlAllowOriginHeader      = "Access-Control-Allow-Origin"
+	AccessControlAllowCredentialsHeader = "Access-Control-Allow-Credentials"
+	AccessControlAllowMethodsHeader     = "Access-Control-Allow-Methods"
+	AccessControlAllowHeadersHeader     = "Access-Control-Allow-Headers"
+	VaryHeader                          = "Vary"
+
+	// Client headers.
+	OriginHeader                      = "Origin"
+	AccessControlRequestMethodsHeader = "Access-Control-Request-Methods"
+	AccessControlRequestHeadersHeader = "Access-Control-Request-Headers"
 )
 
 //nolint:revive

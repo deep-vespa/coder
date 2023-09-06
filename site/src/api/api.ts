@@ -4,6 +4,7 @@ import * as Types from "./types"
 import { DeploymentConfig } from "./types"
 import * as TypesGen from "./typesGenerated"
 import { delay } from "utils/delay"
+import userAgentParser from "ua-parser-js"
 
 // Adds 304 for the default axios validateStatus function
 // https://github.com/axios/axios#handling-errors Check status here
@@ -107,6 +108,14 @@ export const login = async (
   return response.data
 }
 
+export const convertToOAUTH = async (request: TypesGen.ConvertLoginRequest) => {
+  const response = await axios.post<TypesGen.OAuthConversionResponse>(
+    "/api/v2/users/me/convert-login",
+    request,
+  )
+  return response.data
+}
+
 export const logout = async (): Promise<void> => {
   await axios.post("/api/v2/users/logout")
 }
@@ -129,6 +138,13 @@ export const getAuthenticatedUser = async (): Promise<
 export const getAuthMethods = async (): Promise<TypesGen.AuthMethods> => {
   const response = await axios.get<TypesGen.AuthMethods>(
     "/api/v2/users/authmethods",
+  )
+  return response.data
+}
+
+export const getUserLoginType = async (): Promise<TypesGen.UserLoginType> => {
+  const response = await axios.get<TypesGen.UserLoginType>(
+    "/api/v2/users/me/login-type",
   )
   return response.data
 }
@@ -465,14 +481,14 @@ export function waitForBuild(build: TypesGen.WorkspaceBuild) {
       let latestJobInfo: TypesGen.ProvisionerJob | undefined = undefined
 
       while (
-        !["succeeded", "canceled"].some((status) =>
-          latestJobInfo?.status.includes(status),
+        !["succeeded", "canceled"].some(
+          (status) => latestJobInfo?.status.includes(status),
         )
       ) {
         const { job } = await getWorkspaceBuildByNumber(
           build.workspace_owner_name,
           build.workspace_name,
-          String(build.build_number),
+          build.build_number,
         )
         latestJobInfo = job
 
@@ -503,11 +519,13 @@ export const startWorkspace = (
   workspaceId: string,
   templateVersionId: string,
   logLevel?: TypesGen.CreateWorkspaceBuildRequest["log_level"],
+  buildParameters?: TypesGen.WorkspaceBuildParameter[],
 ) =>
   postWorkspaceBuild(workspaceId, {
     transition: "start",
     template_version_id: templateVersionId,
     log_level: logLevel,
+    rich_parameter_values: buildParameters,
   })
 export const stopWorkspace = (
   workspaceId: string,
@@ -536,7 +554,28 @@ export const cancelWorkspaceBuild = async (
   return response.data
 }
 
-export const restartWorkspace = async (workspace: TypesGen.Workspace) => {
+export const updateWorkspaceDormancy = async (
+  workspaceId: string,
+  dormant: boolean,
+): Promise<TypesGen.Workspace> => {
+  const data: TypesGen.UpdateWorkspaceDormancy = {
+    dormant: dormant,
+  }
+
+  const response = await axios.put(
+    `/api/v2/workspaces/${workspaceId}/dormant`,
+    data,
+  )
+  return response.data
+}
+
+export const restartWorkspace = async ({
+  workspace,
+  buildParameters,
+}: {
+  workspace: TypesGen.Workspace
+  buildParameters?: TypesGen.WorkspaceBuildParameter[]
+}) => {
   const stopBuild = await stopWorkspace(workspace.id)
   const awaitedStopBuild = await waitForBuild(stopBuild)
 
@@ -548,6 +587,8 @@ export const restartWorkspace = async (workspace: TypesGen.Workspace) => {
   const startBuild = await startWorkspace(
     workspace.id,
     workspace.latest_build.template_version_id,
+    undefined,
+    buildParameters,
   )
   await waitForBuild(startBuild)
 }
@@ -731,7 +772,7 @@ export const getWorkspaceBuilds = async (
 export const getWorkspaceBuildByNumber = async (
   username = "me",
   workspaceName: string,
-  buildNumber: string,
+  buildNumber: number,
 ): Promise<TypesGen.WorkspaceBuild> => {
   const response = await axios.get<TypesGen.WorkspaceBuild>(
     `/api/v2/users/${username}/workspace/${workspaceName}/builds/${buildNumber}`,
@@ -749,11 +790,11 @@ export const getWorkspaceBuildLogs = async (
   return response.data
 }
 
-export const getWorkspaceAgentStartupLogs = async (
+export const getWorkspaceAgentLogs = async (
   agentID: string,
-): Promise<TypesGen.WorkspaceAgentStartupLog[]> => {
-  const response = await axios.get<TypesGen.WorkspaceAgentStartupLog[]>(
-    `/api/v2/workspaceagents/${agentID}/startup-logs`,
+): Promise<TypesGen.WorkspaceAgentLog[]> => {
+  const response = await axios.get<TypesGen.WorkspaceAgentLog[]>(
+    `/api/v2/workspaceagents/${agentID}/logs`,
   )
   return response.data
 }
@@ -765,6 +806,10 @@ export const putWorkspaceExtension = async (
   await axios.put(`/api/v2/workspaces/${workspaceId}/extend`, {
     deadline: newDeadline,
   })
+}
+
+export const refreshEntitlements = async (): Promise<void> => {
+  await axios.post("/api/v2/licenses/refresh-entitlements")
 }
 
 export const getEntitlements = async (): Promise<TypesGen.Entitlements> => {
@@ -780,6 +825,7 @@ export const getEntitlements = async (): Promise<TypesGen.Entitlements> => {
         require_telemetry: false,
         trial: false,
         warnings: [],
+        refreshed_at: "",
       }
     }
     throw ex
@@ -796,6 +842,28 @@ export const getExperiments = async (): Promise<TypesGen.Experiment[]> => {
     }
     throw error
   }
+}
+
+export const getGitAuthProvider = async (
+  provider: string,
+): Promise<TypesGen.GitAuth> => {
+  const resp = await axios.get(`/api/v2/gitauth/${provider}`)
+  return resp.data
+}
+
+export const getGitAuthDevice = async (
+  provider: string,
+): Promise<TypesGen.GitAuthDevice> => {
+  const resp = await axios.get(`/api/v2/gitauth/${provider}/device`)
+  return resp.data
+}
+
+export const exchangeGitAuthDevice = async (
+  provider: string,
+  req: TypesGen.GitAuthDeviceExchange,
+): Promise<void> => {
+  const resp = await axios.post(`/api/v2/gitauth/${provider}/device`, req)
+  return resp.data
 }
 
 export const getAuditLogs = async (
@@ -818,6 +886,18 @@ export const getDeploymentDAUs = async (
   offset = new Date().getTimezoneOffset() / 60,
 ): Promise<TypesGen.DAUsResponse> => {
   const response = await axios.get(`/api/v2/insights/daus?tz_offset=${offset}`)
+  return response.data
+}
+
+export const getTemplateACLAvailable = async (
+  templateId: string,
+  options: TypesGen.UsersRequest,
+): Promise<TypesGen.ACLAvailable> => {
+  const url = getURLWithSearchParams(
+    `/api/v2/templates/${templateId}/acl/available`,
+    options,
+  )
+  const response = await axios.get(url.toString())
   return response.data
 }
 
@@ -928,13 +1008,23 @@ export const getFile = async (fileId: string): Promise<ArrayBuffer> => {
   return response.data
 }
 
-export const getWorkspaceProxies =
-  async (): Promise<TypesGen.RegionsResponse> => {
-    const response = await axios.get<TypesGen.RegionsResponse>(
-      `/api/v2/regions`,
-    )
-    return response.data
-  }
+export const getWorkspaceProxyRegions = async (): Promise<
+  TypesGen.RegionsResponse<TypesGen.Region>
+> => {
+  const response = await axios.get<TypesGen.RegionsResponse<TypesGen.Region>>(
+    `/api/v2/regions`,
+  )
+  return response.data
+}
+
+export const getWorkspaceProxies = async (): Promise<
+  TypesGen.RegionsResponse<TypesGen.WorkspaceProxy>
+> => {
+  const response = await axios.get<
+    TypesGen.RegionsResponse<TypesGen.WorkspaceProxy>
+  >(`/api/v2/workspaceproxies`)
+  return response.data
+}
 
 export const getAppearance = async (): Promise<TypesGen.AppearanceConfig> => {
   try {
@@ -1005,7 +1095,7 @@ export const getWorkspaceBuildParameters = async (
   return response.data
 }
 type Claims = {
-  license_expires?: number
+  license_expires: number
   account_type?: string
   account_id?: string
   trial: boolean
@@ -1127,21 +1217,14 @@ const getMissingParameters = (
   const requiredParameters: TypesGen.TemplateVersionParameter[] = []
 
   templateParameters.forEach((p) => {
-    // Legacy parameters should not be required. Backend can just migrate them.
-    const isLegacy = p.legacy_variable_name !== undefined
     // It is mutable and required. Mutable values can be changed after so we
     // don't need to ask them if they are not required.
     const isMutableAndRequired = p.mutable && p.required
     // Is immutable, so we can check if it is its first time on the build
     const isImmutable = !p.mutable
 
-    if (isLegacy) {
-      return
-    }
-
     if (isMutableAndRequired || isImmutable) {
       requiredParameters.push(p)
-      return
     }
   })
 
@@ -1164,6 +1247,35 @@ const getMissingParameters = (
     missingParameters.push(parameter)
   }
 
+  // Check if parameter "options" changed and we can't use old build parameters.
+  templateParameters.forEach((templateParameter) => {
+    if (templateParameter.options.length === 0) {
+      return
+    }
+
+    // Check if there is a new value
+    let buildParameter = newBuildParameters.find(
+      (p) => p.name === templateParameter.name,
+    )
+
+    // If not, get the old one
+    if (!buildParameter) {
+      buildParameter = oldBuildParameters.find(
+        (p) => p.name === templateParameter.name,
+      )
+    }
+
+    if (!buildParameter) {
+      return
+    }
+
+    const matchingOption = templateParameter.options.find(
+      (option) => option.value === buildParameter?.value,
+    )
+    if (!matchingOption) {
+      missingParameters.push(templateParameter)
+    }
+  })
   return missingParameters
 }
 
@@ -1220,24 +1332,34 @@ export const watchBuildLogsByTemplateVersionId = (
   return socket
 }
 
-type WatchStartupLogsOptions = {
+type WatchWorkspaceAgentLogsOptions = {
   after: number
-  onMessage: (logs: TypesGen.WorkspaceAgentStartupLog[]) => void
+  onMessage: (logs: TypesGen.WorkspaceAgentLog[]) => void
   onDone: () => void
   onError: (error: Error) => void
 }
 
-export const watchStartupLogs = (
+export const watchWorkspaceAgentLogs = (
   agentId: string,
-  { after, onMessage, onDone, onError }: WatchStartupLogsOptions,
+  { after, onMessage, onDone, onError }: WatchWorkspaceAgentLogsOptions,
 ) => {
+  // WebSocket compression in Safari (confirmed in 16.5) is broken when
+  // the server sends large messages. The following error is seen:
+  //
+  //   WebSocket connection to 'wss://.../logs?follow&after=0' failed: The operation couldn’t be completed. Protocol error
+  //
+  const noCompression =
+    userAgentParser(navigator.userAgent).browser.name === "Safari"
+      ? "&no_compression"
+      : ""
+
   const proto = location.protocol === "https:" ? "wss:" : "ws:"
   const socket = new WebSocket(
-    `${proto}//${location.host}/api/v2/workspaceagents/${agentId}/startup-logs?follow&after=${after}`,
+    `${proto}//${location.host}/api/v2/workspaceagents/${agentId}/logs?follow&after=${after}${noCompression}`,
   )
   socket.binaryType = "blob"
   socket.addEventListener("message", (event) => {
-    const logs = JSON.parse(event.data) as TypesGen.WorkspaceAgentStartupLog[]
+    const logs = JSON.parse(event.data) as TypesGen.WorkspaceAgentLog[]
     onMessage(logs)
   })
   socket.addEventListener("error", () => {
@@ -1293,4 +1415,53 @@ export const issueReconnectingPTYSignedToken = async (
     params,
   )
   return response.data
+}
+
+export const getWorkspaceParameters = async (workspace: TypesGen.Workspace) => {
+  const latestBuild = workspace.latest_build
+  const [templateVersionRichParameters, buildParameters] = await Promise.all([
+    getTemplateVersionRichParameters(latestBuild.template_version_id),
+    getWorkspaceBuildParameters(latestBuild.id),
+  ])
+  return {
+    templateVersionRichParameters,
+    buildParameters,
+  }
+}
+
+type InsightsFilter = {
+  start_time: string
+  end_time: string
+  template_ids: string
+}
+
+export const getInsightsUserLatency = async (
+  filters: InsightsFilter,
+): Promise<TypesGen.UserLatencyInsightsResponse> => {
+  const params = new URLSearchParams(filters)
+  const response = await axios.get(`/api/v2/insights/user-latency?${params}`)
+  return response.data
+}
+
+export const getInsightsTemplate = async (
+  filters: InsightsFilter,
+): Promise<TypesGen.TemplateInsightsResponse> => {
+  const params = new URLSearchParams({
+    ...filters,
+    interval: "day",
+  })
+  const response = await axios.get(`/api/v2/insights/templates?${params}`)
+  return response.data
+}
+
+export const getHealth = () => {
+  return axios.get<{
+    healthy: boolean
+    time: string
+    coder_version: string
+    derp: { healthy: boolean }
+    access_url: { healthy: boolean }
+    websocket: { healthy: boolean }
+    database: { healthy: boolean }
+  }>("/api/v2/debug/health")
 }

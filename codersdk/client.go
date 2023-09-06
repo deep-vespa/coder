@@ -20,7 +20,7 @@ import (
 	"go.opentelemetry.io/otel/semconv/v1.14.0/httpconv"
 	"golang.org/x/xerrors"
 
-	"github.com/coder/coder/coderd/tracing"
+	"github.com/coder/coder/v2/coderd/tracing"
 
 	"cdr.dev/slog"
 )
@@ -38,15 +38,19 @@ const (
 	// OAuth2RedirectCookie is the name of the cookie that stores the oauth2 redirect.
 	OAuth2RedirectCookie = "oauth_redirect"
 
-	// DevURLSessionTokenCookie is the name of the cookie that stores a devurl
-	// token on app domains.
+	// PathAppSessionTokenCookie is the name of the cookie that stores an
+	// application-scoped API token on workspace proxy path app domains.
 	//nolint:gosec
-	DevURLSessionTokenCookie = "coder_devurl_session_token"
-	// DevURLSignedAppTokenCookie is the name of the cookie that stores a
-	// temporary JWT that can be used to authenticate instead of the session
-	// token.
+	PathAppSessionTokenCookie = "coder_path_app_session_token"
+	// SubdomainAppSessionTokenCookie is the name of the cookie that stores an
+	// application-scoped API token on subdomain app domains (both the primary
+	// and proxies).
 	//nolint:gosec
-	DevURLSignedAppTokenCookie = "coder_devurl_signed_app_token"
+	SubdomainAppSessionTokenCookie = "coder_subdomain_app_session_token"
+	// SignedAppTokenCookie is the name of the cookie that stores a temporary
+	// JWT that can be used to authenticate instead of the app session token.
+	//nolint:gosec
+	SignedAppTokenCookie = "coder_signed_app_token"
 	// SignedAppTokenQueryParameter is the name of the query parameter that
 	// stores a temporary JWT that can be used to authenticate instead of the
 	// session token. This is only acceptable on reconnecting-pty requests, not
@@ -71,6 +75,9 @@ const (
 	// command that was invoked to produce the request. It is for internal use
 	// only.
 	CLITelemetryHeader = "Coder-CLI-Telemetry"
+
+	// ProvisionerDaemonPSK contains the authentication pre-shared key for an external provisioner daemon
+	ProvisionerDaemonPSK = "Coder-Provisioner-Daemon-PSK"
 )
 
 // loggableMimeTypes is a list of MIME types that are safe to log
@@ -93,8 +100,12 @@ func New(serverURL *url.URL) *Client {
 // Client is an HTTP caller for methods to the Coder API.
 // @typescript-ignore Client
 type Client struct {
-	mu           sync.RWMutex // Protects following.
+	// mu protects the fields sessionToken, logger, and logBodies. These
+	// need to be safe for concurrent access.
+	mu           sync.RWMutex
 	sessionToken string
+	logger       slog.Logger
+	logBodies    bool
 
 	HTTPClient *http.Client
 	URL        *url.URL
@@ -103,13 +114,6 @@ type Client struct {
 	// default 'Coder-Session-Token' is used.
 	SessionTokenHeader string
 
-	// Logger is optionally provided to log requests.
-	// Method, URL, and response code will be logged by default.
-	Logger slog.Logger
-
-	// LogBodies can be enabled to print request and response bodies to the logger.
-	LogBodies bool
-
 	// PlainLogger may be set to log HTTP traffic in a human-readable form.
 	// It uses the LogBodies option.
 	PlainLogger io.Writer
@@ -117,6 +121,39 @@ type Client struct {
 	// Trace can be enabled to propagate tracing spans to the Coder API.
 	// This is useful for tracking a request end-to-end.
 	Trace bool
+
+	// DisableDirectConnections forces any connections to workspaces to go
+	// through DERP, regardless of the BlockEndpoints setting on each
+	// connection.
+	DisableDirectConnections bool
+}
+
+// Logger returns the logger for the client.
+func (c *Client) Logger() slog.Logger {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.logger
+}
+
+// SetLogger sets the logger for the client.
+func (c *Client) SetLogger(logger slog.Logger) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.logger = logger
+}
+
+// LogBodies returns whether requests and response bodies are logged.
+func (c *Client) LogBodies() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.logBodies
+}
+
+// SetLogBodies sets whether to log request and response bodies.
+func (c *Client) SetLogBodies(logBodies bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.logBodies = logBodies
 }
 
 // SessionToken returns the currently set token for the client.
@@ -176,7 +213,10 @@ func (c *Client) Request(ctx context.Context, method, path string, body interfac
 
 	// Copy the request body so we can log it.
 	var reqBody []byte
-	if r != nil && c.LogBodies {
+	c.mu.RLock()
+	logBodies := c.logBodies
+	c.mu.RUnlock()
+	if r != nil && logBodies {
 		reqBody, err = io.ReadAll(r)
 		if err != nil {
 			return nil, xerrors.Errorf("read request body: %w", err)
@@ -218,7 +258,7 @@ func (c *Client) Request(ctx context.Context, method, path string, body interfac
 		slog.F("url", req.URL.String()),
 	)
 	tracing.RunWithoutSpan(ctx, func(ctx context.Context) {
-		c.Logger.Debug(ctx, "sdk request", slog.F("body", string(reqBody)))
+		c.Logger().Debug(ctx, "sdk request", slog.F("body", string(reqBody)))
 	})
 
 	resp, err := c.HTTPClient.Do(req)
@@ -226,7 +266,7 @@ func (c *Client) Request(ctx context.Context, method, path string, body interfac
 	// We log after sending the request because the HTTP Transport may modify
 	// the request within Do, e.g. by adding headers.
 	if resp != nil && c.PlainLogger != nil {
-		out, err := httputil.DumpRequest(resp.Request, c.LogBodies)
+		out, err := httputil.DumpRequest(resp.Request, logBodies)
 		if err != nil {
 			return nil, xerrors.Errorf("dump request: %w", err)
 		}
@@ -239,7 +279,7 @@ func (c *Client) Request(ctx context.Context, method, path string, body interfac
 	}
 
 	if c.PlainLogger != nil {
-		out, err := httputil.DumpResponse(resp, c.LogBodies)
+		out, err := httputil.DumpResponse(resp, logBodies)
 		if err != nil {
 			return nil, xerrors.Errorf("dump response: %w", err)
 		}
@@ -252,7 +292,7 @@ func (c *Client) Request(ctx context.Context, method, path string, body interfac
 
 	// Copy the response body so we can log it if it's a loggable mime type.
 	var respBody []byte
-	if resp.Body != nil && c.LogBodies {
+	if resp.Body != nil && logBodies {
 		mimeType := parseMimeType(resp.Header.Get("Content-Type"))
 		if _, ok := loggableMimeTypes[mimeType]; ok {
 			respBody, err = io.ReadAll(resp.Body)
@@ -269,7 +309,7 @@ func (c *Client) Request(ctx context.Context, method, path string, body interfac
 
 	// See above for why this is not logged to the span.
 	tracing.RunWithoutSpan(ctx, func(ctx context.Context) {
-		c.Logger.Debug(ctx, "sdk response",
+		c.Logger().Debug(ctx, "sdk response",
 			slog.F("status", resp.StatusCode),
 			slog.F("body", string(respBody)),
 			slog.F("trace_id", resp.Header.Get("X-Trace-Id")),

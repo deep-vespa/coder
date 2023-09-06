@@ -32,6 +32,11 @@
           "path": "./install/packages.md"
         },
         {
+          "title": "macOS",
+          "description": "Install Coder using our Homebrew tap",
+          "path": "./install/macos.md"
+        },
+        {
           "title": "Kubernetes",
           "description": "Install Coder with Kubernetes via Helm",
           "path": "./install/kubernetes.md"
@@ -86,16 +91,27 @@
           "icon_path": "./images/aws.svg"
         },
         {
+          "title": "Azure",
+          "description": "Set up Coder on an Azure VM",
+          "path": "./platforms/azure.md",
+          "icon_path": "./images/azure.svg"
+        },
+        {
+          "title": "Docker",
+          "description": "Set up Coder with Docker",
+          "path": "./platforms/docker.md",
+          "icon_path": "./images/icons/docker.svg"
+        },
+        {
           "title": "GCP",
           "description": "Set up Coder on a GCP Compute Engine VM",
           "path": "./platforms/google-cloud-platform.md",
           "icon_path": "./images/google-cloud.svg"
         },
         {
-          "title": "Azure",
-          "description": "Set up Coder on an Azure VM",
-          "path": "./platforms/azure.md",
-          "icon_path": "./images/azure.svg"
+          "title": "JFrog",
+          "description": "Integrate Coder with JFrog",
+          "path": "./platforms/jfrog.md"
         },
         {
           "title": "Kubernetes",
@@ -106,14 +122,13 @@
               "title": "Additional clusters",
               "description": "Deploy workspaces on additional Kubernetes clusters",
               "path": "./platforms/kubernetes/additional-clusters.md"
+            },
+            {
+              "title": "Deployment logs",
+              "description": "Stream K8s event logs on workspace startup",
+              "path": "./platforms/kubernetes/deployment-logs.md"
             }
           ]
-        },
-        {
-          "title": "Docker",
-          "description": "Set up Coder with Docker",
-          "path": "./platforms/docker.md",
-          "icon_path": "./images/icons/docker.svg"
         },
         {
           "title": "Other platforms",
@@ -156,8 +171,7 @@
           "title": "Agent Metadata",
           "description": "Learn how to expose live agent information to users",
           "path": "./templates/agent-metadata.md",
-          "icon_path": "./images/icons/table-rows.svg",
-          "state": "alpha"
+          "icon_path": "./images/icons/table-rows.svg"
         },
         {
           "title": "Parameters",
@@ -176,6 +190,23 @@
           "description": "Use docker inside containerized templates",
           "path": "./templates/docker-in-workspaces.md",
           "icon_path": "./images/icons/docker.svg"
+        },
+        {
+          "title": "Devcontainers",
+          "description": "Use devcontainers in workspaces",
+          "path": "./templates/devcontainers.md",
+          "state": "alpha"
+        },
+        {
+          "title": "Terraform Modules",
+          "description": "Reuse code across Coder templates",
+          "path": "./templates/modules.md"
+        },
+        {
+          "title": "Process Logging",
+          "description": "Audit commands in workspaces with exectrace",
+          "path": "./templates/process-logging.md",
+          "state": "enterprise"
         }
       ]
     },
@@ -315,6 +346,12 @@
           "state": "enterprise"
         },
         {
+          "title": "Application Logs",
+          "description": "Learn how to use Application Logs in your Coder deployment",
+          "path": "./admin/app-logs.md",
+          "icon_path": "./images/icons/notes.svg"
+        },
+        {
           "title": "Audit Logs",
           "description": "Learn how to use Audit Logs in your Coder deployment",
           "path": "./admin/audit-logs.md",
@@ -444,6 +481,10 @@
         {
           "title": "Files",
           "path": "./api/files.md"
+        },
+        {
+          "title": "Git",
+          "path": "./api/git.md"
         },
         {
           "title": "Insights",
@@ -579,13 +620,18 @@
           "path": "cli/logout.md"
         },
         {
+          "title": "netcheck",
+          "description": "Print network debug information for DERP and STUN",
+          "path": "cli/netcheck.md"
+        },
+        {
           "title": "ping",
           "description": "Ping a workspace",
           "path": "cli/ping.md"
         },
         {
           "title": "port-forward",
-          "description": "Forward ports from machine to a workspace",
+          "description": "Forward ports from a workspace to the local machine. For reverse port forwarding, use \"coder ssh -R\".",
           "path": "cli/port-forward.md"
         },
         {
@@ -617,26 +663,6 @@
           "title": "restart",
           "description": "Restart a workspace",
           "path": "cli/restart.md"
-        },
-        {
-          "title": "scaletest",
-          "description": "Run a scale test against the Coder API",
-          "path": "cli/scaletest.md"
-        },
-        {
-          "title": "scaletest cleanup",
-          "description": "Cleanup scaletest workspaces, then cleanup scaletest users.",
-          "path": "cli/scaletest_cleanup.md"
-        },
-        {
-          "title": "scaletest create-workspaces",
-          "description": "Creates many users, then creates a workspace for each user and waits for them finish building and fully come online. Optionally runs a command inside each workspace, and connects to the workspace over WireGuard.",
-          "path": "cli/scaletest_create-workspaces.md"
-        },
-        {
-          "title": "scaletest workspace-traffic",
-          "description": "Generate traffic to scaletest workspaces through coderd",
-          "path": "cli/scaletest_workspace-traffic.md"
         },
         {
           "title": "schedule",
@@ -704,6 +730,26 @@
           "path": "cli/start.md"
         },
         {
+          "title": "stat",
+          "description": "Show resource usage for the current workspace.",
+          "path": "cli/stat.md"
+        },
+        {
+          "title": "stat cpu",
+          "description": "Show CPU usage, in cores.",
+          "path": "cli/stat_cpu.md"
+        },
+        {
+          "title": "stat disk",
+          "description": "Show disk usage, in gigabytes.",
+          "path": "cli/stat_disk.md"
+        },
+        {
+          "title": "stat mem",
+          "description": "Show memory usage, in gigabytes.",
+          "path": "cli/stat_mem.md"
+        },
+        {
           "title": "state",
           "description": "Manually manage Terraform state to fix broken workspaces",
           "path": "cli/state.md"
@@ -752,11 +798,6 @@
           "title": "templates list",
           "description": "List all the templates available for the organization",
           "path": "cli/templates_list.md"
-        },
-        {
-          "title": "templates plan",
-          "description": "Plan a template push from the current directory",
-          "path": "cli/templates_plan.md"
         },
         {
           "title": "templates pull",

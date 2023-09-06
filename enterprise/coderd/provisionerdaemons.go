@@ -2,6 +2,7 @@ package coderd
 
 import (
 	"context"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -22,15 +23,15 @@ import (
 	"storj.io/drpc/drpcserver"
 
 	"cdr.dev/slog"
-	"github.com/coder/coder/coderd"
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/coderd/httpapi"
-	"github.com/coder/coder/coderd/httpmw"
-	"github.com/coder/coder/coderd/provisionerdserver"
-	"github.com/coder/coder/coderd/rbac"
-	"github.com/coder/coder/coderd/schedule"
-	"github.com/coder/coder/codersdk"
-	"github.com/coder/coder/provisionerd/proto"
+	"github.com/coder/coder/v2/coderd"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/database/dbtime"
+	"github.com/coder/coder/v2/coderd/httpapi"
+	"github.com/coder/coder/v2/coderd/httpmw"
+	"github.com/coder/coder/v2/coderd/provisionerdserver"
+	"github.com/coder/coder/v2/coderd/rbac"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/provisionerd/proto"
 )
 
 func (api *API) provisionerDaemonsEnabledMW(next http.Handler) http.Handler {
@@ -89,6 +90,42 @@ func (api *API) provisionerDaemons(rw http.ResponseWriter, r *http.Request) {
 	httpapi.Write(ctx, rw, http.StatusOK, apiDaemons)
 }
 
+type provisionerDaemonAuth struct {
+	psk        string
+	authorizer rbac.Authorizer
+}
+
+// authorize returns mutated tags and true if the given HTTP request is authorized to access the provisioner daemon
+// protobuf API, and returns nil, false otherwise.
+func (p *provisionerDaemonAuth) authorize(r *http.Request, tags map[string]string) (map[string]string, bool) {
+	ctx := r.Context()
+	apiKey, ok := httpmw.APIKeyOptional(r)
+	if ok {
+		tags = provisionerdserver.MutateTags(apiKey.UserID, tags)
+		if tags[provisionerdserver.TagScope] == provisionerdserver.ScopeUser {
+			// Any authenticated user can create provisioner daemons scoped
+			// for jobs that they own,
+			return tags, true
+		}
+		ua := httpmw.UserAuthorization(r)
+		if err := p.authorizer.Authorize(ctx, ua.Actor, rbac.ActionCreate, rbac.ResourceProvisionerDaemon); err == nil {
+			// User is allowed to create provisioner daemons
+			return tags, true
+		}
+	}
+
+	// Check for PSK
+	if p.psk != "" {
+		psk := r.Header.Get(codersdk.ProvisionerDaemonPSK)
+		if subtle.ConstantTimeCompare([]byte(p.psk), []byte(psk)) == 1 {
+			// If using PSK auth, the daemon is, by definition, scoped to the organization.
+			tags[provisionerdserver.TagScope] = provisionerdserver.ScopeOrganization
+			return tags, true
+		}
+	}
+	return nil, false
+}
+
 // Serves the provisioner daemon protobuf API over a WebSocket.
 //
 // @Summary Serve provisioner daemon
@@ -136,20 +173,14 @@ func (api *API) provisionerDaemonServe(rw http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	// Any authenticated user can create provisioner daemons scoped
-	// for jobs that they own, but only authorized users can create
-	// globally scoped provisioners that attach to all jobs.
-	apiKey := httpmw.APIKey(r)
-	tags = provisionerdserver.MutateTags(apiKey.UserID, tags)
-
-	if tags[provisionerdserver.TagScope] == provisionerdserver.ScopeOrganization {
-		if !api.AGPL.Authorize(r, rbac.ActionCreate, rbac.ResourceProvisionerDaemon) {
-			httpapi.Write(ctx, rw, http.StatusForbidden, codersdk.Response{
-				Message: "You aren't allowed to create provisioner daemons for the organization.",
-			})
-			return
-		}
+	tags, authorized := api.provisionerDaemonAuth.authorize(r, tags)
+	if !authorized {
+		api.Logger.Warn(ctx, "unauthorized provisioner daemon serve request", slog.F("tags", tags))
+		httpapi.Write(ctx, rw, http.StatusForbidden,
+			codersdk.Response{Message: "You aren't allowed to create provisioner daemons"})
+		return
 	}
+	api.Logger.Debug(ctx, "provisioner authorized", slog.F("tags", tags))
 
 	provisioners := make([]database.ProvisionerType, 0)
 	for p := range provisionersMap {
@@ -162,14 +193,22 @@ func (api *API) provisionerDaemonServe(rw http.ResponseWriter, r *http.Request) 
 	}
 
 	name := namesgenerator.GetRandomName(1)
+	log := api.Logger.With(
+		slog.F("name", name),
+		slog.F("provisioners", provisioners),
+		slog.F("tags", tags),
+	)
 	daemon, err := api.Database.InsertProvisionerDaemon(ctx, database.InsertProvisionerDaemonParams{
 		ID:           uuid.New(),
-		CreatedAt:    database.Now(),
+		CreatedAt:    dbtime.Now(),
 		Name:         name,
 		Provisioners: provisioners,
 		Tags:         tags,
 	})
 	if err != nil {
+		if !xerrors.Is(err, context.Canceled) {
+			log.Error(ctx, "write provisioner daemon", slog.Error(err))
+		}
 		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
 			Message: "Internal error writing provisioner daemon.",
 			Detail:  err.Error(),
@@ -179,6 +218,9 @@ func (api *API) provisionerDaemonServe(rw http.ResponseWriter, r *http.Request) 
 
 	rawTags, err := json.Marshal(daemon.Tags)
 	if err != nil {
+		if !xerrors.Is(err, context.Canceled) {
+			log.Error(ctx, "marshal provisioner tags", slog.Error(err))
+		}
 		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
 			Message: "Internal error marshaling daemon tags.",
 			Detail:  err.Error(),
@@ -196,6 +238,9 @@ func (api *API) provisionerDaemonServe(rw http.ResponseWriter, r *http.Request) 
 		CompressionMode: websocket.CompressionDisabled,
 	})
 	if err != nil {
+		if !xerrors.Is(err, context.Canceled) {
+			log.Error(ctx, "accept provisioner websocket conn", slog.Error(err))
+		}
 		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
 			Message: "Internal error accepting websocket connection.",
 			Detail:  err.Error(),
@@ -218,22 +263,36 @@ func (api *API) provisionerDaemonServe(rw http.ResponseWriter, r *http.Request) 
 		return
 	}
 	mux := drpcmux.New()
-	err = proto.DRPCRegisterProvisionerDaemon(mux, &provisionerdserver.Server{
-		AccessURL:             api.AccessURL,
-		GitAuthConfigs:        api.GitAuthConfigs,
-		OIDCConfig:            api.OIDCConfig,
-		ID:                    daemon.ID,
-		Database:              api.Database,
-		Pubsub:                api.Pubsub,
-		Provisioners:          daemon.Provisioners,
-		Telemetry:             api.Telemetry,
-		Auditor:               &api.AGPL.Auditor,
-		TemplateScheduleStore: api.AGPL.TemplateScheduleStore,
-		Logger:                api.Logger.Named(fmt.Sprintf("provisionerd-%s", daemon.Name)),
-		Tags:                  rawTags,
-		Tracer:                trace.NewNoopTracerProvider().Tracer("noop"),
-		DeploymentValues:      api.DeploymentValues,
-	})
+	srv, err := provisionerdserver.NewServer(
+		api.AccessURL,
+		daemon.ID,
+		api.Logger.Named(fmt.Sprintf("provisionerd-%s", daemon.Name)),
+		daemon.Provisioners,
+		rawTags,
+		api.Database,
+		api.Pubsub,
+		api.Telemetry,
+		trace.NewNoopTracerProvider().Tracer("noop"),
+		&api.AGPL.QuotaCommitter,
+		&api.AGPL.Auditor,
+		api.AGPL.TemplateScheduleStore,
+		api.AGPL.UserQuietHoursScheduleStore,
+		api.DeploymentValues,
+		// TODO(spikecurtis) - fix debounce to not cause flaky tests.
+		time.Duration(0),
+		provisionerdserver.Options{
+			GitAuthConfigs: api.GitAuthConfigs,
+			OIDCConfig:     api.OIDCConfig,
+		},
+	)
+	if err != nil {
+		if !xerrors.Is(err, context.Canceled) {
+			log.Error(ctx, "create provisioner daemon server", slog.Error(err))
+		}
+		_ = conn.Close(websocket.StatusInternalError, httpapi.WebsocketCloseSprintf("create provisioner daemon server: %s", err))
+		return
+	}
+	err = proto.DRPCRegisterProvisionerDaemon(mux, srv)
 	if err != nil {
 		_ = conn.Close(websocket.StatusInternalError, httpapi.WebsocketCloseSprintf("drpc register provisioner daemon: %s", err))
 		return
@@ -308,72 +367,4 @@ func websocketNetConn(ctx context.Context, conn *websocket.Conn, msgType websock
 		cancel: cancel,
 		Conn:   nc,
 	}
-}
-
-type enterpriseTemplateScheduleStore struct{}
-
-var _ schedule.TemplateScheduleStore = &enterpriseTemplateScheduleStore{}
-
-func (*enterpriseTemplateScheduleStore) GetTemplateScheduleOptions(ctx context.Context, db database.Store, templateID uuid.UUID) (schedule.TemplateScheduleOptions, error) {
-	tpl, err := db.GetTemplateByID(ctx, templateID)
-	if err != nil {
-		return schedule.TemplateScheduleOptions{}, err
-	}
-
-	return schedule.TemplateScheduleOptions{
-		UserAutostartEnabled: tpl.AllowUserAutostart,
-		UserAutostopEnabled:  tpl.AllowUserAutostop,
-		DefaultTTL:           time.Duration(tpl.DefaultTTL),
-		MaxTTL:               time.Duration(tpl.MaxTTL),
-		FailureTTL:           time.Duration(tpl.FailureTTL),
-		InactivityTTL:        time.Duration(tpl.InactivityTTL),
-	}, nil
-}
-
-func (*enterpriseTemplateScheduleStore) SetTemplateScheduleOptions(ctx context.Context, db database.Store, tpl database.Template, opts schedule.TemplateScheduleOptions) (database.Template, error) {
-	if int64(opts.DefaultTTL) == tpl.DefaultTTL &&
-		int64(opts.MaxTTL) == tpl.MaxTTL &&
-		int64(opts.FailureTTL) == tpl.FailureTTL &&
-		int64(opts.InactivityTTL) == tpl.InactivityTTL &&
-		opts.UserAutostartEnabled == tpl.AllowUserAutostart &&
-		opts.UserAutostopEnabled == tpl.AllowUserAutostop {
-		// Avoid updating the UpdatedAt timestamp if nothing will be changed.
-		return tpl, nil
-	}
-
-	template, err := db.UpdateTemplateScheduleByID(ctx, database.UpdateTemplateScheduleByIDParams{
-		ID:                 tpl.ID,
-		UpdatedAt:          database.Now(),
-		AllowUserAutostart: opts.UserAutostartEnabled,
-		AllowUserAutostop:  opts.UserAutostopEnabled,
-		DefaultTTL:         int64(opts.DefaultTTL),
-		MaxTTL:             int64(opts.MaxTTL),
-		FailureTTL:         int64(opts.FailureTTL),
-		InactivityTTL:      int64(opts.InactivityTTL),
-	})
-	if err != nil {
-		return database.Template{}, xerrors.Errorf("update template schedule: %w", err)
-	}
-
-	// Update all workspaces using the template to set the user defined schedule
-	// to be within the new bounds. This essentially does the following for each
-	// workspace using the template.
-	//   if (template.ttl != NULL) {
-	//     workspace.ttl = min(workspace.ttl, template.ttl)
-	//   }
-	//
-	// NOTE: this does not apply to currently running workspaces as their
-	// schedule information is committed to the workspace_build during start.
-	// This limitation is displayed to the user while editing the template.
-	if opts.MaxTTL > 0 {
-		err = db.UpdateWorkspaceTTLToBeWithinTemplateMax(ctx, database.UpdateWorkspaceTTLToBeWithinTemplateMaxParams{
-			TemplateID:     template.ID,
-			TemplateMaxTTL: int64(opts.MaxTTL),
-		})
-		if err != nil {
-			return database.Template{}, xerrors.Errorf("update TTL of all workspaces on template to be within new template max TTL: %w", err)
-		}
-	}
-
-	return template, nil
 }

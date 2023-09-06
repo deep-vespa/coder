@@ -1,9 +1,8 @@
-import Box from "@mui/material/Box"
-import { makeStyles } from "@mui/styles"
+import Box, { BoxProps } from "@mui/material/Box"
+import { makeStyles, useTheme } from "@mui/styles"
 import TableCell from "@mui/material/TableCell"
 import TableRow from "@mui/material/TableRow"
 import { ChooseOne, Cond } from "components/Conditionals/ChooseOne"
-import { LastUsed } from "components/LastUsed/LastUsed"
 import { Pill } from "components/Pill/Pill"
 import { FC } from "react"
 import { useTranslation } from "react-i18next"
@@ -11,10 +10,26 @@ import * as TypesGen from "../../api/typesGenerated"
 import { combineClasses } from "../../utils/combineClasses"
 import { AvatarData } from "../AvatarData/AvatarData"
 import { EmptyState } from "../EmptyState/EmptyState"
-import { TableLoaderSkeleton } from "../TableLoader/TableLoader"
+import {
+  TableLoaderSkeleton,
+  TableRowSkeleton,
+} from "../TableLoader/TableLoader"
 import { TableRowMenu } from "../TableRowMenu/TableRowMenu"
 import { EditRolesButton } from "components/EditRolesButton/EditRolesButton"
 import { Stack } from "components/Stack/Stack"
+import { EnterpriseBadge } from "components/DeploySettingsLayout/Badges"
+import dayjs from "dayjs"
+import { SxProps, Theme } from "@mui/material/styles"
+import HideSourceOutlined from "@mui/icons-material/HideSourceOutlined"
+import KeyOutlined from "@mui/icons-material/KeyOutlined"
+import GitHub from "@mui/icons-material/GitHub"
+import PasswordOutlined from "@mui/icons-material/PasswordOutlined"
+import relativeTime from "dayjs/plugin/relativeTime"
+import ShieldOutlined from "@mui/icons-material/ShieldOutlined"
+import Skeleton from "@mui/material/Skeleton"
+import { AvatarDataSkeleton } from "components/AvatarData/AvatarDataSkeleton"
+
+dayjs.extend(relativeTime)
 
 const isOwnerRole = (role: TypesGen.Role): boolean => {
   return role.name === "owner"
@@ -30,10 +45,12 @@ const sortRoles = (roles: TypesGen.Role[]) => {
 
 interface UsersTableBodyProps {
   users?: TypesGen.User[]
+  authMethods?: TypesGen.AuthMethods
   roles?: TypesGen.AssignableRoles[]
   isUpdatingUserRoles?: boolean
   canEditUsers?: boolean
   isLoading?: boolean
+  canViewActivity?: boolean
   onSuspendUser: (user: TypesGen.User) => void
   onDeleteUser: (user: TypesGen.User) => void
   onListWorkspaces: (user: TypesGen.User) => void
@@ -46,12 +63,17 @@ interface UsersTableBodyProps {
   ) => void
   isNonInitialPage: boolean
   actorID: string
+  // oidcRoleSyncEnabled should be set to false if unknown.
+  // This is used to determine if the oidc roles are synced from the oidc idp and
+  // editing via the UI should be disabled.
+  oidcRoleSyncEnabled: boolean
 }
 
 export const UsersTableBody: FC<
   React.PropsWithChildren<UsersTableBodyProps>
 > = ({
   users,
+  authMethods,
   roles,
   onSuspendUser,
   onDeleteUser,
@@ -62,9 +84,11 @@ export const UsersTableBody: FC<
   onUpdateUserRoles,
   isUpdatingUserRoles,
   canEditUsers,
+  canViewActivity,
   isLoading,
   isNonInitialPage,
   actorID,
+  oidcRoleSyncEnabled,
 }) => {
   const styles = useStyles()
   const { t } = useTranslation("usersPage")
@@ -72,7 +96,29 @@ export const UsersTableBody: FC<
   return (
     <ChooseOne>
       <Cond condition={Boolean(isLoading)}>
-        <TableLoaderSkeleton columns={5} useAvatarData />
+        <TableLoaderSkeleton>
+          <TableRowSkeleton>
+            <TableCell>
+              <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                <AvatarDataSkeleton />
+              </Box>
+            </TableCell>
+            <TableCell>
+              <Skeleton variant="text" width="25%" />
+            </TableCell>
+            <TableCell>
+              <Skeleton variant="text" width="25%" />
+            </TableCell>
+            <TableCell>
+              <Skeleton variant="text" width="25%" />
+            </TableCell>
+            {canEditUsers && (
+              <TableCell>
+                <Skeleton variant="text" width="25%" />
+              </TableCell>
+            )}
+          </TableRowSkeleton>
+        </TableLoaderSkeleton>
       </Cond>
       <Cond condition={!users || users.length === 0}>
         <ChooseOne>
@@ -124,6 +170,8 @@ export const UsersTableBody: FC<
                           roles={roles ? sortRoles(roles) : []}
                           selectedRoles={userRoles}
                           isLoading={Boolean(isUpdatingUserRoles)}
+                          userLoginType={user.login_type}
+                          oidcRoleSync={oidcRoleSyncEnabled}
                           onChange={(roles) => {
                             // Remove the fallback role because it is only for the UI
                             const rolesWithoutFallback = roles.filter(
@@ -145,6 +193,12 @@ export const UsersTableBody: FC<
                       ))}
                     </Stack>
                   </TableCell>
+                  <TableCell>
+                    <LoginType
+                      authMethods={authMethods!}
+                      value={user.login_type}
+                    />
+                  </TableCell>
                   <TableCell
                     className={combineClasses([
                       styles.status,
@@ -153,28 +207,31 @@ export const UsersTableBody: FC<
                         : undefined,
                     ])}
                   >
-                    {user.status}
+                    <Box>{user.status}</Box>
+                    <LastSeen value={user.last_seen_at} sx={{ fontSize: 12 }} />
                   </TableCell>
-                  <TableCell>
-                    <LastUsed lastUsedAt={user.last_seen_at} />
-                  </TableCell>
+
                   {canEditUsers && (
                     <TableCell>
                       <TableRowMenu
                         data={user}
                         menuItems={
                           // Return either suspend or activate depending on status
-                          (user.status === "active"
+                          (user.status === "active" || user.status === "dormant"
                             ? [
                                 {
-                                  label: t("suspendMenuItem"),
+                                  label: t(
+                                    "suspendMenuItem",
+                                  ) as React.ReactNode,
                                   onClick: onSuspendUser,
                                   disabled: false,
                                 },
                               ]
                             : [
                                 {
-                                  label: t("activateMenuItem"),
+                                  label: t(
+                                    "activateMenuItem",
+                                  ) as React.ReactNode,
                                   onClick: onActivateUser,
                                   disabled: false,
                                 },
@@ -188,7 +245,7 @@ export const UsersTableBody: FC<
                             {
                               label: t("resetPasswordMenuItem"),
                               onClick: onResetUserPassword,
-                              disabled: false,
+                              disabled: user.login_type !== "password",
                             },
                             {
                               label: t("listWorkspacesMenuItem"),
@@ -196,9 +253,14 @@ export const UsersTableBody: FC<
                               disabled: false,
                             },
                             {
-                              label: "View activity",
+                              label: (
+                                <>
+                                  View activity
+                                  {!canViewActivity && <EnterpriseBadge />}
+                                </>
+                              ),
                               onClick: onViewActivity,
-                              disabled: false,
+                              disabled: !canViewActivity,
                             },
                           )
                         }
@@ -211,6 +273,88 @@ export const UsersTableBody: FC<
         </>
       </Cond>
     </ChooseOne>
+  )
+}
+
+const LoginType = ({
+  authMethods,
+  value,
+}: {
+  authMethods: TypesGen.AuthMethods
+  value: TypesGen.LoginType
+}) => {
+  let displayName = value as string
+  let icon = <></>
+  const iconStyles: SxProps = { width: 14, height: 14 }
+
+  if (value === "password") {
+    displayName = "Password"
+    icon = <PasswordOutlined sx={iconStyles} />
+  } else if (value === "none") {
+    displayName = "None"
+    icon = <HideSourceOutlined sx={iconStyles} />
+  } else if (value === "github") {
+    displayName = "GitHub"
+    icon = <GitHub sx={iconStyles} />
+  } else if (value === "token") {
+    displayName = "Token"
+    icon = <KeyOutlined sx={iconStyles} />
+  } else if (value === "oidc") {
+    displayName =
+      authMethods.oidc.signInText === "" ? "OIDC" : authMethods.oidc.signInText
+    icon =
+      authMethods.oidc.iconUrl === "" ? (
+        <ShieldOutlined sx={iconStyles} />
+      ) : (
+        <Box
+          component="img"
+          alt="Open ID Connect icon"
+          src={authMethods.oidc.iconUrl}
+          sx={iconStyles}
+        />
+      )
+  }
+
+  return (
+    <Box sx={{ display: "flex", alignItems: "center", gap: 1, fontSize: 14 }}>
+      {icon}
+      {displayName}
+    </Box>
+  )
+}
+
+const LastSeen = ({ value, ...boxProps }: { value: string } & BoxProps) => {
+  const theme: Theme = useTheme()
+  const t = dayjs(value)
+  const now = dayjs()
+
+  let message = t.fromNow()
+  let color = theme.palette.text.secondary
+
+  if (t.isAfter(now.subtract(1, "hour"))) {
+    color = theme.palette.success.light
+    // Since the agent reports on a 10m interval,
+    // the last_used_at can be inaccurate when recent.
+    message = "Now"
+  } else if (t.isAfter(now.subtract(3, "day"))) {
+    color = theme.palette.text.secondary
+  } else if (t.isAfter(now.subtract(1, "month"))) {
+    color = theme.palette.warning.light
+  } else if (t.isAfter(now.subtract(100, "year"))) {
+    color = theme.palette.error.light
+  } else {
+    message = "Never"
+  }
+
+  return (
+    <Box
+      component="span"
+      data-chromatic="ignore"
+      {...boxProps}
+      sx={{ color, ...boxProps.sx }}
+    >
+      {message}
+    </Box>
   )
 }
 

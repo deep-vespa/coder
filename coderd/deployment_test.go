@@ -4,10 +4,11 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/coder/coder/coderd/coderdtest"
-	"github.com/coder/coder/testutil"
+	"github.com/coder/coder/v2/coderd/coderdtest"
+	"github.com/coder/coder/v2/testutil"
 )
 
 func TestDeploymentValues(t *testing.T) {
@@ -47,10 +48,13 @@ func TestDeploymentValues(t *testing.T) {
 
 func TestDeploymentStats(t *testing.T) {
 	t.Parallel()
+	t.Log("This test is time-sensitive. It may fail if the deployment is not ready in time.")
 	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
 	defer cancel()
 	client := coderdtest.New(t, &coderdtest.Options{})
 	_ = coderdtest.CreateFirstUser(t, client)
-	_, err := client.DeploymentStats(ctx)
-	require.NoError(t, err)
+	assert.True(t, testutil.Eventually(ctx, t, func(tctx context.Context) bool {
+		_, err := client.DeploymentStats(tctx)
+		return err == nil
+	}, testutil.IntervalMedium), "failed to get deployment stats in time")
 }

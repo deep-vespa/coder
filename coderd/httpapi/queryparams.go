@@ -10,8 +10,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/xerrors"
 
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/codersdk"
+	"github.com/coder/coder/v2/codersdk"
 )
 
 // QueryParamParser is a helper for parsing all query params and gathering all
@@ -45,7 +44,7 @@ func (p *QueryParamParser) ErrorExcessParams(values url.Values) {
 		if _, ok := p.Parsed[k]; !ok {
 			p.Errors = append(p.Errors, codersdk.ValidationError{
 				Field:  k,
-				Detail: fmt.Sprintf("Query param %q is not a valid query param", k),
+				Detail: fmt.Sprintf("%q is not a valid query param", k),
 			})
 		}
 	}
@@ -111,14 +110,35 @@ func (p *QueryParamParser) UUIDs(vals url.Values, def []uuid.UUID, queryParam st
 	})
 }
 
-func (p *QueryParamParser) Time(vals url.Values, def time.Time, queryParam string, format string) time.Time {
+func (p *QueryParamParser) Time(vals url.Values, def time.Time, queryParam, layout string) time.Time {
+	return p.timeWithMutate(vals, def, queryParam, layout, nil)
+}
+
+// Time uses the default time format of RFC3339Nano and always returns a UTC time.
+func (p *QueryParamParser) Time3339Nano(vals url.Values, def time.Time, queryParam string) time.Time {
+	layout := time.RFC3339Nano
+	return p.timeWithMutate(vals, def, queryParam, layout, func(term string) string {
+		// All search queries are forced to lowercase. But the RFC format requires
+		// upper case letters. So just uppercase the term.
+		return strings.ToUpper(term)
+	})
+}
+
+func (p *QueryParamParser) timeWithMutate(vals url.Values, def time.Time, queryParam, layout string, mutate func(term string) string) time.Time {
 	v, err := parseQueryParam(p, vals, func(term string) (time.Time, error) {
-		return time.Parse(format, term)
+		if mutate != nil {
+			term = mutate(term)
+		}
+		t, err := time.Parse(layout, term)
+		if err != nil {
+			return time.Time{}, err
+		}
+		return t.UTC(), nil
 	}, def, queryParam)
 	if err != nil {
 		p.Errors = append(p.Errors, codersdk.ValidationError{
 			Field:  queryParam,
-			Detail: fmt.Sprintf("Query param %q must be a valid date format (%s): %s", queryParam, format, err.Error()),
+			Detail: fmt.Sprintf("Query param %q must be a valid date format (%s): %s", queryParam, layout, err.Error()),
 		})
 	}
 	return v
@@ -137,10 +157,10 @@ func (p *QueryParamParser) Strings(vals url.Values, def []string, queryParam str
 	})
 }
 
-// ValidEnum parses enum query params. Add more to the list as needed.
+// ValidEnum represents an enum that can be parsed and validated.
 type ValidEnum interface {
-	database.ResourceType | database.AuditAction | database.BuildReason | database.UserStatus |
-		database.WorkspaceStatus
+	// Add more types as needed (avoid importing large dependency trees).
+	~string
 
 	// Valid is required on the enum type to be used with ParseEnum.
 	Valid() bool

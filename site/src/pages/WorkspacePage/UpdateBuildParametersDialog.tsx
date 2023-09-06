@@ -14,7 +14,7 @@ import {
 import { RichParameterInput } from "components/RichParameterInput/RichParameterInput"
 import { useFormik } from "formik"
 import {
-  selectInitialRichParametersValues,
+  getInitialRichParameterValues,
   useValidationSchemaForRichParameters,
 } from "utils/richParameters"
 import * as Yup from "yup"
@@ -25,7 +25,7 @@ import { useTranslation } from "react-i18next"
 export type UpdateBuildParametersDialogProps = DialogProps & {
   onClose: () => void
   onUpdate: (buildParameters: WorkspaceBuildParameter[]) => void
-  missedParameters?: TemplateVersionParameter[]
+  missedParameters: TemplateVersionParameter[]
 }
 
 export const UpdateBuildParametersDialog: FC<
@@ -34,8 +34,7 @@ export const UpdateBuildParametersDialog: FC<
   const styles = useStyles()
   const form = useFormik({
     initialValues: {
-      rich_parameter_values:
-        selectInitialRichParametersValues(missedParameters),
+      rich_parameter_values: getInitialRichParameterValues(missedParameters),
     },
     validationSchema: Yup.object({
       rich_parameter_values: useValidationSchemaForRichParameters(
@@ -46,6 +45,7 @@ export const UpdateBuildParametersDialog: FC<
     onSubmit: (values) => {
       onUpdate(values.rich_parameter_values)
     },
+    enableReinitialize: true,
   })
   const getFieldHelpers = getFormHelpers(form)
   const { t } = useTranslation("workspacePage")
@@ -83,8 +83,6 @@ export const UpdateBuildParametersDialog: FC<
                     )}
                     key={parameter.name}
                     parameter={parameter}
-                    initialValue=""
-                    index={index}
                     onChange={async (value) => {
                       await form.setFieldValue(
                         "rich_parameter_values." + index,
@@ -105,7 +103,13 @@ export const UpdateBuildParametersDialog: FC<
         <Button fullWidth type="button" onClick={dialogProps.onClose}>
           Cancel
         </Button>
-        <Button color="primary" fullWidth type="submit" form="updateParameters">
+        <Button
+          color="primary"
+          fullWidth
+          type="submit"
+          form="updateParameters"
+          data-testid="form-submit"
+        >
           Update
         </Button>
       </DialogActions>

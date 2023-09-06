@@ -11,8 +11,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/xerrors"
 
-	"github.com/coder/coder/coderd/healthcheck"
-	"github.com/coder/coder/testutil"
+	"github.com/coder/coder/v2/coderd/healthcheck"
+	"github.com/coder/coder/v2/testutil"
 )
 
 func TestWebsocket(t *testing.T) {
@@ -37,7 +37,7 @@ func TestWebsocket(t *testing.T) {
 			APIKey:     "test",
 		})
 
-		require.NoError(t, wsReport.Error)
+		require.Nil(t, wsReport.Error)
 	})
 
 	t.Run("Error", func(t *testing.T) {
@@ -62,8 +62,8 @@ func TestWebsocket(t *testing.T) {
 			APIKey:     "test",
 		})
 
-		require.Error(t, wsReport.Error)
-		assert.Equal(t, wsReport.Response.Body, "test error")
-		assert.Equal(t, wsReport.Response.Code, http.StatusBadRequest)
+		require.NotNil(t, wsReport.Error)
+		assert.Equal(t, wsReport.Body, "test error")
+		assert.Equal(t, wsReport.Code, http.StatusBadRequest)
 	})
 }

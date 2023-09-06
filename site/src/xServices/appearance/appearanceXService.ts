@@ -1,12 +1,12 @@
-import { displaySuccess } from "components/GlobalSnackbar/utils"
+import { displayError, displaySuccess } from "components/GlobalSnackbar/utils"
 import { assign, createMachine } from "xstate"
 import * as API from "../../api/api"
 import { AppearanceConfig } from "../../api/typesGenerated"
+import { getErrorMessage } from "api/errors"
 
 export type AppearanceContext = {
   appearance?: AppearanceConfig
-  getAppearanceError?: Error | unknown
-  setAppearanceError?: Error | unknown
+  getAppearanceError?: unknown
   preview: boolean
 }
 
@@ -39,11 +39,7 @@ export const appearanceMachine = createMachine(
       idle: {
         on: {
           SET_PREVIEW_APPEARANCE: {
-            actions: [
-              "clearGetAppearanceError",
-              "clearSetAppearanceError",
-              "assignPreviewAppearance",
-            ],
+            actions: ["clearGetAppearanceError", "assignPreviewAppearance"],
           },
           SAVE_APPEARANCE: "savingAppearance",
         },
@@ -64,7 +60,6 @@ export const appearanceMachine = createMachine(
         },
       },
       savingAppearance: {
-        entry: "clearSetAppearanceError",
         invoke: {
           id: "setAppearance",
           src: "setAppearance",
@@ -74,7 +69,11 @@ export const appearanceMachine = createMachine(
           },
           onError: {
             target: "idle",
-            actions: ["assignSetAppearanceError"],
+            actions: (_, error) => {
+              displayError(
+                getErrorMessage(error, "Failed to update appearance settings."),
+              )
+            },
           },
         },
       },
@@ -99,15 +98,22 @@ export const appearanceMachine = createMachine(
       clearGetAppearanceError: assign({
         getAppearanceError: (_) => undefined,
       }),
-      assignSetAppearanceError: assign({
-        setAppearanceError: (_, event) => event.data,
-      }),
-      clearSetAppearanceError: assign({
-        setAppearanceError: (_) => undefined,
-      }),
     },
     services: {
-      getAppearance: API.getAppearance,
+      getAppearance: async () => {
+        // Appearance is injected by the Coder server into the HTML document.
+        const appearance = document.querySelector("meta[property=appearance]")
+        if (appearance) {
+          const rawContent = appearance.getAttribute("content")
+          try {
+            return JSON.parse(rawContent as string)
+          } catch (ex) {
+            // Ignore this and fetch as normal!
+          }
+        }
+
+        return API.getAppearance()
+      },
       setAppearance: (_, event) => API.updateAppearance(event.appearance),
     },
   },

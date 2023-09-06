@@ -5,44 +5,38 @@ import {
 import { useTranslation } from "react-i18next"
 import * as Yup from "yup"
 
-export const selectInitialRichParametersValues = (
-  templateParameters?: TemplateVersionParameter[],
-  defaultValuesFromQuery?: Record<string, string>,
+export const getInitialRichParameterValues = (
+  templateParameters: TemplateVersionParameter[],
+  buildParameters?: WorkspaceBuildParameter[],
 ): WorkspaceBuildParameter[] => {
-  const defaults: WorkspaceBuildParameter[] = []
-  if (!templateParameters) {
-    return defaults
+  return templateParameters.map((parameter) => {
+    const existentBuildParameter = buildParameters?.find(
+      (p) => p.name === parameter.name,
+    )
+    const shouldReturnTheDefaultValue =
+      !existentBuildParameter ||
+      !isValidValue(parameter, existentBuildParameter) ||
+      parameter.ephemeral
+    if (shouldReturnTheDefaultValue) {
+      return {
+        name: parameter.name,
+        value: parameter.default_value,
+      }
+    }
+    return existentBuildParameter
+  })
+}
+
+const isValidValue = (
+  templateParam: TemplateVersionParameter,
+  buildParam: WorkspaceBuildParameter,
+) => {
+  if (templateParam.options.length > 0) {
+    const validValues = templateParam.options.map((option) => option.value)
+    return validValues.includes(buildParam.value)
   }
 
-  templateParameters.forEach((parameter) => {
-    let parameterValue = parameter.default_value
-
-    if (parameter.options.length > 0) {
-      parameterValue = parameterValue ?? parameter.options[0].value
-
-      if (defaultValuesFromQuery && defaultValuesFromQuery[parameter.name]) {
-        parameterValue = defaultValuesFromQuery[parameter.name]
-      }
-
-      const buildParameter: WorkspaceBuildParameter = {
-        name: parameter.name,
-        value: parameterValue,
-      }
-      defaults.push(buildParameter)
-      return
-    }
-
-    if (defaultValuesFromQuery && defaultValuesFromQuery[parameter.name]) {
-      parameterValue = defaultValuesFromQuery[parameter.name]
-    }
-
-    const buildParameter: WorkspaceBuildParameter = {
-      name: parameter.name,
-      value: parameterValue || "",
-    }
-    defaults.push(buildParameter)
-  })
-  return defaults
+  return true
 }
 
 export const useValidationSchemaForRichParameters = (
@@ -171,14 +165,4 @@ export const useValidationSchemaForRichParameters = (
       }),
     )
     .required()
-}
-
-export const workspaceBuildParameterValue = (
-  workspaceBuildParameters: WorkspaceBuildParameter[],
-  parameter: TemplateVersionParameter,
-): string => {
-  const buildParameter = workspaceBuildParameters.find((buildParameter) => {
-    return buildParameter.name === parameter.name
-  })
-  return (buildParameter && buildParameter.value) || ""
 }

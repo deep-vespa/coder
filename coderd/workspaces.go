@@ -12,29 +12,31 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"golang.org/x/exp/slices"
 	"golang.org/x/xerrors"
 
 	"cdr.dev/slog"
-	"github.com/coder/coder/coderd/audit"
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/coderd/httpapi"
-	"github.com/coder/coder/coderd/httpmw"
-	"github.com/coder/coder/coderd/rbac"
-	"github.com/coder/coder/coderd/schedule"
-	"github.com/coder/coder/coderd/searchquery"
-	"github.com/coder/coder/coderd/telemetry"
-	"github.com/coder/coder/coderd/util/ptr"
-	"github.com/coder/coder/coderd/wsbuilder"
-	"github.com/coder/coder/codersdk"
+	"github.com/coder/coder/v2/coderd/audit"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/database/dbauthz"
+	"github.com/coder/coder/v2/coderd/database/dbtime"
+	"github.com/coder/coder/v2/coderd/httpapi"
+	"github.com/coder/coder/v2/coderd/httpmw"
+	"github.com/coder/coder/v2/coderd/rbac"
+	"github.com/coder/coder/v2/coderd/schedule/cron"
+	"github.com/coder/coder/v2/coderd/searchquery"
+	"github.com/coder/coder/v2/coderd/telemetry"
+	"github.com/coder/coder/v2/coderd/util/ptr"
+	"github.com/coder/coder/v2/coderd/wsbuilder"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/codersdk/agentsdk"
 )
 
 var (
 	ttlMin = time.Minute //nolint:revive // min here means 'minimum' not 'minutes'
-	ttlMax = 7 * 24 * time.Hour
+	ttlMax = 30 * 24 * time.Hour
 
 	errTTLMin              = xerrors.New("time until shutdown must be at least one minute")
-	errTTLMax              = xerrors.New("time until shutdown must be less than 7 days")
+	errTTLMax              = xerrors.New("time until shutdown must be less than 30 days")
 	errDeadlineTooSoon     = xerrors.New("new deadline must be at least 30 minutes in the future")
 	errDeadlineBeforeStart = xerrors.New("new deadline must be before workspace start time")
 )
@@ -85,6 +87,11 @@ func (api *API) workspace(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(data.templates) == 0 {
+		httpapi.Forbidden(rw)
+		return
+	}
+
 	httpapi.Write(ctx, rw, http.StatusOK, convertWorkspace(
 		workspace,
 		data.builds[0],
@@ -101,12 +108,9 @@ func (api *API) workspace(rw http.ResponseWriter, r *http.Request) {
 // @Security CoderSessionToken
 // @Produce json
 // @Tags Workspaces
-// @Param owner query string false "Filter by owner username"
-// @Param template query string false "Filter by template name"
-// @Param name query string false "Filter with partial-match by workspace name"
-// @Param status query string false "Filter by workspace status" Enums(pending,running,stopping,stopped,failed,canceling,canceled,deleted,deleting)
-// @Param has_agent query string false "Filter by agent status" Enums(connected,connecting,disconnected,timeout)
-// @Param deleting_by query string false "Filter workspaces scheduled to be deleted by this time"
+// @Param q query string false "Search query in the format `key:value`. Available keys are: owner, template, name, status, has-agent, deleting_by."
+// @Param limit query int false "Page limit"
+// @Param offset query int false "Page offset"
 // @Success 200 {object} codersdk.WorkspacesResponse
 // @Router /workspaces [get]
 func (api *API) workspaces(rw http.ResponseWriter, r *http.Request) {
@@ -330,10 +334,35 @@ func (api *API) postWorkspacesByOrganization(rw http.ResponseWriter, r *http.Req
 		return
 	}
 
-	template, err := api.Database.GetTemplateByID(ctx, createWorkspace.TemplateID)
+	// If we were given a `TemplateVersionID`, we need to determine the `TemplateID` from it.
+	templateID := createWorkspace.TemplateID
+	if templateID == uuid.Nil {
+		templateVersion, err := api.Database.GetTemplateVersionByID(ctx, createWorkspace.TemplateVersionID)
+		if errors.Is(err, sql.ErrNoRows) {
+			httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+				Message: fmt.Sprintf("Template version %q doesn't exist.", templateID.String()),
+				Validations: []codersdk.ValidationError{{
+					Field:  "template_version_id",
+					Detail: "template not found",
+				}},
+			})
+			return
+		}
+		if err != nil {
+			httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+				Message: "Internal error fetching template version.",
+				Detail:  err.Error(),
+			})
+			return
+		}
+
+		templateID = templateVersion.TemplateID.UUID
+	}
+
+	template, err := api.Database.GetTemplateByID(ctx, templateID)
 	if errors.Is(err, sql.ErrNoRows) {
 		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
-			Message: fmt.Sprintf("Template %q doesn't exist.", createWorkspace.TemplateID.String()),
+			Message: fmt.Sprintf("Template %q doesn't exist.", templateID.String()),
 			Validations: []codersdk.ValidationError{{
 				Field:  "template_id",
 				Detail: "template not found",
@@ -356,7 +385,7 @@ func (api *API) postWorkspacesByOrganization(rw http.ResponseWriter, r *http.Req
 	}
 
 	if organization.ID != template.OrganizationID {
-		httpapi.Write(ctx, rw, http.StatusUnauthorized, codersdk.Response{
+		httpapi.Write(ctx, rw, http.StatusForbidden, codersdk.Response{
 			Message: fmt.Sprintf("Template is not in organization %q.", organization.Name),
 		})
 		return
@@ -371,7 +400,7 @@ func (api *API) postWorkspacesByOrganization(rw http.ResponseWriter, r *http.Req
 		return
 	}
 
-	templateSchedule, err := (*api.TemplateScheduleStore.Load()).GetTemplateScheduleOptions(ctx, api.Database, template.ID)
+	templateSchedule, err := (*api.TemplateScheduleStore.Load()).Get(ctx, api.Database, template.ID)
 	if err != nil {
 		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
 			Message: "Internal error fetching template schedule.",
@@ -380,7 +409,13 @@ func (api *API) postWorkspacesByOrganization(rw http.ResponseWriter, r *http.Req
 		return
 	}
 
-	dbTTL, err := validWorkspaceTTLMillis(createWorkspace.TTLMillis, templateSchedule.DefaultTTL, templateSchedule.MaxTTL)
+	maxTTL := templateSchedule.MaxTTL
+	if templateSchedule.UseAutostopRequirement {
+		// If we're using autostop requirements, there isn't a max TTL.
+		maxTTL = 0
+	}
+
+	dbTTL, err := validWorkspaceTTLMillis(createWorkspace.TTLMillis, templateSchedule.DefaultTTL, maxTTL)
 	if err != nil {
 		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
 			Message:     "Invalid Workspace Time to Shutdown.",
@@ -420,7 +455,7 @@ func (api *API) postWorkspacesByOrganization(rw http.ResponseWriter, r *http.Req
 		workspaceBuild *database.WorkspaceBuild
 	)
 	err = api.Database.InTx(func(db database.Store) error {
-		now := database.Now()
+		now := dbtime.Now()
 		// Workspaces are created without any versions.
 		workspace, err = db.InsertWorkspace(ctx, database.InsertWorkspaceParams{
 			ID:                uuid.New(),
@@ -434,7 +469,7 @@ func (api *API) postWorkspacesByOrganization(rw http.ResponseWriter, r *http.Req
 			Ttl:               dbTTL,
 			// The workspaces page will sort by last used at, and it's useful to
 			// have the newly created workspace at the top of the list!
-			LastUsedAt: database.Now(),
+			LastUsedAt: dbtime.Now(),
 		})
 		if err != nil {
 			return xerrors.Errorf("insert workspace: %w", err)
@@ -445,6 +480,10 @@ func (api *API) postWorkspacesByOrganization(rw http.ResponseWriter, r *http.Req
 			Initiator(apiKey.UserID).
 			ActiveVersion().
 			RichParameterValues(createWorkspace.RichParameterValues)
+		if createWorkspace.TemplateVersionID != uuid.Nil {
+			builder = builder.VersionID(createWorkspace.TemplateVersionID)
+		}
+
 		workspaceBuild, provisionerJob, err = builder.Build(
 			ctx, db, func(action rbac.Action, object rbac.Objecter) bool {
 				return api.Authorize(r, action, object)
@@ -486,7 +525,10 @@ func (api *API) postWorkspacesByOrganization(rw http.ResponseWriter, r *http.Req
 	apiBuild, err := api.convertWorkspaceBuild(
 		*workspaceBuild,
 		workspace,
-		*provisionerJob,
+		database.GetProvisionerJobsByIDsWithQueuePositionRow{
+			ProvisionerJob: *provisionerJob,
+			QueuePosition:  0,
+		},
 		users,
 		[]database.WorkspaceResource{},
 		[]database.WorkspaceResourceMetadatum{},
@@ -633,7 +675,7 @@ func (api *API) putWorkspaceAutostart(rw http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if the template allows users to configure autostart.
-	templateSchedule, err := (*api.TemplateScheduleStore.Load()).GetTemplateScheduleOptions(ctx, api.Database, workspace.TemplateID)
+	templateSchedule, err := (*api.TemplateScheduleStore.Load()).Get(ctx, api.Database, workspace.TemplateID)
 	if err != nil {
 		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
 			Message: "Internal error getting template schedule options.",
@@ -700,7 +742,7 @@ func (api *API) putWorkspaceTTL(rw http.ResponseWriter, r *http.Request) {
 	var dbTTL sql.NullInt64
 
 	err := api.Database.InTx(func(s database.Store) error {
-		templateSchedule, err := (*api.TemplateScheduleStore.Load()).GetTemplateScheduleOptions(ctx, s, workspace.TemplateID)
+		templateSchedule, err := (*api.TemplateScheduleStore.Load()).Get(ctx, s, workspace.TemplateID)
 		if err != nil {
 			return xerrors.Errorf("get template schedule: %w", err)
 		}
@@ -708,10 +750,16 @@ func (api *API) putWorkspaceTTL(rw http.ResponseWriter, r *http.Request) {
 			return codersdk.ValidationError{Field: "ttl_ms", Detail: "Custom autostop TTL is not allowed for workspaces using this template."}
 		}
 
+		maxTTL := templateSchedule.MaxTTL
+		if templateSchedule.UseAutostopRequirement {
+			// If we're using autostop requirements, there isn't a max TTL.
+			maxTTL = 0
+		}
+
 		// don't override 0 ttl with template default here because it indicates
 		// disabled autostop
 		var validityErr error
-		dbTTL, validityErr = validWorkspaceTTLMillis(req.TTLMillis, 0, templateSchedule.MaxTTL)
+		dbTTL, validityErr = validWorkspaceTTLMillis(req.TTLMillis, 0, maxTTL)
 		if validityErr != nil {
 			return codersdk.ValidationError{Field: "ttl_ms", Detail: validityErr.Error()}
 		}
@@ -745,6 +793,74 @@ func (api *API) putWorkspaceTTL(rw http.ResponseWriter, r *http.Request) {
 	aReq.New = newWorkspace
 
 	rw.WriteHeader(http.StatusNoContent)
+}
+
+// @Summary Update workspace dormancy status by id.
+// @ID update-workspace-dormancy-status-by-id
+// @Security CoderSessionToken
+// @Accept json
+// @Produce json
+// @Tags Workspaces
+// @Param workspace path string true "Workspace ID" format(uuid)
+// @Param request body codersdk.UpdateWorkspaceDormancy true "Make a workspace dormant or active"
+// @Success 200 {object} codersdk.Workspace
+// @Router /workspaces/{workspace}/dormant [put]
+func (api *API) putWorkspaceDormant(rw http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	workspace := httpmw.WorkspaceParam(r)
+
+	var req codersdk.UpdateWorkspaceDormancy
+	if !httpapi.Read(ctx, rw, r, &req) {
+		return
+	}
+
+	// If the workspace is already in the desired state do nothing!
+	if workspace.DormantAt.Valid == req.Dormant {
+		httpapi.Write(ctx, rw, http.StatusNotModified, codersdk.Response{
+			Message: "Nothing to do!",
+		})
+		return
+	}
+
+	dormantAt := sql.NullTime{
+		Valid: req.Dormant,
+	}
+	if req.Dormant {
+		dormantAt.Time = dbtime.Now()
+	}
+
+	workspace, err := api.Database.UpdateWorkspaceDormantDeletingAt(ctx, database.UpdateWorkspaceDormantDeletingAtParams{
+		ID:        workspace.ID,
+		DormantAt: dormantAt,
+	})
+	if err != nil {
+		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Internal error updating workspace locked status.",
+			Detail:  err.Error(),
+		})
+		return
+	}
+
+	data, err := api.workspaceData(ctx, []database.Workspace{workspace})
+	if err != nil {
+		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Internal error fetching workspace resources.",
+			Detail:  err.Error(),
+		})
+		return
+	}
+
+	if len(data.templates) == 0 {
+		httpapi.Forbidden(rw)
+		return
+	}
+
+	httpapi.Write(ctx, rw, http.StatusOK, convertWorkspace(
+		workspace,
+		data.builds[0],
+		data.templates[0],
+		findUser(workspace.OwnerID, data.users),
+	))
 }
 
 // @Summary Extend workspace deadline by ID
@@ -817,7 +933,7 @@ func (api *API) putExtendWorkspace(rw http.ResponseWriter, r *http.Request) {
 			return xerrors.New("Cannot extend workspace: deadline is beyond max deadline imposed by template")
 		}
 
-		if _, err := s.UpdateWorkspaceBuildByID(ctx, database.UpdateWorkspaceBuildByIDParams{
+		if err := s.UpdateWorkspaceBuildByID(ctx, database.UpdateWorkspaceBuildByIDParams{
 			ID:               build.ID,
 			UpdatedAt:        build.UpdatedAt,
 			ProvisionerState: build.ProvisionerState,
@@ -888,6 +1004,16 @@ func (api *API) watchWorkspace(rw http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		if len(data.templates) == 0 {
+			_ = sendEvent(ctx, codersdk.ServerSentEvent{
+				Type: codersdk.ServerSentEventTypeError,
+				Data: codersdk.Response{
+					Message: "Forbidden reading template of selected workspace.",
+					Detail:  err.Error(),
+				},
+			})
+			return
+		}
 
 		_ = sendEvent(ctx, codersdk.ServerSentEvent{
 			Type: codersdk.ServerSentEventTypeData,
@@ -900,7 +1026,7 @@ func (api *API) watchWorkspace(rw http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	cancelWorkspaceSubscribe, err := api.Pubsub.Subscribe(watchWorkspaceChannel(workspace.ID), sendUpdate)
+	cancelWorkspaceSubscribe, err := api.Pubsub.Subscribe(codersdk.WorkspaceNotifyChannel(workspace.ID), sendUpdate)
 	if err != nil {
 		_ = sendEvent(ctx, codersdk.ServerSentEvent{
 			Type: codersdk.ServerSentEventTypeError,
@@ -932,6 +1058,9 @@ func (api *API) watchWorkspace(rw http.ResponseWriter, r *http.Request) {
 	_ = sendEvent(ctx, codersdk.ServerSentEvent{
 		Type: codersdk.ServerSentEventTypePing,
 	})
+	// Send updated workspace info after connection is established. This avoids
+	// missing updates if the client connects after an update.
+	sendUpdate(ctx, nil)
 
 	for {
 		select {
@@ -949,6 +1078,10 @@ type workspaceData struct {
 	users     []database.User
 }
 
+// workspacesData only returns the data the caller can access. If the caller
+// does not have the correct perms to read a given template, the template will
+// not be returned.
+// So the caller must check the templates & users exist before using them.
 func (api *API) workspaceData(ctx context.Context, workspaces []database.Workspace) (workspaceData, error) {
 	workspaceIDs := make([]uuid.UUID, 0, len(workspaces))
 	templateIDs := make([]uuid.UUID, 0, len(workspaces))
@@ -964,7 +1097,9 @@ func (api *API) workspaceData(ctx context.Context, workspaces []database.Workspa
 		return workspaceData{}, xerrors.Errorf("get templates: %w", err)
 	}
 
-	builds, err := api.Database.GetLatestWorkspaceBuildsByWorkspaceIDs(ctx, workspaceIDs)
+	// This query must be run as system restricted to be efficient.
+	// nolint:gocritic
+	builds, err := api.Database.GetLatestWorkspaceBuildsByWorkspaceIDs(dbauthz.AsSystemRestricted(ctx), workspaceIDs)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return workspaceData{}, xerrors.Errorf("get workspace builds: %w", err)
 	}
@@ -1012,17 +1147,22 @@ func convertWorkspaces(workspaces []database.Workspace, data workspaceData) ([]c
 
 	apiWorkspaces := make([]codersdk.Workspace, 0, len(workspaces))
 	for _, workspace := range workspaces {
+		// If any data is missing from the workspace, just skip returning
+		// this workspace. This is not ideal, but the user cannot read
+		// all the workspace's data, so do not show them.
+		// Ideally we could just return some sort of "unknown" for the missing
+		// fields?
 		build, exists := buildByWorkspaceID[workspace.ID]
 		if !exists {
-			return nil, xerrors.Errorf("build not found for workspace %q", workspace.Name)
+			continue
 		}
 		template, exists := templateByID[workspace.TemplateID]
 		if !exists {
-			return nil, xerrors.Errorf("template not found for workspace %q", workspace.Name)
+			continue
 		}
 		owner, exists := userByID[workspace.OwnerID]
 		if !exists {
-			return nil, xerrors.Errorf("owner not found for workspace: %q", workspace.Name)
+			continue
 		}
 
 		apiWorkspaces = append(apiWorkspaces, convertWorkspace(
@@ -1046,10 +1186,27 @@ func convertWorkspace(
 		autostartSchedule = &workspace.AutostartSchedule.String
 	}
 
-	var (
-		ttlMillis  = convertWorkspaceTTLMillis(workspace.Ttl)
-		deletingAt = calculateDeletingAt(workspace, template, workspaceBuild)
-	)
+	var dormantAt *time.Time
+	if workspace.DormantAt.Valid {
+		dormantAt = &workspace.DormantAt.Time
+	}
+
+	var deletingAt *time.Time
+	if workspace.DeletingAt.Valid {
+		deletingAt = &workspace.DeletingAt.Time
+	}
+
+	failingAgents := []uuid.UUID{}
+	for _, resource := range workspaceBuild.Resources {
+		for _, agent := range resource.Agents {
+			if !agent.Health.Healthy {
+				failingAgents = append(failingAgents, agent.ID)
+			}
+		}
+	}
+
+	ttlMillis := convertWorkspaceTTLMillis(workspace.Ttl)
+
 	return codersdk.Workspace{
 		ID:                                   workspace.ID,
 		CreatedAt:                            workspace.CreatedAt,
@@ -1063,12 +1220,18 @@ func convertWorkspace(
 		TemplateIcon:                         template.Icon,
 		TemplateDisplayName:                  template.DisplayName,
 		TemplateAllowUserCancelWorkspaceJobs: template.AllowUserCancelWorkspaceJobs,
+		TemplateActiveVersionID:              template.ActiveVersionID,
 		Outdated:                             workspaceBuild.TemplateVersionID.String() != template.ActiveVersionID.String(),
 		Name:                                 workspace.Name,
 		AutostartSchedule:                    autostartSchedule,
 		TTLMillis:                            ttlMillis,
 		LastUsedAt:                           workspace.LastUsedAt,
 		DeletingAt:                           deletingAt,
+		DormantAt:                            dormantAt,
+		Health: codersdk.WorkspaceHealth{
+			Healthy:       len(failingAgents) == 0,
+			FailingAgents: failingAgents,
+		},
 	}
 }
 
@@ -1079,19 +1242,6 @@ func convertWorkspaceTTLMillis(i sql.NullInt64) *int64 {
 
 	millis := time.Duration(i.Int64).Milliseconds()
 	return &millis
-}
-
-// Calculate the time of the upcoming workspace deletion, if applicable; otherwise, return nil.
-// Workspaces may have impending deletions if InactivityTTL feature is turned on and the workspace is inactive.
-func calculateDeletingAt(workspace database.Workspace, template database.Template, build codersdk.WorkspaceBuild) *time.Time {
-	inactiveStatuses := []codersdk.WorkspaceStatus{codersdk.WorkspaceStatusStopped, codersdk.WorkspaceStatusCanceled, codersdk.WorkspaceStatusFailed, codersdk.WorkspaceStatusDeleted}
-	isInactive := slices.Contains(inactiveStatuses, build.Status)
-	// If InactivityTTL is turned off (set to 0) or if the workspace is active, there is no impending deletion
-	if template.InactivityTTL == 0 || !isInactive {
-		return nil
-	}
-
-	return ptr.Ref(workspace.LastUsedAt.Add(time.Duration(template.InactivityTTL) * time.Nanosecond))
 }
 
 func validWorkspaceTTLMillis(millis *int64, templateDefault, templateMax time.Duration) (sql.NullInt64, error) {
@@ -1156,7 +1306,7 @@ func validWorkspaceSchedule(s *string) (sql.NullString, error) {
 		return sql.NullString{}, nil
 	}
 
-	_, err := schedule.Weekly(*s)
+	_, err := cron.Weekly(*s)
 	if err != nil {
 		return sql.NullString{}, err
 	}
@@ -1167,14 +1317,21 @@ func validWorkspaceSchedule(s *string) (sql.NullString, error) {
 	}, nil
 }
 
-func watchWorkspaceChannel(id uuid.UUID) string {
-	return fmt.Sprintf("workspace:%s", id)
-}
-
 func (api *API) publishWorkspaceUpdate(ctx context.Context, workspaceID uuid.UUID) {
-	err := api.Pubsub.Publish(watchWorkspaceChannel(workspaceID), []byte{})
+	err := api.Pubsub.Publish(codersdk.WorkspaceNotifyChannel(workspaceID), []byte{})
 	if err != nil {
 		api.Logger.Warn(ctx, "failed to publish workspace update",
 			slog.F("workspace_id", workspaceID), slog.Error(err))
+	}
+}
+
+func (api *API) publishWorkspaceAgentLogsUpdate(ctx context.Context, workspaceAgentID uuid.UUID, m agentsdk.LogsNotifyMessage) {
+	b, err := json.Marshal(m)
+	if err != nil {
+		api.Logger.Warn(ctx, "failed to marshal logs notify message", slog.F("workspace_agent_id", workspaceAgentID), slog.Error(err))
+	}
+	err = api.Pubsub.Publish(agentsdk.LogsNotifyChannel(workspaceAgentID), b)
+	if err != nil {
+		api.Logger.Warn(ctx, "failed to publish workspace agent logs update", slog.F("workspace_agent_id", workspaceAgentID), slog.Error(err))
 	}
 }

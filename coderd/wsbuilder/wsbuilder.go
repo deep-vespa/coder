@@ -11,16 +11,17 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lib/pq"
-	"github.com/tabbed/pqtype"
+	"github.com/sqlc-dev/pqtype"
 	"golang.org/x/xerrors"
 
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/coderd/database/db2sdk"
-	"github.com/coder/coder/coderd/httpapi"
-	"github.com/coder/coder/coderd/provisionerdserver"
-	"github.com/coder/coder/coderd/rbac"
-	"github.com/coder/coder/coderd/tracing"
-	"github.com/coder/coder/codersdk"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/database/db2sdk"
+	"github.com/coder/coder/v2/coderd/database/dbtime"
+	"github.com/coder/coder/v2/coderd/httpapi"
+	"github.com/coder/coder/v2/coderd/provisionerdserver"
+	"github.com/coder/coder/v2/coderd/rbac"
+	"github.com/coder/coder/v2/coderd/tracing"
+	"github.com/coder/coder/v2/codersdk"
 )
 
 // Builder encapsulates the business logic of inserting a new workspace build into the database.
@@ -34,11 +35,13 @@ import (
 // build, job, err := b.Build(...)
 type Builder struct {
 	// settings that control the kind of build you get
-	workspace           database.Workspace
-	trans               database.WorkspaceTransition
-	version             versionTarget
-	state               stateTarget
-	logLevel            string
+	workspace        database.Workspace
+	trans            database.WorkspaceTransition
+	version          versionTarget
+	state            stateTarget
+	logLevel         string
+	deploymentValues *codersdk.DeploymentValues
+
 	richParameterValues []codersdk.WorkspaceBuildParameter
 	initiator           uuid.UUID
 	reason              database.BuildReason
@@ -125,6 +128,12 @@ func (b Builder) Orphan() Builder {
 func (b Builder) LogLevel(l string) Builder {
 	// nolint: revive
 	b.logLevel = l
+	return b
+}
+
+func (b Builder) DeploymentValues(dv *codersdk.DeploymentValues) Builder {
+	// nolint: revive
+	b.deploymentValues = dv
 	return b
 }
 
@@ -292,7 +301,7 @@ func (b *Builder) buildTx(authFunc func(action rbac.Action, object rbac.Objecter
 	}
 	tags := provisionerdserver.MutateTags(b.workspace.OwnerID, templateVersionJob.Tags)
 
-	now := database.Now()
+	now := dbtime.Now()
 	provisionerJob, err := b.store.InsertProvisionerJob(b.ctx, database.InsertProvisionerJobParams{
 		ID:             uuid.New(),
 		CreatedAt:      now,
@@ -326,35 +335,49 @@ func (b *Builder) buildTx(authFunc func(action rbac.Action, object rbac.Objecter
 	if err != nil {
 		return nil, nil, BuildError{http.StatusInternalServerError, "compute build state", err}
 	}
-	workspaceBuild, err := b.store.InsertWorkspaceBuild(b.ctx, database.InsertWorkspaceBuildParams{
-		ID:                workspaceBuildID,
-		CreatedAt:         now,
-		UpdatedAt:         now,
-		WorkspaceID:       b.workspace.ID,
-		TemplateVersionID: templateVersionID,
-		BuildNumber:       buildNum,
-		ProvisionerState:  state,
-		InitiatorID:       b.initiator,
-		Transition:        b.trans,
-		JobID:             provisionerJob.ID,
-		Reason:            b.reason,
-	})
-	if err != nil {
-		return nil, nil, BuildError{http.StatusInternalServerError, "insert workspace build", err}
-	}
 
-	names, values, err := b.getParameters()
+	var workspaceBuild database.WorkspaceBuild
+	err = b.store.InTx(func(store database.Store) error {
+		err = store.InsertWorkspaceBuild(b.ctx, database.InsertWorkspaceBuildParams{
+			ID:                workspaceBuildID,
+			CreatedAt:         now,
+			UpdatedAt:         now,
+			WorkspaceID:       b.workspace.ID,
+			TemplateVersionID: templateVersionID,
+			BuildNumber:       buildNum,
+			ProvisionerState:  state,
+			InitiatorID:       b.initiator,
+			Transition:        b.trans,
+			JobID:             provisionerJob.ID,
+			Reason:            b.reason,
+		})
+		if err != nil {
+			return BuildError{http.StatusInternalServerError, "insert workspace build", err}
+		}
+
+		names, values, err := b.getParameters()
+		if err != nil {
+			// getParameters already wraps errors in BuildError
+			return err
+		}
+		err = store.InsertWorkspaceBuildParameters(b.ctx, database.InsertWorkspaceBuildParametersParams{
+			WorkspaceBuildID: workspaceBuildID,
+			Name:             names,
+			Value:            values,
+		})
+		if err != nil {
+			return BuildError{http.StatusInternalServerError, "insert workspace build parameters: %w", err}
+		}
+
+		workspaceBuild, err = store.GetWorkspaceBuildByID(b.ctx, workspaceBuildID)
+		if err != nil {
+			return BuildError{http.StatusInternalServerError, "get workspace build", err}
+		}
+
+		return nil
+	}, nil)
 	if err != nil {
-		// getParameters already wraps errors in BuildError
 		return nil, nil, err
-	}
-	err = b.store.InsertWorkspaceBuildParameters(b.ctx, database.InsertWorkspaceBuildParametersParams{
-		WorkspaceBuildID: workspaceBuildID,
-		Name:             names,
-		Value:            values,
-	})
-	if err != nil {
-		return nil, nil, BuildError{http.StatusInternalServerError, "insert workspace build parameters: %w", err}
 	}
 
 	return &workspaceBuild, &provisionerJob, nil
@@ -503,7 +526,7 @@ func (b *Builder) getParameters() (names, values []string, err error) {
 			// At this point, we've queried all the data we need from the database,
 			// so the only errors are problems with the request (missing data, failed
 			// validation, immutable parameters, etc.)
-			return nil, nil, BuildError{http.StatusBadRequest, err.Error(), err}
+			return nil, nil, BuildError{http.StatusBadRequest, fmt.Sprintf("Unable to validate parameter %q", templateVersionParameter.Name), err}
 		}
 		names = append(names, templateVersionParameter.Name)
 		values = append(values, value)
@@ -617,11 +640,12 @@ func (b *Builder) authorize(authFunc func(action rbac.Action, object rbac.Object
 	case database.WorkspaceTransitionStart, database.WorkspaceTransitionStop:
 		action = rbac.ActionUpdate
 	default:
-		return BuildError{http.StatusBadRequest, fmt.Sprintf("Transition %q not supported.", b.trans), xerrors.New("")}
+		msg := fmt.Sprintf("Transition %q not supported.", b.trans)
+		return BuildError{http.StatusBadRequest, msg, xerrors.New(msg)}
 	}
 	if !authFunc(action, b.workspace) {
 		// We use the same wording as the httpapi to avoid leaking the existence of the workspace
-		return BuildError{http.StatusNotFound, httpapi.ResourceNotFoundResponse.Message, xerrors.New("")}
+		return BuildError{http.StatusNotFound, httpapi.ResourceNotFoundResponse.Message, xerrors.New(httpapi.ResourceNotFoundResponse.Message)}
 	}
 
 	template, err := b.getTemplate()
@@ -633,15 +657,23 @@ func (b *Builder) authorize(authFunc func(action rbac.Action, object rbac.Object
 	// cloud state.
 	if b.state.explicit != nil || b.state.orphan {
 		if !authFunc(rbac.ActionUpdate, template.RBACObject()) {
-			return BuildError{http.StatusForbidden, "Only template managers may provide custom state", xerrors.New("")}
+			return BuildError{http.StatusForbidden, "Only template managers may provide custom state", xerrors.New("Only template managers may provide custom state")}
 		}
 	}
 
-	if b.logLevel != "" && !authFunc(rbac.ActionUpdate, template) {
+	if b.logLevel != "" && !authFunc(rbac.ActionRead, rbac.ResourceDeploymentValues) {
 		return BuildError{
 			http.StatusBadRequest,
-			"Workspace builds with a custom log level are restricted to template authors only.",
-			xerrors.New(""),
+			"Workspace builds with a custom log level are restricted to administrators only.",
+			xerrors.New("Workspace builds with a custom log level are restricted to administrators only."),
+		}
+	}
+
+	if b.logLevel != "" && b.deploymentValues != nil && !b.deploymentValues.EnableTerraformDebugMode {
+		return BuildError{
+			http.StatusBadRequest,
+			"Terraform debug mode is disabled in the deployment configuration.",
+			xerrors.New("Terraform debug mode is disabled in the deployment configuration."),
 		}
 	}
 	return nil
@@ -686,22 +718,26 @@ func (b *Builder) checkTemplateJobStatus() error {
 	templateVersionJobStatus := db2sdk.ProvisionerJobStatus(*templateVersionJob)
 	switch templateVersionJobStatus {
 	case codersdk.ProvisionerJobPending, codersdk.ProvisionerJobRunning:
+		msg := fmt.Sprintf("The provided template version is %s. Wait for it to complete importing!", templateVersionJobStatus)
+
 		return BuildError{
 			http.StatusNotAcceptable,
-			fmt.Sprintf("The provided template version is %s. Wait for it to complete importing!", templateVersionJobStatus),
-			xerrors.New(""),
+			msg,
+			xerrors.New(msg),
 		}
 	case codersdk.ProvisionerJobFailed:
+		msg := fmt.Sprintf("The provided template version %q has failed to import: %q. You cannot build workspaces with it!", templateVersion.Name, templateVersionJob.Error.String)
 		return BuildError{
 			http.StatusBadRequest,
-			fmt.Sprintf("The provided template version %q has failed to import: %q. You cannot build workspaces with it!", templateVersion.Name, templateVersionJob.Error.String),
-			xerrors.New(""),
+			msg,
+			xerrors.New(msg),
 		}
 	case codersdk.ProvisionerJobCanceled:
+		msg := fmt.Sprintf("The provided template version %q has failed to import: %q. You cannot build workspaces with it!", templateVersion.Name, templateVersionJob.Error.String)
 		return BuildError{
 			http.StatusBadRequest,
-			"The provided template version was canceled during import. You cannot build workspaces with it!",
-			xerrors.New(""),
+			msg,
+			xerrors.New(msg),
 		}
 	}
 	return nil
@@ -717,10 +753,11 @@ func (b *Builder) checkRunningBuild() error {
 		return BuildError{http.StatusInternalServerError, "failed to fetch prior build", err}
 	}
 	if db2sdk.ProvisionerJobStatus(*job).Active() {
+		msg := "A workspace build is already active."
 		return BuildError{
 			http.StatusConflict,
-			"A workspace build is already active.",
-			xerrors.New(""),
+			msg,
+			xerrors.New(msg),
 		}
 	}
 	return nil

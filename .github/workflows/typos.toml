@@ -4,6 +4,7 @@ Jetbrains = "JetBrains"
 IST = "IST"
 MacOS = "macOS"
 AKS = "AKS"
+O_WRONLY = "O_WRONLY"
 
 [default.extend-words]
 AKS = "AKS"
@@ -16,13 +17,16 @@ encrypter = "encrypter"
 
 [files]
 extend-exclude = [
-    "**.svg",
-    "**.png",
-    "**.lock",
-    "go.sum",
-    "go.mod",
-    # These files contain base64 strings that confuse the detector
-    "**XService**.ts",
-    "**identity.go",
-    "scripts/ci-report/testdata/**",
+	"**.svg",
+	"**.png",
+	"**.lock",
+	"go.sum",
+	"go.mod",
+	# These files contain base64 strings that confuse the detector
+	"**XService**.ts",
+	"**identity.go",
+	"scripts/ci-report/testdata/**",
+	"**/*_test.go",
+	"**/*.test.tsx",
+	"**/pnpm-lock.yaml",
 ]

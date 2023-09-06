@@ -7,7 +7,8 @@ import (
 
 	"golang.org/x/exp/maps"
 
-	"github.com/coder/coder/coderd/rbac"
+	"github.com/coder/coder/v2/coderd/database/dbtime"
+	"github.com/coder/coder/v2/coderd/rbac"
 )
 
 type WorkspaceStatus string
@@ -84,7 +85,7 @@ func (g Group) Auditable(users []User) AuditableGroup {
 	}
 }
 
-const AllUsersGroup = "Everyone"
+const EveryoneGroup = "Everyone"
 
 func (s APIKeyScope) ToRBAC() rbac.ScopeName {
 	switch s {
@@ -145,6 +146,11 @@ func (w Workspace) RBACObject() rbac.Object {
 }
 
 func (w Workspace) ExecutionRBAC() rbac.Object {
+	// If a workspace is locked it cannot be accessed.
+	if w.DormantAt.Valid {
+		return w.DormantRBAC()
+	}
+
 	return rbac.ResourceWorkspaceExecution.
 		WithID(w.ID).
 		InOrg(w.OrganizationID).
@@ -152,7 +158,35 @@ func (w Workspace) ExecutionRBAC() rbac.Object {
 }
 
 func (w Workspace) ApplicationConnectRBAC() rbac.Object {
+	// If a workspace is locked it cannot be accessed.
+	if w.DormantAt.Valid {
+		return w.DormantRBAC()
+	}
+
 	return rbac.ResourceWorkspaceApplicationConnect.
+		WithID(w.ID).
+		InOrg(w.OrganizationID).
+		WithOwner(w.OwnerID.String())
+}
+
+func (w Workspace) WorkspaceBuildRBAC(transition WorkspaceTransition) rbac.Object {
+	// If a workspace is locked it cannot be built.
+	// However we need to allow stopping a workspace by a caller once a workspace
+	// is locked (e.g. for autobuild). Additionally, if a user wants to delete
+	// a locked workspace, they shouldn't have to have it unlocked first.
+	if w.DormantAt.Valid && transition != WorkspaceTransitionStop &&
+		transition != WorkspaceTransitionDelete {
+		return w.DormantRBAC()
+	}
+
+	return rbac.ResourceWorkspaceBuild.
+		WithID(w.ID).
+		InOrg(w.OrganizationID).
+		WithOwner(w.OwnerID.String())
+}
+
+func (w Workspace) DormantRBAC() rbac.Object {
+	return rbac.ResourceWorkspaceDormant.
 		WithID(w.ID).
 		InOrg(w.OrganizationID).
 		WithOwner(w.OwnerID.String())
@@ -161,14 +195,15 @@ func (w Workspace) ApplicationConnectRBAC() rbac.Object {
 func (m OrganizationMember) RBACObject() rbac.Object {
 	return rbac.ResourceOrganizationMember.
 		WithID(m.UserID).
-		InOrg(m.OrganizationID)
+		InOrg(m.OrganizationID).
+		WithOwner(m.UserID.String())
 }
 
 func (m GetOrganizationIDsByMemberIDsRow) RBACObject() rbac.Object {
 	// TODO: This feels incorrect as we are really returning a list of orgmembers.
 	// This return type should be refactored to return a list of orgmembers, not this
 	// special type.
-	return rbac.ResourceUser.WithID(m.UserID)
+	return rbac.ResourceUserObject(m.UserID)
 }
 
 func (o Organization) RBACObject() rbac.Object {
@@ -200,7 +235,7 @@ func (f File) RBACObject() rbac.Object {
 // If you are trying to get the RBAC object for the UserData, use
 // u.UserDataRBACObject() instead.
 func (u User) RBACObject() rbac.Object {
-	return rbac.ResourceUser.WithID(u.ID)
+	return rbac.ResourceUserObject(u.ID)
 }
 
 func (u User) UserDataRBACObject() rbac.Object {
@@ -208,7 +243,7 @@ func (u User) UserDataRBACObject() rbac.Object {
 }
 
 func (u GetUsersRow) RBACObject() rbac.Object {
-	return rbac.ResourceUser.WithID(u.ID)
+	return rbac.ResourceUserObject(u.ID)
 }
 
 func (u GitSSHKey) RBACObject() rbac.Object {
@@ -255,7 +290,7 @@ func (a WorkspaceAgent) Status(inactiveTimeout time.Duration) WorkspaceAgentConn
 	switch {
 	case !a.FirstConnectedAt.Valid:
 		switch {
-		case connectionTimeout > 0 && Now().Sub(a.CreatedAt) > connectionTimeout:
+		case connectionTimeout > 0 && dbtime.Now().Sub(a.CreatedAt) > connectionTimeout:
 			// If the agent took too long to connect the first time,
 			// mark it as timed out.
 			status.Status = WorkspaceAgentStatusTimeout
@@ -270,7 +305,7 @@ func (a WorkspaceAgent) Status(inactiveTimeout time.Duration) WorkspaceAgentConn
 		// If we've disconnected after our last connection, we know the
 		// agent is no longer connected.
 		status.Status = WorkspaceAgentStatusDisconnected
-	case Now().Sub(a.LastConnectedAt.Time) > inactiveTimeout:
+	case dbtime.Now().Sub(a.LastConnectedAt.Time) > inactiveTimeout:
 		// The connection died without updating the last connected.
 		status.Status = WorkspaceAgentStatusDisconnected
 		// Client code needs an accurate disconnected at if the agent has been inactive.
@@ -321,8 +356,14 @@ func ConvertWorkspaceRows(rows []GetWorkspacesRow) []Workspace {
 			AutostartSchedule: r.AutostartSchedule,
 			Ttl:               r.Ttl,
 			LastUsedAt:        r.LastUsedAt,
+			DormantAt:         r.DormantAt,
+			DeletingAt:        r.DeletingAt,
 		}
 	}
 
 	return workspaces
+}
+
+func (g Group) IsEveryone() bool {
+	return g.ID == g.OrganizationID
 }

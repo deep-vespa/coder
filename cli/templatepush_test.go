@@ -6,18 +6,21 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/coder/coder/cli/clitest"
-	"github.com/coder/coder/coderd/coderdtest"
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/codersdk"
-	"github.com/coder/coder/provisioner/echo"
-	"github.com/coder/coder/provisionersdk/proto"
-	"github.com/coder/coder/pty/ptytest"
+	"github.com/coder/coder/v2/cli/clitest"
+	"github.com/coder/coder/v2/coderd/coderdtest"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/provisioner/echo"
+	"github.com/coder/coder/v2/provisionersdk/proto"
+	"github.com/coder/coder/v2/pty/ptytest"
+	"github.com/coder/coder/v2/testutil"
 )
 
 func TestTemplatePush(t *testing.T) {
@@ -35,7 +38,7 @@ func TestTemplatePush(t *testing.T) {
 		// Test the cli command.
 		source := clitest.CreateTemplateVersionSource(t, &echo.Responses{
 			Parse:          echo.ParseComplete,
-			ProvisionApply: echo.ProvisionComplete,
+			ProvisionApply: echo.ApplyComplete,
 		})
 		inv, root := clitest.New(t, "templates", "push", template.Name, "--directory", source, "--test.provisioner", string(database.ProvisionerTypeEcho), "--name", "example")
 		clitest.SetupConfig(t, client, root)
@@ -69,6 +72,170 @@ func TestTemplatePush(t *testing.T) {
 		require.Equal(t, "example", templateVersions[1].Name)
 	})
 
+	t.Run("Message less than or equal to 72 chars", func(t *testing.T) {
+		t.Parallel()
+		client := coderdtest.New(t, &coderdtest.Options{IncludeProvisionerDaemon: true})
+		user := coderdtest.CreateFirstUser(t, client)
+		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, nil)
+		_ = coderdtest.AwaitTemplateVersionJob(t, client, version.ID)
+
+		template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
+		source := clitest.CreateTemplateVersionSource(t, &echo.Responses{
+			Parse:          echo.ParseComplete,
+			ProvisionApply: echo.ApplyComplete,
+		})
+
+		wantMessage := strings.Repeat("a", 72)
+
+		inv, root := clitest.New(t, "templates", "push", template.Name, "--directory", source, "--test.provisioner", string(database.ProvisionerTypeEcho), "--name", "example", "--message", wantMessage, "--yes")
+		clitest.SetupConfig(t, client, root)
+		pty := ptytest.New(t).Attach(inv)
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitMedium)
+		defer cancel()
+
+		inv = inv.WithContext(ctx)
+		w := clitest.StartWithWaiter(t, inv)
+
+		pty.ExpectNoMatchBefore(ctx, "Template message is longer than 72 characters", "Updated version at")
+
+		w.RequireSuccess()
+
+		// Assert that the template version changed.
+		templateVersions, err := client.TemplateVersionsByTemplate(ctx, codersdk.TemplateVersionsByTemplateRequest{
+			TemplateID: template.ID,
+		})
+		require.NoError(t, err)
+		assert.Len(t, templateVersions, 2)
+		assert.NotEqual(t, template.ActiveVersionID, templateVersions[1].ID)
+		require.Equal(t, wantMessage, templateVersions[1].Message)
+	})
+
+	t.Run("Message too long, warn but continue", func(t *testing.T) {
+		t.Parallel()
+		client := coderdtest.New(t, &coderdtest.Options{IncludeProvisionerDaemon: true})
+		user := coderdtest.CreateFirstUser(t, client)
+		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, nil)
+		_ = coderdtest.AwaitTemplateVersionJob(t, client, version.ID)
+
+		template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
+		source := clitest.CreateTemplateVersionSource(t, &echo.Responses{
+			Parse:          echo.ParseComplete,
+			ProvisionApply: echo.ApplyComplete,
+		})
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
+		defer cancel()
+
+		for i, tt := range []struct {
+			wantMessage string
+			wantMatch   string
+		}{
+			{wantMessage: strings.Repeat("a", 73), wantMatch: "Template message is longer than 72 characters"},
+			{wantMessage: "This is my title\n\nAnd this is my body.", wantMatch: "Template message contains newlines"},
+		} {
+			inv, root := clitest.New(t, "templates", "push", template.Name, "--directory", source, "--test.provisioner", string(database.ProvisionerTypeEcho), "--message", tt.wantMessage, "--yes")
+			clitest.SetupConfig(t, client, root)
+			pty := ptytest.New(t).Attach(inv)
+
+			inv = inv.WithContext(ctx)
+			w := clitest.StartWithWaiter(t, inv)
+
+			pty.ExpectMatchContext(ctx, tt.wantMatch)
+
+			w.RequireSuccess()
+
+			// Assert that the template version changed.
+			templateVersions, err := client.TemplateVersionsByTemplate(ctx, codersdk.TemplateVersionsByTemplateRequest{
+				TemplateID: template.ID,
+			})
+			require.NoError(t, err)
+			assert.Len(t, templateVersions, 2+i)
+			assert.NotEqual(t, template.ActiveVersionID, templateVersions[1+i].ID)
+			require.Equal(t, tt.wantMessage, templateVersions[1+i].Message)
+		}
+	})
+
+	t.Run("NoLockfile", func(t *testing.T) {
+		t.Parallel()
+		client := coderdtest.New(t, &coderdtest.Options{IncludeProvisionerDaemon: true})
+		user := coderdtest.CreateFirstUser(t, client)
+		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, nil)
+		_ = coderdtest.AwaitTemplateVersionJob(t, client, version.ID)
+
+		template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
+
+		// Test the cli command.
+		source := clitest.CreateTemplateVersionSource(t, &echo.Responses{
+			Parse:          echo.ParseComplete,
+			ProvisionApply: echo.ApplyComplete,
+		})
+		require.NoError(t, os.Remove(filepath.Join(source, ".terraform.lock.hcl")))
+
+		inv, root := clitest.New(t, "templates", "push", template.Name, "--directory", source, "--test.provisioner", string(database.ProvisionerTypeEcho), "--name", "example")
+		clitest.SetupConfig(t, client, root)
+		pty := ptytest.New(t).Attach(inv)
+
+		execDone := make(chan error)
+		go func() {
+			execDone <- inv.Run()
+		}()
+
+		matches := []struct {
+			match string
+			write string
+		}{
+			{match: "No .terraform.lock.hcl file found"},
+			{match: "Upload", write: "no"},
+		}
+		for _, m := range matches {
+			pty.ExpectMatch(m.match)
+			if m.write != "" {
+				pty.WriteLine(m.write)
+			}
+		}
+
+		// cmd should error once we say no.
+		require.Error(t, <-execDone)
+	})
+
+	t.Run("NoLockfileIgnored", func(t *testing.T) {
+		t.Parallel()
+		client := coderdtest.New(t, &coderdtest.Options{IncludeProvisionerDaemon: true})
+		user := coderdtest.CreateFirstUser(t, client)
+		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, nil)
+		_ = coderdtest.AwaitTemplateVersionJob(t, client, version.ID)
+
+		template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
+
+		// Test the cli command.
+		source := clitest.CreateTemplateVersionSource(t, &echo.Responses{
+			Parse:          echo.ParseComplete,
+			ProvisionApply: echo.ApplyComplete,
+		})
+		require.NoError(t, os.Remove(filepath.Join(source, ".terraform.lock.hcl")))
+
+		inv, root := clitest.New(t, "templates", "push", template.Name, "--directory", source, "--test.provisioner", string(database.ProvisionerTypeEcho), "--name", "example", "--ignore-lockfile")
+		clitest.SetupConfig(t, client, root)
+		pty := ptytest.New(t).Attach(inv)
+
+		execDone := make(chan error)
+		go func() {
+			execDone <- inv.Run()
+		}()
+
+		{
+			ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitMedium)
+			defer cancel()
+
+			pty.ExpectNoMatchBefore(ctx, "No .terraform.lock.hcl file found", "Upload")
+			pty.WriteLine("no")
+		}
+
+		// cmd should error once we say no.
+		require.Error(t, <-execDone)
+	})
+
 	t.Run("PushInactiveTemplateVersion", func(t *testing.T) {
 		t.Parallel()
 		client := coderdtest.New(t, &coderdtest.Options{IncludeProvisionerDaemon: true})
@@ -81,7 +248,7 @@ func TestTemplatePush(t *testing.T) {
 		// Test the cli command.
 		source := clitest.CreateTemplateVersionSource(t, &echo.Responses{
 			Parse:          echo.ParseComplete,
-			ProvisionApply: echo.ProvisionComplete,
+			ProvisionApply: echo.ApplyComplete,
 		})
 		inv, root := clitest.New(t, "templates", "push", template.Name, "--activate=false", "--directory", source, "--test.provisioner", string(database.ProvisionerTypeEcho), "--name", "example")
 		clitest.SetupConfig(t, client, root)
@@ -126,7 +293,7 @@ func TestTemplatePush(t *testing.T) {
 		// Test the cli command.
 		source := clitest.CreateTemplateVersionSource(t, &echo.Responses{
 			Parse:          echo.ParseComplete,
-			ProvisionApply: echo.ProvisionComplete,
+			ProvisionApply: echo.ApplyComplete,
 		})
 
 		template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID,
@@ -173,7 +340,7 @@ func TestTemplatePush(t *testing.T) {
 
 		source, err := echo.Tar(&echo.Responses{
 			Parse:          echo.ParseComplete,
-			ProvisionApply: echo.ProvisionComplete,
+			ProvisionApply: echo.ApplyComplete,
 		})
 		require.NoError(t, err)
 
@@ -447,21 +614,64 @@ func TestTemplatePush(t *testing.T) {
 			require.Equal(t, "second_variable", templateVariables[1].Name)
 			require.Equal(t, "foobar", templateVariables[1].Value)
 		})
+
+		t.Run("CreateTemplate", func(t *testing.T) {
+			t.Parallel()
+			client := coderdtest.New(t, &coderdtest.Options{IncludeProvisionerDaemon: true})
+			user := coderdtest.CreateFirstUser(t, client)
+			source := clitest.CreateTemplateVersionSource(t, completeWithAgent())
+
+			const templateName = "my-template"
+			args := []string{
+				"templates",
+				"push",
+				templateName,
+				"--directory", source,
+				"--test.provisioner", string(database.ProvisionerTypeEcho),
+				"--create",
+			}
+			inv, root := clitest.New(t, args...)
+			clitest.SetupConfig(t, client, root)
+			pty := ptytest.New(t).Attach(inv)
+
+			waiter := clitest.StartWithWaiter(t, inv)
+
+			matches := []struct {
+				match string
+				write string
+			}{
+				{match: "Upload", write: "yes"},
+				{match: "template has been created"},
+			}
+			for _, m := range matches {
+				pty.ExpectMatch(m.match)
+				if m.write != "" {
+					pty.WriteLine(m.write)
+				}
+			}
+
+			waiter.RequireSuccess()
+
+			template, err := client.TemplateByName(context.Background(), user.OrganizationID, templateName)
+			require.NoError(t, err)
+			require.Equal(t, templateName, template.Name)
+			require.NotEqual(t, uuid.Nil, template.ActiveVersionID)
+		})
 	})
 }
 
 func createEchoResponsesWithTemplateVariables(templateVariables []*proto.TemplateVariable) *echo.Responses {
 	return &echo.Responses{
-		Parse: []*proto.Parse_Response{
+		Parse: []*proto.Response{
 			{
-				Type: &proto.Parse_Response_Complete{
-					Complete: &proto.Parse_Complete{
+				Type: &proto.Response_Parse{
+					Parse: &proto.ParseComplete{
 						TemplateVariables: templateVariables,
 					},
 				},
 			},
 		},
-		ProvisionPlan:  echo.ProvisionComplete,
-		ProvisionApply: echo.ProvisionComplete,
+		ProvisionPlan:  echo.PlanComplete,
+		ProvisionApply: echo.ApplyComplete,
 	}
 }

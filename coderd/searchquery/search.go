@@ -10,10 +10,10 @@ import (
 
 	"golang.org/x/xerrors"
 
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/coderd/httpapi"
-	"github.com/coder/coder/coderd/util/ptr"
-	"github.com/coder/coder/codersdk"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/httpapi"
+	"github.com/coder/coder/v2/coderd/util/ptr"
+	"github.com/coder/coder/v2/codersdk"
 )
 
 func AuditLogs(query string) (database.GetAuditLogsOffsetParams, []codersdk.ValidationError) {
@@ -30,14 +30,15 @@ func AuditLogs(query string) (database.GetAuditLogsOffsetParams, []codersdk.Vali
 	const dateLayout = "2006-01-02"
 	parser := httpapi.NewQueryParamParser()
 	filter := database.GetAuditLogsOffsetParams{
-		ResourceID:   parser.UUID(values, uuid.Nil, "resource_id"),
-		Username:     parser.String(values, "", "username"),
-		Email:        parser.String(values, "", "email"),
-		DateFrom:     parser.Time(values, time.Time{}, "date_from", dateLayout),
-		DateTo:       parser.Time(values, time.Time{}, "date_to", dateLayout),
-		ResourceType: string(httpapi.ParseCustom(parser, values, "", "resource_type", httpapi.ParseEnum[database.ResourceType])),
-		Action:       string(httpapi.ParseCustom(parser, values, "", "action", httpapi.ParseEnum[database.AuditAction])),
-		BuildReason:  string(httpapi.ParseCustom(parser, values, "", "build_reason", httpapi.ParseEnum[database.BuildReason])),
+		ResourceID:     parser.UUID(values, uuid.Nil, "resource_id"),
+		ResourceTarget: parser.String(values, "", "resource_target"),
+		Username:       parser.String(values, "", "username"),
+		Email:          parser.String(values, "", "email"),
+		DateFrom:       parser.Time(values, time.Time{}, "date_from", dateLayout),
+		DateTo:         parser.Time(values, time.Time{}, "date_to", dateLayout),
+		ResourceType:   string(httpapi.ParseCustom(parser, values, "", "resource_type", httpapi.ParseEnum[database.ResourceType])),
+		Action:         string(httpapi.ParseCustom(parser, values, "", "action", httpapi.ParseEnum[database.AuditAction])),
+		BuildReason:    string(httpapi.ParseCustom(parser, values, "", "build_reason", httpapi.ParseEnum[database.BuildReason])),
 	}
 	if !filter.DateTo.IsZero() {
 		filter.DateTo = filter.DateTo.Add(23*time.Hour + 59*time.Minute + 59*time.Second)
@@ -59,9 +60,11 @@ func Users(query string) (database.GetUsersParams, []codersdk.ValidationError) {
 
 	parser := httpapi.NewQueryParamParser()
 	filter := database.GetUsersParams{
-		Search:   parser.String(values, "", "search"),
-		Status:   httpapi.ParseCustomList(parser, values, []database.UserStatus{}, "status", httpapi.ParseEnum[database.UserStatus]),
-		RbacRole: parser.Strings(values, []string{}, "role"),
+		Search:         parser.String(values, "", "search"),
+		Status:         httpapi.ParseCustomList(parser, values, []database.UserStatus{}, "status", httpapi.ParseEnum[database.UserStatus]),
+		RbacRole:       parser.Strings(values, []string{}, "role"),
+		LastSeenAfter:  parser.Time3339Nano(values, time.Time{}, "last_seen_after"),
+		LastSeenBefore: parser.Time3339Nano(values, time.Time{}, "last_seen_before"),
 	}
 	parser.ErrorExcessParams(values)
 	return filter, parser.Errors
@@ -111,9 +114,17 @@ func Workspaces(query string, page codersdk.Pagination, agentInactiveDisconnectT
 	filter.Name = parser.String(values, "", "name")
 	filter.Status = string(httpapi.ParseCustom(parser, values, "", "status", httpapi.ParseEnum[database.WorkspaceStatus]))
 	filter.HasAgent = parser.String(values, "", "has-agent")
+	filter.DormantAt = parser.Time(values, time.Time{}, "dormant_at", "2006-01-02")
+	filter.LastUsedAfter = parser.Time3339Nano(values, time.Time{}, "last_used_after")
+	filter.LastUsedBefore = parser.Time3339Nano(values, time.Time{}, "last_used_before")
 
 	if _, ok := values["deleting_by"]; ok {
 		postFilter.DeletingBy = ptr.Ref(parser.Time(values, time.Time{}, "deleting_by", "2006-01-02"))
+		// We want to make sure to grab dormant workspaces since they
+		// are omitted by default.
+		if filter.DormantAt.IsZero() {
+			filter.DormantAt = time.Date(1970, time.January, 1, 0, 0, 0, 0, time.UTC)
+		}
 	}
 
 	parser.ErrorExcessParams(values)

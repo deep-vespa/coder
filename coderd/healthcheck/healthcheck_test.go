@@ -6,25 +6,31 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/coder/coder/coderd/healthcheck"
+	"github.com/coder/coder/v2/coderd/healthcheck"
+	"github.com/coder/coder/v2/coderd/healthcheck/derphealth"
 )
 
 type testChecker struct {
-	DERPReport      healthcheck.DERPReport
+	DERPReport      derphealth.Report
 	AccessURLReport healthcheck.AccessURLReport
 	WebsocketReport healthcheck.WebsocketReport
+	DatabaseReport  healthcheck.DatabaseReport
 }
 
-func (c *testChecker) DERP(context.Context, *healthcheck.DERPReportOptions) healthcheck.DERPReport {
+func (c *testChecker) DERP(context.Context, *derphealth.ReportOptions) derphealth.Report {
 	return c.DERPReport
 }
 
-func (c *testChecker) AccessURL(context.Context, *healthcheck.AccessURLOptions) healthcheck.AccessURLReport {
+func (c *testChecker) AccessURL(context.Context, *healthcheck.AccessURLReportOptions) healthcheck.AccessURLReport {
 	return c.AccessURLReport
 }
 
 func (c *testChecker) Websocket(context.Context, *healthcheck.WebsocketReportOptions) healthcheck.WebsocketReport {
 	return c.WebsocketReport
+}
+
+func (c *testChecker) Database(context.Context, *healthcheck.DatabaseReportOptions) healthcheck.DatabaseReport {
+	return c.DatabaseReport
 }
 
 func TestHealthcheck(t *testing.T) {
@@ -38,13 +44,16 @@ func TestHealthcheck(t *testing.T) {
 	}{{
 		name: "OK",
 		checker: &testChecker{
-			DERPReport: healthcheck.DERPReport{
+			DERPReport: derphealth.Report{
 				Healthy: true,
 			},
 			AccessURLReport: healthcheck.AccessURLReport{
 				Healthy: true,
 			},
 			WebsocketReport: healthcheck.WebsocketReport{
+				Healthy: true,
+			},
+			DatabaseReport: healthcheck.DatabaseReport{
 				Healthy: true,
 			},
 		},
@@ -53,13 +62,16 @@ func TestHealthcheck(t *testing.T) {
 	}, {
 		name: "DERPFail",
 		checker: &testChecker{
-			DERPReport: healthcheck.DERPReport{
+			DERPReport: derphealth.Report{
 				Healthy: false,
 			},
 			AccessURLReport: healthcheck.AccessURLReport{
 				Healthy: true,
 			},
 			WebsocketReport: healthcheck.WebsocketReport{
+				Healthy: true,
+			},
+			DatabaseReport: healthcheck.DatabaseReport{
 				Healthy: true,
 			},
 		},
@@ -68,13 +80,16 @@ func TestHealthcheck(t *testing.T) {
 	}, {
 		name: "AccessURLFail",
 		checker: &testChecker{
-			DERPReport: healthcheck.DERPReport{
+			DERPReport: derphealth.Report{
 				Healthy: true,
 			},
 			AccessURLReport: healthcheck.AccessURLReport{
 				Healthy: false,
 			},
 			WebsocketReport: healthcheck.WebsocketReport{
+				Healthy: true,
+			},
+			DatabaseReport: healthcheck.DatabaseReport{
 				Healthy: true,
 			},
 		},
@@ -83,7 +98,7 @@ func TestHealthcheck(t *testing.T) {
 	}, {
 		name: "WebsocketFail",
 		checker: &testChecker{
-			DERPReport: healthcheck.DERPReport{
+			DERPReport: derphealth.Report{
 				Healthy: true,
 			},
 			AccessURLReport: healthcheck.AccessURLReport{
@@ -92,14 +107,40 @@ func TestHealthcheck(t *testing.T) {
 			WebsocketReport: healthcheck.WebsocketReport{
 				Healthy: false,
 			},
+			DatabaseReport: healthcheck.DatabaseReport{
+				Healthy: true,
+			},
 		},
 		healthy:         false,
 		failingSections: []string{healthcheck.SectionWebsocket},
 	}, {
-		name:            "AllFail",
-		checker:         &testChecker{},
+		name: "DatabaseFail",
+		checker: &testChecker{
+			DERPReport: derphealth.Report{
+				Healthy: true,
+			},
+			AccessURLReport: healthcheck.AccessURLReport{
+				Healthy: true,
+			},
+			WebsocketReport: healthcheck.WebsocketReport{
+				Healthy: true,
+			},
+			DatabaseReport: healthcheck.DatabaseReport{
+				Healthy: false,
+			},
+		},
 		healthy:         false,
-		failingSections: []string{healthcheck.SectionDERP, healthcheck.SectionAccessURL, healthcheck.SectionWebsocket},
+		failingSections: []string{healthcheck.SectionDatabase},
+	}, {
+		name:    "AllFail",
+		checker: &testChecker{},
+		healthy: false,
+		failingSections: []string{
+			healthcheck.SectionDERP,
+			healthcheck.SectionAccessURL,
+			healthcheck.SectionWebsocket,
+			healthcheck.SectionDatabase,
+		},
 	}} {
 		c := c
 		t.Run(c.name, func(t *testing.T) {
@@ -115,6 +156,7 @@ func TestHealthcheck(t *testing.T) {
 			assert.Equal(t, c.checker.AccessURLReport.Healthy, report.AccessURL.Healthy)
 			assert.Equal(t, c.checker.WebsocketReport.Healthy, report.Websocket.Healthy)
 			assert.NotZero(t, report.Time)
+			assert.NotZero(t, report.CoderVersion)
 		})
 	}
 }

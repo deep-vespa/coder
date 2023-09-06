@@ -6,7 +6,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/netip"
 	"net/url"
 	"strconv"
 	"time"
@@ -16,10 +15,10 @@ import (
 
 	"cdr.dev/slog"
 	"cdr.dev/slog/sloggers/sloghuman"
-	"github.com/coder/coder/coderd/tracing"
-	"github.com/coder/coder/codersdk"
-	"github.com/coder/coder/scaletest/harness"
-	"github.com/coder/coder/scaletest/loadtestutil"
+	"github.com/coder/coder/v2/coderd/tracing"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/scaletest/harness"
+	"github.com/coder/coder/v2/scaletest/loadtestutil"
 )
 
 const defaultRequestTimeout = 5 * time.Second
@@ -52,8 +51,8 @@ func (r *Runner) Run(ctx context.Context, _ string, w io.Writer) error {
 	logs := loadtestutil.NewSyncWriter(w)
 	defer logs.Close()
 	logger := slog.Make(sloghuman.Sink(logs)).Leveled(slog.LevelDebug)
-	r.client.Logger = logger
-	r.client.LogBodies = true
+	r.client.SetLogger(logger)
+	r.client.SetLogBodies(true)
 
 	_, _ = fmt.Fprintln(logs, "Opening connection to workspace agent")
 	switch r.cfg.ConnectionMode {
@@ -377,7 +376,10 @@ func agentHTTPClient(conn *codersdk.WorkspaceAgentConn) *http.Client {
 				if err != nil {
 					return nil, xerrors.Errorf("parse port %q: %w", port, err)
 				}
-				return conn.DialContextTCP(ctx, netip.AddrPortFrom(codersdk.WorkspaceAgentIP, uint16(portUint)))
+
+				// Addr doesn't matter here, besides the port. DialContext will
+				// automatically choose the right IP to dial.
+				return conn.DialContext(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", portUint))
 			},
 		},
 	}

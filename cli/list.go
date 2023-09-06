@@ -2,15 +2,16 @@ package cli
 
 import (
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
 
-	"github.com/coder/coder/cli/clibase"
-	"github.com/coder/coder/cli/cliui"
-	"github.com/coder/coder/coderd/schedule"
-	"github.com/coder/coder/coderd/util/ptr"
-	"github.com/coder/coder/codersdk"
+	"github.com/coder/coder/v2/cli/clibase"
+	"github.com/coder/coder/v2/cli/cliui"
+	"github.com/coder/coder/v2/coderd/schedule/cron"
+	"github.com/coder/coder/v2/coderd/util/ptr"
+	"github.com/coder/coder/v2/codersdk"
 )
 
 // workspaceListRow is the type provided to the OutputFormatter. This is a bit
@@ -24,10 +25,12 @@ type workspaceListRow struct {
 	WorkspaceName string `json:"-" table:"workspace,default_sort"`
 	Template      string `json:"-" table:"template"`
 	Status        string `json:"-" table:"status"`
+	Healthy       string `json:"-" table:"healthy"`
 	LastBuilt     string `json:"-" table:"last built"`
 	Outdated      bool   `json:"-" table:"outdated"`
 	StartsAt      string `json:"-" table:"starts at"`
 	StopsAfter    string `json:"-" table:"stops after"`
+	DailyCost     string `json:"-" table:"daily cost"`
 }
 
 func workspaceListRowFromWorkspace(now time.Time, usersByID map[uuid.UUID]codersdk.User, workspace codersdk.Workspace) workspaceListRow {
@@ -36,7 +39,7 @@ func workspaceListRowFromWorkspace(now time.Time, usersByID map[uuid.UUID]coders
 	lastBuilt := now.UTC().Sub(workspace.LatestBuild.Job.CreatedAt).Truncate(time.Second)
 	autostartDisplay := "-"
 	if !ptr.NilOrEmpty(workspace.AutostartSchedule) {
-		if sched, err := schedule.Weekly(*workspace.AutostartSchedule); err == nil {
+		if sched, err := cron.Weekly(*workspace.AutostartSchedule); err == nil {
 			autostartDisplay = fmt.Sprintf("%s %s (%s)", sched.Time(), sched.DaysOfWeek(), sched.Location())
 		}
 	}
@@ -51,16 +54,22 @@ func workspaceListRowFromWorkspace(now time.Time, usersByID map[uuid.UUID]coders
 		}
 	}
 
+	healthy := ""
+	if status == "Starting" || status == "Started" {
+		healthy = strconv.FormatBool(workspace.Health.Healthy)
+	}
 	user := usersByID[workspace.OwnerID]
 	return workspaceListRow{
 		Workspace:     workspace,
 		WorkspaceName: user.Username + "/" + workspace.Name,
 		Template:      workspace.TemplateName,
 		Status:        status,
+		Healthy:       healthy,
 		LastBuilt:     durationDisplay(lastBuilt),
 		Outdated:      workspace.Outdated,
 		StartsAt:      autostartDisplay,
 		StopsAfter:    autostopDisplay,
+		DailyCost:     strconv.Itoa(int(workspace.LatestBuild.DailyCost)),
 	}
 }
 
@@ -71,7 +80,19 @@ func (r *RootCmd) list() *clibase.Cmd {
 		searchQuery       string
 		displayWorkspaces []workspaceListRow
 		formatter         = cliui.NewOutputFormatter(
-			cliui.TableFormat([]workspaceListRow{}, nil),
+			cliui.TableFormat(
+				[]workspaceListRow{},
+				[]string{
+					"workspace",
+					"template",
+					"status",
+					"healthy",
+					"last built",
+					"outdated",
+					"starts at",
+					"stops after",
+				},
+			),
 			cliui.JSONFormat(),
 		)
 	)

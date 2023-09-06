@@ -75,7 +75,11 @@ WHERE
 
 -- name: GetWorkspaces :many
 SELECT
-	workspaces.*, COUNT(*) OVER () as count
+	workspaces.*,
+	COALESCE(template_name.template_name, 'unknown') as template_name,
+	latest_build.template_version_id,
+	latest_build.template_version_name,
+	COUNT(*) OVER () as count
 FROM
     workspaces
 JOIN
@@ -85,6 +89,8 @@ ON
 LEFT JOIN LATERAL (
 	SELECT
 		workspace_builds.transition,
+		workspace_builds.template_version_id,
+		template_versions.name AS template_version_name,
 		provisioner_jobs.id AS provisioner_job_id,
 		provisioner_jobs.started_at,
 		provisioner_jobs.updated_at,
@@ -97,6 +103,10 @@ LEFT JOIN LATERAL (
 		provisioner_jobs
 	ON
 		provisioner_jobs.id = workspace_builds.job_id
+	LEFT JOIN
+		template_versions
+	ON
+		template_versions.id = workspace_builds.template_version_id
 	WHERE
 		workspace_builds.workspace_id = workspaces.id
 	ORDER BY
@@ -104,6 +114,14 @@ LEFT JOIN LATERAL (
 	LIMIT
 		1
 ) latest_build ON TRUE
+LEFT JOIN LATERAL (
+	SELECT
+		templates.name AS template_name
+	FROM
+		templates
+	WHERE
+		templates.id = workspaces.template_id
+) template_name ON true
 WHERE
 	-- Optionally include deleted workspaces
 	workspaces.deleted = @deleted
@@ -175,13 +193,13 @@ WHERE
 	-- Filter by owner_id
 	AND CASE
 		WHEN @owner_id :: uuid != '00000000-0000-0000-0000-000000000000'::uuid THEN
-			owner_id = @owner_id
+			workspaces.owner_id = @owner_id
 		ELSE true
 	END
 	-- Filter by owner_name
 	AND CASE
 		WHEN @owner_username :: text != '' THEN
-			owner_id = (SELECT id FROM users WHERE lower(username) = lower(@owner_username) AND deleted = false)
+			workspaces.owner_id = (SELECT id FROM users WHERE lower(username) = lower(@owner_username) AND deleted = false)
 		ELSE true
 	END
 	-- Filter by template_name
@@ -189,19 +207,19 @@ WHERE
 	-- Use the organization filter to restrict to 1 org if needed.
 	AND CASE
 		WHEN @template_name :: text != '' THEN
-			template_id = ANY(SELECT id FROM templates WHERE lower(name) = lower(@template_name) AND deleted = false)
+			workspaces.template_id = ANY(SELECT id FROM templates WHERE lower(name) = lower(@template_name) AND deleted = false)
 		ELSE true
 	END
 	-- Filter by template_ids
 	AND CASE
 		WHEN array_length(@template_ids :: uuid[], 1) > 0 THEN
-			template_id = ANY(@template_ids)
+			workspaces.template_id = ANY(@template_ids)
 		ELSE true
 	END
 	-- Filter by name, matching on substring
 	AND CASE
 		WHEN @name :: text != '' THEN
-			name ILIKE '%' || @name || '%'
+			workspaces.name ILIKE '%' || @name || '%'
 		ELSE true
 	END
 	-- Filter by agent status
@@ -241,6 +259,25 @@ WHERE
 			) > 0
 		ELSE true
 	END
+	-- Filter by dormant workspaces. By default we do not return dormant
+	-- workspaces since they are considered soft-deleted.
+	AND CASE
+		WHEN @dormant_at :: timestamptz > '0001-01-01 00:00:00+00'::timestamptz THEN
+			dormant_at IS NOT NULL AND dormant_at >= @dormant_at
+		ELSE
+			dormant_at IS NULL
+	END
+	-- Filter by last_used
+	AND CASE
+		  WHEN @last_used_before :: timestamp with time zone > '0001-01-01 00:00:00Z' THEN
+				  workspaces.last_used_at <= @last_used_before
+		  ELSE true
+	END
+	AND CASE
+		  WHEN @last_used_after :: timestamp with time zone > '0001-01-01 00:00:00Z' THEN
+				  workspaces.last_used_at >= @last_used_after
+		  ELSE true
+	END
 	-- Authorize Filter clause will be injected below in GetAuthorizedWorkspaces
 	-- @authorize_filter
 ORDER BY
@@ -249,7 +286,7 @@ ORDER BY
 		latest_build.error IS NULL AND
 		latest_build.transition = 'start'::workspace_transition) DESC,
 	LOWER(users.username) ASC,
-	LOWER(name) ASC
+	LOWER(workspaces.name) ASC
 LIMIT
 	CASE
 		WHEN @limit_ :: integer > 0 THEN
@@ -329,20 +366,6 @@ SET
 WHERE
 	id = $1;
 
--- name: UpdateWorkspaceTTLToBeWithinTemplateMax :exec
-UPDATE
-	workspaces
-SET
-	ttl = LEAST(ttl, @template_max_ttl::bigint)
-WHERE
-	template_id = @template_id
-	-- LEAST() does not pick NULL, so filter it out as we don't want to set a
-	-- TTL on the workspace if it's unset.
-	--
-	-- During build time, the template max TTL will still be used if the
-	-- workspace TTL is NULL.
-	AND ttl IS NOT NULL;
-
 -- name: GetDeploymentWorkspaceStats :one
 WITH workspaces_with_jobs AS (
 	SELECT
@@ -405,13 +428,17 @@ SELECT
 	stopped_workspaces.count AS stopped_workspaces
 FROM pending_workspaces, building_workspaces, running_workspaces, failed_workspaces, stopped_workspaces;
 
--- name: GetWorkspacesEligibleForAutoStartStop :many
+-- name: GetWorkspacesEligibleForTransition :many
 SELECT
 	workspaces.*
 FROM
 	workspaces
 LEFT JOIN
 	workspace_builds ON workspace_builds.workspace_id = workspaces.id
+INNER JOIN
+	provisioner_jobs ON workspace_builds.job_id = provisioner_jobs.id
+INNER JOIN
+	templates ON workspaces.template_id = templates.id
 WHERE
 	workspace_builds.build_number = (
 		SELECT
@@ -441,5 +468,67 @@ WHERE
 		(
 			workspace_builds.transition = 'stop'::workspace_transition AND
 			workspaces.autostart_schedule IS NOT NULL
+		) OR
+
+		-- If the workspace's most recent job resulted in an error
+		-- it may be eligible for failed stop.
+		(
+			provisioner_jobs.error IS NOT NULL AND
+			provisioner_jobs.error != '' AND
+			workspace_builds.transition = 'start'::workspace_transition
+		) OR
+
+		-- If the workspace's template has an inactivity_ttl set
+		-- it may be eligible for dormancy.
+		(
+			templates.time_til_dormant > 0 AND
+			workspaces.dormant_at IS NULL
+		) OR
+
+		-- If the workspace's template has a time_til_dormant_autodelete set
+		-- and the workspace is already dormant.
+		(
+			templates.time_til_dormant_autodelete > 0 AND
+			workspaces.dormant_at IS NOT NULL
 		)
-	);
+	) AND workspaces.deleted = 'false';
+
+-- name: UpdateWorkspaceDormantDeletingAt :one
+UPDATE
+	workspaces
+SET
+	dormant_at = $2,
+	-- When a workspace is active we want to update the last_used_at to avoid the workspace going
+    -- immediately dormant. If we're transition the workspace to dormant then we leave it alone.
+	last_used_at = CASE WHEN $2::timestamptz IS NULL THEN now() at time zone 'utc' ELSE last_used_at END,
+	-- If dormant_at is null (meaning active) or the template-defined time_til_dormant_autodelete is 0 we should set
+	-- deleting_at to NULL else set it to the dormant_at + time_til_dormant_autodelete duration.
+	deleting_at = CASE WHEN $2::timestamptz IS NULL OR templates.time_til_dormant_autodelete = 0 THEN NULL ELSE $2::timestamptz + INTERVAL '1 milliseconds' * templates.time_til_dormant_autodelete / 1000000 END
+FROM
+	templates
+WHERE
+	workspaces.template_id = templates.id
+AND
+	workspaces.id = $1
+RETURNING workspaces.*;
+
+-- name: UpdateWorkspacesDormantDeletingAtByTemplateID :exec
+UPDATE workspaces
+SET
+    deleting_at = CASE
+        WHEN @time_til_dormant_autodelete_ms::bigint = 0 THEN NULL
+        WHEN @dormant_at::timestamptz > '0001-01-01 00:00:00+00'::timestamptz THEN  (@dormant_at::timestamptz) + interval '1 milliseconds' * @time_til_dormant_autodelete_ms::bigint
+        ELSE dormant_at + interval '1 milliseconds' * @time_til_dormant_autodelete_ms::bigint
+    END,
+    dormant_at = CASE WHEN @dormant_at::timestamptz > '0001-01-01 00:00:00+00'::timestamptz THEN @dormant_at::timestamptz ELSE dormant_at END
+WHERE
+    template_id = @template_id
+AND
+    dormant_at IS NOT NULL;
+
+-- name: UpdateTemplateWorkspacesLastUsedAt :exec
+UPDATE workspaces
+SET
+	last_used_at = @last_used_at::timestamptz
+WHERE
+	template_id = @template_id;

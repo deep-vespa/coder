@@ -2,6 +2,7 @@ package healthcheck
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -10,8 +11,6 @@ import (
 
 	"golang.org/x/xerrors"
 	"nhooyr.io/websocket"
-
-	"github.com/coder/coder/coderd/httpapi"
 )
 
 type WebsocketReportOptions struct {
@@ -20,15 +19,12 @@ type WebsocketReportOptions struct {
 	HTTPClient *http.Client
 }
 
+// @typescript-generate WebsocketReport
 type WebsocketReport struct {
-	Healthy  bool              `json:"healthy"`
-	Response WebsocketResponse `json:"response"`
-	Error    error             `json:"error"`
-}
-
-type WebsocketResponse struct {
-	Body string `json:"body"`
-	Code int    `json:"code"`
+	Healthy bool    `json:"healthy"`
+	Body    string  `json:"body"`
+	Code    int     `json:"code"`
+	Error   *string `json:"error"`
 }
 
 func (r *WebsocketReport) Run(ctx context.Context, opts *WebsocketReportOptions) {
@@ -37,7 +33,7 @@ func (r *WebsocketReport) Run(ctx context.Context, opts *WebsocketReportOptions)
 
 	u, err := opts.AccessURL.Parse("/api/v2/debug/ws")
 	if err != nil {
-		r.Error = xerrors.Errorf("parse access url: %w", err)
+		r.Error = convertError(xerrors.Errorf("parse access url: %w", err))
 		return
 	}
 	if u.Scheme == "https" {
@@ -60,13 +56,11 @@ func (r *WebsocketReport) Run(ctx context.Context, opts *WebsocketReportOptions)
 			}
 		}
 
-		r.Response = WebsocketResponse{
-			Body: body,
-			Code: res.StatusCode,
-		}
+		r.Body = body
+		r.Code = res.StatusCode
 	}
 	if err != nil {
-		r.Error = xerrors.Errorf("websocket dial: %w", err)
+		r.Error = convertError(xerrors.Errorf("websocket dial: %w", err))
 		return
 	}
 	defer c.Close(websocket.StatusGoingAway, "goodbye")
@@ -75,23 +69,23 @@ func (r *WebsocketReport) Run(ctx context.Context, opts *WebsocketReportOptions)
 		msg := strconv.Itoa(i)
 		err := c.Write(ctx, websocket.MessageText, []byte(msg))
 		if err != nil {
-			r.Error = xerrors.Errorf("write message: %w", err)
+			r.Error = convertError(xerrors.Errorf("write message: %w", err))
 			return
 		}
 
 		ty, got, err := c.Read(ctx)
 		if err != nil {
-			r.Error = xerrors.Errorf("read message: %w", err)
+			r.Error = convertError(xerrors.Errorf("read message: %w", err))
 			return
 		}
 
 		if ty != websocket.MessageText {
-			r.Error = xerrors.Errorf("received incorrect message type: %v", ty)
+			r.Error = convertError(xerrors.Errorf("received incorrect message type: %v", ty))
 			return
 		}
 
 		if string(got) != msg {
-			r.Error = xerrors.Errorf("received incorrect message: wanted %q, got %q", msg, string(got))
+			r.Error = convertError(xerrors.Errorf("received incorrect message: wanted %q, got %q", msg, string(got)))
 			return
 		}
 	}
@@ -115,7 +109,8 @@ func (s *WebsocketEchoServer) ServeHTTP(rw http.ResponseWriter, r *http.Request)
 	ctx := r.Context()
 	c, err := websocket.Accept(rw, r, &websocket.AcceptOptions{})
 	if err != nil {
-		httpapi.Write(ctx, rw, http.StatusBadRequest, "unable to accept: "+err.Error())
+		rw.WriteHeader(http.StatusBadRequest)
+		_, _ = rw.Write([]byte(fmt.Sprint("unable to accept:", err)))
 		return
 	}
 	defer c.Close(websocket.StatusGoingAway, "goodbye")

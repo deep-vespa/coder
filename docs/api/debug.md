@@ -40,14 +40,23 @@ curl -X GET http://coder-server:8080/api/v2/debug/health \
 ```json
 {
   "access_url": {
-    "error": null,
+    "access_url": "string",
+    "error": "string",
     "healthy": true,
     "healthz_response": "string",
     "reachable": true,
     "status_code": 0
   },
+  "coder_version": "string",
+  "database": {
+    "error": "string",
+    "healthy": true,
+    "latency": "string",
+    "latency_ms": 0,
+    "reachable": true
+  },
   "derp": {
-    "error": null,
+    "error": "string",
     "healthy": true,
     "netcheck": {
       "captivePortal": "string",
@@ -79,20 +88,21 @@ curl -X GET http://coder-server:8080/api/v2/debug/health \
       "udp": true,
       "upnP": "string"
     },
-    "netcheck_err": null,
+    "netcheck_err": "string",
     "netcheck_logs": ["string"],
     "regions": {
       "property1": {
-        "error": null,
+        "error": "string",
         "healthy": true,
         "node_reports": [
           {
             "can_exchange_messages": true,
-            "client_errs": [[null]],
+            "client_errs": [["string"]],
             "client_logs": [["string"]],
-            "error": null,
+            "error": "string",
             "healthy": true,
             "node": {
+              "canPort80": true,
               "certName": "string",
               "derpport": 0,
               "forceHTTP": true,
@@ -110,11 +120,12 @@ curl -X GET http://coder-server:8080/api/v2/debug/health \
               "tokenBucketBytesBurst": 0,
               "tokenBucketBytesPerSecond": 0
             },
-            "round_trip_ping": 0,
+            "round_trip_ping": "string",
+            "round_trip_ping_ms": 0,
             "stun": {
               "canSTUN": true,
               "enabled": true,
-              "error": null
+              "error": "string"
             },
             "uses_websocket": true
           }
@@ -124,6 +135,7 @@ curl -X GET http://coder-server:8080/api/v2/debug/health \
           "embeddedRelay": true,
           "nodes": [
             {
+              "canPort80": true,
               "certName": "string",
               "derpport": 0,
               "forceHTTP": true,
@@ -144,16 +156,17 @@ curl -X GET http://coder-server:8080/api/v2/debug/health \
         }
       },
       "property2": {
-        "error": null,
+        "error": "string",
         "healthy": true,
         "node_reports": [
           {
             "can_exchange_messages": true,
-            "client_errs": [[null]],
+            "client_errs": [["string"]],
             "client_logs": [["string"]],
-            "error": null,
+            "error": "string",
             "healthy": true,
             "node": {
+              "canPort80": true,
               "certName": "string",
               "derpport": 0,
               "forceHTTP": true,
@@ -171,11 +184,12 @@ curl -X GET http://coder-server:8080/api/v2/debug/health \
               "tokenBucketBytesBurst": 0,
               "tokenBucketBytesPerSecond": 0
             },
-            "round_trip_ping": 0,
+            "round_trip_ping": "string",
+            "round_trip_ping_ms": 0,
             "stun": {
               "canSTUN": true,
               "enabled": true,
-              "error": null
+              "error": "string"
             },
             "uses_websocket": true
           }
@@ -185,6 +199,7 @@ curl -X GET http://coder-server:8080/api/v2/debug/health \
           "embeddedRelay": true,
           "nodes": [
             {
+              "canPort80": true,
               "certName": "string",
               "derpport": 0,
               "forceHTTP": true,
@@ -210,12 +225,10 @@ curl -X GET http://coder-server:8080/api/v2/debug/health \
   "healthy": true,
   "time": "string",
   "websocket": {
-    "error": null,
-    "healthy": true,
-    "response": {
-      "body": "string",
-      "code": 0
-    }
+    "body": "string",
+    "code": 0,
+    "error": "string",
+    "healthy": true
   }
 }
 ```

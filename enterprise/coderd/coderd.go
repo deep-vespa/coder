@@ -5,31 +5,39 @@ import (
 	"crypto/ed25519"
 	"crypto/tls"
 	"crypto/x509"
+	"fmt"
+	"math"
 	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"golang.org/x/xerrors"
+	"tailscale.com/tailcfg"
 
 	"github.com/cenkalti/backoff/v4"
 	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus"
 
 	"cdr.dev/slog"
-	"github.com/coder/coder/coderd"
-	agplaudit "github.com/coder/coder/coderd/audit"
-	"github.com/coder/coder/coderd/httpapi"
-	"github.com/coder/coder/coderd/httpmw"
-	"github.com/coder/coder/coderd/rbac"
-	"github.com/coder/coder/coderd/schedule"
-	"github.com/coder/coder/codersdk"
-	"github.com/coder/coder/enterprise/coderd/license"
-	"github.com/coder/coder/enterprise/coderd/proxyhealth"
-	"github.com/coder/coder/enterprise/derpmesh"
-	"github.com/coder/coder/enterprise/replicasync"
-	"github.com/coder/coder/enterprise/tailnet"
-	"github.com/coder/coder/provisionerd/proto"
-	agpltailnet "github.com/coder/coder/tailnet"
+	"github.com/coder/coder/v2/coderd"
+	agplaudit "github.com/coder/coder/v2/coderd/audit"
+	"github.com/coder/coder/v2/coderd/database/dbauthz"
+	"github.com/coder/coder/v2/coderd/httpapi"
+	"github.com/coder/coder/v2/coderd/httpmw"
+	"github.com/coder/coder/v2/coderd/rbac"
+	agplschedule "github.com/coder/coder/v2/coderd/schedule"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/enterprise/coderd/license"
+	"github.com/coder/coder/v2/enterprise/coderd/proxyhealth"
+	"github.com/coder/coder/v2/enterprise/coderd/schedule"
+	"github.com/coder/coder/v2/enterprise/derpmesh"
+	"github.com/coder/coder/v2/enterprise/replicasync"
+	"github.com/coder/coder/v2/enterprise/tailnet"
+	"github.com/coder/coder/v2/provisionerd/proto"
+	agpltailnet "github.com/coder/coder/v2/tailnet"
 )
 
 // New constructs an Enterprise coderd API instance.
@@ -51,6 +59,7 @@ func New(ctx context.Context, options *Options) (_ *API, err error) {
 	if options.Options.Authorizer == nil {
 		options.Options.Authorizer = rbac.NewCachingAuthorizer(options.PrometheusRegistry)
 	}
+
 	ctx, cancelFunc := context.WithCancel(ctx)
 	api := &API{
 		ctx:    ctx,
@@ -58,6 +67,10 @@ func New(ctx context.Context, options *Options) (_ *API, err error) {
 
 		AGPL:    coderd.New(options.Options),
 		Options: options,
+		provisionerDaemonAuth: &provisionerDaemonAuth{
+			psk:        options.ProvisionerDaemonPSK,
+			authorizer: options.Authorizer,
+		},
 	}
 	defer func() {
 		if err != nil {
@@ -66,15 +79,37 @@ func New(ctx context.Context, options *Options) (_ *API, err error) {
 	}()
 
 	api.AGPL.Options.SetUserGroups = api.setUserGroups
+	api.AGPL.Options.SetUserSiteRoles = api.setUserSiteRoles
+	api.AGPL.SiteHandler.AppearanceFetcher = api.fetchAppearanceConfig
+	api.AGPL.SiteHandler.RegionsFetcher = func(ctx context.Context) (any, error) {
+		// If the user can read the workspace proxy resource, return that.
+		// If not, always default to the regions.
+		actor, ok := dbauthz.ActorFromContext(ctx)
+		if ok && api.Authorizer.Authorize(ctx, actor, rbac.ActionRead, rbac.ResourceWorkspaceProxy) == nil {
+			return api.fetchWorkspaceProxies(ctx)
+		}
+		return api.fetchRegions(ctx)
+	}
 
 	oauthConfigs := &httpmw.OAuth2Configs{
 		Github: options.GithubOAuth2Config,
 		OIDC:   options.OIDCConfig,
 	}
 	apiKeyMiddleware := httpmw.ExtractAPIKeyMW(httpmw.ExtractAPIKeyConfig{
-		DB:              options.Database,
-		OAuth2Configs:   oauthConfigs,
-		RedirectToLogin: false,
+		DB:                          options.Database,
+		OAuth2Configs:               oauthConfigs,
+		RedirectToLogin:             false,
+		DisableSessionExpiryRefresh: options.DeploymentValues.DisableSessionExpiryRefresh.Value(),
+		Optional:                    false,
+		SessionTokenFunc:            nil, // Default behavior
+	})
+	apiKeyMiddlewareOptional := httpmw.ExtractAPIKeyMW(httpmw.ExtractAPIKeyConfig{
+		DB:                          options.Database,
+		OAuth2Configs:               oauthConfigs,
+		RedirectToLogin:             false,
+		DisableSessionExpiryRefresh: options.DeploymentValues.DisableSessionExpiryRefresh.Value(),
+		Optional:                    true,
+		SessionTokenFunc:            nil, // Default behavior
 	})
 
 	deploymentID, err := options.Database.GetDeploymentID(ctx)
@@ -95,6 +130,7 @@ func New(ctx context.Context, options *Options) (_ *API, err error) {
 		})
 		r.Route("/licenses", func(r chi.Router) {
 			r.Use(apiKeyMiddleware)
+			r.Post("/refresh-entitlements", api.postRefreshEntitlements)
 			r.Post("/", api.postLicense)
 			r.Get("/", api.licenses)
 			r.Delete("/{id}", api.deleteLicense)
@@ -103,6 +139,15 @@ func New(ctx context.Context, options *Options) (_ *API, err error) {
 			r.Use(apiKeyMiddleware)
 			r.Post("/", api.reconnectingPTYSignedToken)
 		})
+
+		r.With(
+			apiKeyMiddlewareOptional,
+			httpmw.ExtractWorkspaceProxy(httpmw.ExtractWorkspaceProxyConfig{
+				DB:       options.Database,
+				Optional: true,
+			}),
+			httpmw.RequireAPIKeyOrWorkspaceProxyAuth(),
+		).Get("/workspaceagents/{workspaceagent}/legacy", api.agentIsLegacy)
 		r.Route("/workspaceproxies", func(r chi.Router) {
 			r.Use(
 				api.moonsEnabledMW,
@@ -121,9 +166,11 @@ func New(ctx context.Context, options *Options) (_ *API, err error) {
 						Optional: false,
 					}),
 				)
+				r.Get("/coordinate", api.workspaceProxyCoordinate)
 				r.Post("/issue-signed-app-token", api.workspaceProxyIssueSignedAppToken)
+				r.Post("/app-stats", api.workspaceProxyReportAppStats)
 				r.Post("/register", api.workspaceProxyRegister)
-				r.Post("/goingaway", api.workspaceProxyGoingAway)
+				r.Post("/deregister", api.workspaceProxyDeregister)
 			})
 			r.Route("/{workspaceproxy}", func(r chi.Router) {
 				r.Use(
@@ -152,14 +199,21 @@ func New(ctx context.Context, options *Options) (_ *API, err error) {
 				r.Get("/", api.groupByOrganization)
 			})
 		})
+		// TODO: provisioner daemons are not scoped to organizations in the database, so placing them
+		// under an organization route doesn't make sense.  In order to allow the /serve endpoint to
+		// work with a pre-shared key (PSK) without an API key, these routes will simply ignore the
+		// value of {organization}.  That is, the route will work with any organization ID, whether or
+		// not it exits.  This doesn't leak any information about the existence of organizations, so is
+		// fine from a security perspective, but might be a little surprising.
+		//
+		// We may in future decide to scope provisioner daemons to organizations, so we'll keep the API
+		// route as is.
 		r.Route("/organizations/{organization}/provisionerdaemons", func(r chi.Router) {
 			r.Use(
 				api.provisionerDaemonsEnabledMW,
-				apiKeyMiddleware,
-				httpmw.ExtractOrganizationParam(api.Database),
 			)
-			r.Get("/", api.provisionerDaemons)
-			r.Get("/serve", api.provisionerDaemonServe)
+			r.With(apiKeyMiddleware).Get("/", api.provisionerDaemons)
+			r.With(apiKeyMiddlewareOptional).Get("/serve", api.provisionerDaemonServe)
 		})
 		r.Route("/templates/{template}/acl", func(r chi.Router) {
 			r.Use(
@@ -167,6 +221,7 @@ func New(ctx context.Context, options *Options) (_ *API, err error) {
 				apiKeyMiddleware,
 				httpmw.ExtractTemplateParam(api.Database),
 			)
+			r.Get("/available", api.templateAvailablePermissions)
 			r.Get("/", api.templateACL)
 			r.Patch("/", api.patchTemplateACL)
 		})
@@ -190,11 +245,33 @@ func New(ctx context.Context, options *Options) (_ *API, err error) {
 			})
 		})
 		r.Route("/appearance", func(r chi.Router) {
+			r.Group(func(r chi.Router) {
+				r.Use(
+					apiKeyMiddlewareOptional,
+					httpmw.ExtractWorkspaceAgent(httpmw.ExtractWorkspaceAgentConfig{
+						DB:       options.Database,
+						Optional: true,
+					}),
+					httpmw.RequireAPIKeyOrWorkspaceAgent(),
+				)
+				r.Get("/", api.appearance)
+			})
+			r.Group(func(r chi.Router) {
+				r.Use(
+					apiKeyMiddleware,
+				)
+				r.Put("/", api.putAppearance)
+			})
+		})
+		r.Route("/users/{user}/quiet-hours", func(r chi.Router) {
 			r.Use(
+				api.autostopRequirementEnabledMW,
 				apiKeyMiddleware,
+				httpmw.ExtractUserParam(options.Database, false),
 			)
-			r.Get("/", api.appearance)
-			r.Put("/", api.putAppearance)
+
+			r.Get("/", api.userQuietHoursSchedule)
+			r.Put("/", api.putUserQuietHoursSchedule)
 		})
 	})
 
@@ -236,10 +313,11 @@ func New(ctx context.Context, options *Options) (_ *API, err error) {
 		ServerName:   options.AccessURL.Hostname(),
 	}
 	api.replicaManager, err = replicasync.New(ctx, options.Logger, options.Database, options.Pubsub, &replicasync.Options{
-		ID:           api.AGPL.ID,
-		RelayAddress: options.DERPServerRelayAddress,
-		RegionID:     int32(options.DERPServerRegionID),
-		TLSConfig:    meshTLSConfig,
+		ID:             api.AGPL.ID,
+		RelayAddress:   options.DERPServerRelayAddress,
+		RegionID:       int32(options.DERPServerRegionID),
+		TLSConfig:      meshTLSConfig,
+		UpdateInterval: options.ReplicaSyncUpdateInterval,
 	})
 	if err != nil {
 		return nil, xerrors.Errorf("initialize replica: %w", err)
@@ -287,12 +365,21 @@ type Options struct {
 	SCIMAPIKey  []byte
 
 	// Used for high availability.
-	DERPServerRelayAddress string
-	DERPServerRegionID     int
+	ReplicaSyncUpdateInterval time.Duration
+	DERPServerRelayAddress    string
+	DERPServerRegionID        int
+
+	// Used for user quiet hours schedules.
+	DefaultQuietHoursSchedule string // cron schedule, if empty user quiet hours schedules are disabled
 
 	EntitlementsUpdateInterval time.Duration
 	ProxyHealthInterval        time.Duration
 	Keys                       map[string]ed25519.PublicKey
+
+	// optional pre-shared key for authentication of external provisioner daemons
+	ProvisionerDaemonPSK string
+
+	CheckInactiveUsersCancelFunc func()
 }
 
 type API struct {
@@ -311,28 +398,38 @@ type API struct {
 	// ProxyHealth checks the reachability of all workspace proxies.
 	ProxyHealth *proxyhealth.ProxyHealth
 
-	entitlementsMu sync.RWMutex
-	entitlements   codersdk.Entitlements
+	entitlementsUpdateMu sync.Mutex
+	entitlementsMu       sync.RWMutex
+	entitlements         codersdk.Entitlements
+
+	provisionerDaemonAuth *provisionerDaemonAuth
 }
 
 func (api *API) Close() error {
-	api.cancel()
+	// Replica manager should be closed first. This is because the replica
+	// manager updates the replica's table in the database when it closes.
+	// This tells other Coderds that it is now offline.
 	if api.replicaManager != nil {
 		_ = api.replicaManager.Close()
 	}
+	api.cancel()
 	if api.derpMesh != nil {
 		_ = api.derpMesh.Close()
+	}
+
+	if api.Options.CheckInactiveUsersCancelFunc != nil {
+		api.Options.CheckInactiveUsersCancelFunc()
 	}
 	return api.AGPL.Close()
 }
 
 func (api *API) updateEntitlements(ctx context.Context) error {
-	api.entitlementsMu.Lock()
-	defer api.entitlementsMu.Unlock()
+	api.entitlementsUpdateMu.Lock()
+	defer api.entitlementsUpdateMu.Unlock()
 
 	entitlements, err := license.Entitlements(
 		ctx, api.Database,
-		api.Logger, len(api.replicaManager.All()), len(api.GitAuthConfigs), api.Keys, map[codersdk.FeatureName]bool{
+		api.Logger, len(api.replicaManager.AllPrimary()), len(api.GitAuthConfigs), api.Keys, map[codersdk.FeatureName]bool{
 			codersdk.FeatureAuditLog:                   api.AuditLogging,
 			codersdk.FeatureBrowserOnly:                api.BrowserOnly,
 			codersdk.FeatureSCIM:                       len(api.SCIMAPIKey) != 0,
@@ -341,7 +438,11 @@ func (api *API) updateEntitlements(ctx context.Context) error {
 			codersdk.FeatureTemplateRBAC:               api.RBAC,
 			codersdk.FeatureExternalProvisionerDaemons: true,
 			codersdk.FeatureAdvancedTemplateScheduling: true,
-			codersdk.FeatureWorkspaceProxy:             true,
+			// FeatureTemplateAutostopRequirement depends on
+			// FeatureAdvancedTemplateScheduling.
+			codersdk.FeatureTemplateAutostopRequirement: api.DefaultQuietHoursSchedule != "",
+			codersdk.FeatureWorkspaceProxy:              true,
+			codersdk.FeatureUserRoleManagement:          true,
 		})
 	if err != nil {
 		return err
@@ -360,19 +461,36 @@ func (api *API) updateEntitlements(ctx context.Context) error {
 		return nil
 	}
 
-	featureChanged := func(featureName codersdk.FeatureName) (changed bool, enabled bool) {
+	if entitlements.Features[codersdk.FeatureTemplateAutostopRequirement].Enabled && !entitlements.Features[codersdk.FeatureAdvancedTemplateScheduling].Enabled {
+		api.entitlements.Errors = []string{
+			`Your license is entitled to the feature "template autostop ` +
+				`requirement" (and you have it enabled by setting the ` +
+				"default quiet hours schedule), but you are not entitled to " +
+				`the dependency feature "advanced template scheduling". ` +
+				"Please contact support for a new license.",
+		}
+		api.Logger.Error(ctx, "license is entitled to template autostop requirement but not advanced template scheduling")
+		return nil
+	}
+
+	featureChanged := func(featureName codersdk.FeatureName) (initial, changed, enabled bool) {
 		if api.entitlements.Features == nil {
-			return true, entitlements.Features[featureName].Enabled
+			return true, false, entitlements.Features[featureName].Enabled
 		}
 		oldFeature := api.entitlements.Features[featureName]
 		newFeature := entitlements.Features[featureName]
 		if oldFeature.Enabled != newFeature.Enabled {
-			return true, newFeature.Enabled
+			return false, true, newFeature.Enabled
 		}
-		return false, newFeature.Enabled
+		return false, false, newFeature.Enabled
 	}
 
-	if changed, enabled := featureChanged(codersdk.FeatureAuditLog); changed {
+	shouldUpdate := func(initial, changed, enabled bool) bool {
+		// Avoid an initial tick on startup unless the feature is enabled.
+		return changed || (initial && enabled)
+	}
+
+	if initial, changed, enabled := featureChanged(codersdk.FeatureAuditLog); shouldUpdate(initial, changed, enabled) {
 		auditor := agplaudit.NewNop()
 		if enabled {
 			auditor = api.AGPL.Options.Auditor
@@ -380,7 +498,7 @@ func (api *API) updateEntitlements(ctx context.Context) error {
 		api.AGPL.Auditor.Store(&auditor)
 	}
 
-	if changed, enabled := featureChanged(codersdk.FeatureBrowserOnly); changed {
+	if initial, changed, enabled := featureChanged(codersdk.FeatureBrowserOnly); shouldUpdate(initial, changed, enabled) {
 		var handler func(rw http.ResponseWriter) bool
 		if enabled {
 			handler = api.shouldBlockNonBrowserConnections
@@ -388,9 +506,12 @@ func (api *API) updateEntitlements(ctx context.Context) error {
 		api.AGPL.WorkspaceClientCoordinateOverride.Store(&handler)
 	}
 
-	if changed, enabled := featureChanged(codersdk.FeatureTemplateRBAC); changed {
+	if initial, changed, enabled := featureChanged(codersdk.FeatureTemplateRBAC); shouldUpdate(initial, changed, enabled) {
 		if enabled {
-			committer := committer{Database: api.Database}
+			committer := committer{
+				Log:      api.Logger.Named("quota_committer"),
+				Database: api.Database,
+			}
 			ptr := proto.QuotaCommitter(&committer)
 			api.AGPL.QuotaCommitter.Store(&ptr)
 		} else {
@@ -398,28 +519,62 @@ func (api *API) updateEntitlements(ctx context.Context) error {
 		}
 	}
 
-	if changed, enabled := featureChanged(codersdk.FeatureAdvancedTemplateScheduling); changed {
+	if initial, changed, enabled := featureChanged(codersdk.FeatureAdvancedTemplateScheduling); shouldUpdate(initial, changed, enabled) {
 		if enabled {
-			store := &enterpriseTemplateScheduleStore{}
-			ptr := schedule.TemplateScheduleStore(store)
-			api.AGPL.TemplateScheduleStore.Store(&ptr)
+			templateStore := schedule.NewEnterpriseTemplateScheduleStore(api.AGPL.UserQuietHoursScheduleStore)
+			templateStoreInterface := agplschedule.TemplateScheduleStore(templateStore)
+			api.AGPL.TemplateScheduleStore.Store(&templateStoreInterface)
 		} else {
-			store := schedule.NewAGPLTemplateScheduleStore()
-			api.AGPL.TemplateScheduleStore.Store(&store)
+			templateStore := agplschedule.NewAGPLTemplateScheduleStore()
+			api.AGPL.TemplateScheduleStore.Store(&templateStore)
 		}
 	}
 
-	if changed, enabled := featureChanged(codersdk.FeatureHighAvailability); changed {
-		coordinator := agpltailnet.NewCoordinator(api.Logger)
+	if initial, changed, enabled := featureChanged(codersdk.FeatureTemplateAutostopRequirement); shouldUpdate(initial, changed, enabled) {
 		if enabled {
-			haCoordinator, err := tailnet.NewCoordinator(api.Logger, api.Pubsub)
+			templateStore := *(api.AGPL.TemplateScheduleStore.Load())
+			enterpriseTemplateStore, ok := templateStore.(*schedule.EnterpriseTemplateScheduleStore)
+			if !ok {
+				api.Logger.Error(ctx, "unable to set up enterprise template schedule store, template autostop requirements will not be applied to workspace builds")
+			}
+			enterpriseTemplateStore.UseAutostopRequirement.Store(true)
+
+			quietHoursStore, err := schedule.NewEnterpriseUserQuietHoursScheduleStore(api.DefaultQuietHoursSchedule)
+			if err != nil {
+				api.Logger.Error(ctx, "unable to set up enterprise user quiet hours schedule store, template autostop requirements will not be applied to workspace builds", slog.Error(err))
+			} else {
+				api.AGPL.UserQuietHoursScheduleStore.Store(&quietHoursStore)
+			}
+		} else {
+			if api.DefaultQuietHoursSchedule != "" {
+				api.Logger.Warn(ctx, "template autostop requirements are not enabled (due to setting default quiet hours schedule) as your license is not entitled to this feature")
+			}
+
+			templateStore := *(api.AGPL.TemplateScheduleStore.Load())
+			enterpriseTemplateStore, ok := templateStore.(*schedule.EnterpriseTemplateScheduleStore)
+			if ok {
+				enterpriseTemplateStore.UseAutostopRequirement.Store(false)
+			}
+
+			quietHoursStore := agplschedule.NewAGPLUserQuietHoursScheduleStore()
+			api.AGPL.UserQuietHoursScheduleStore.Store(&quietHoursStore)
+		}
+	}
+
+	if initial, changed, enabled := featureChanged(codersdk.FeatureHighAvailability); shouldUpdate(initial, changed, enabled) {
+		var coordinator agpltailnet.Coordinator
+		if enabled {
+			var haCoordinator agpltailnet.Coordinator
+			if api.AGPL.Experiments.Enabled(codersdk.ExperimentTailnetPGCoordinator) {
+				haCoordinator, err = tailnet.NewPGCoord(api.ctx, api.Logger, api.Pubsub, api.Database)
+			} else {
+				haCoordinator, err = tailnet.NewCoordinator(api.Logger, api.Pubsub)
+			}
 			if err != nil {
 				api.Logger.Error(ctx, "unable to set up high availability coordinator", slog.Error(err))
 				// If we try to setup the HA coordinator and it fails, nothing
 				// is actually changing.
-				changed = false
 			} else {
-				_ = coordinator.Close()
 				coordinator = haCoordinator
 			}
 
@@ -432,6 +587,7 @@ func (api *API) updateEntitlements(ctx context.Context) error {
 				_ = api.updateEntitlements(ctx)
 			})
 		} else {
+			coordinator = agpltailnet.NewCoordinator(api.Logger)
 			api.derpMesh.SetAddresses([]string{}, false)
 			api.replicaManager.SetCallback(func() {
 				// If the amount of replicas change, so should our entitlements.
@@ -441,7 +597,7 @@ func (api *API) updateEntitlements(ctx context.Context) error {
 		}
 
 		// Recheck changed in case the HA coordinator failed to set up.
-		if changed {
+		if coordinator != nil {
 			oldCoordinator := *api.AGPL.TailnetCoordinator.Swap(&coordinator)
 			err := oldCoordinator.Close()
 			if err != nil {
@@ -450,9 +606,188 @@ func (api *API) updateEntitlements(ctx context.Context) error {
 		}
 	}
 
+	if initial, changed, enabled := featureChanged(codersdk.FeatureWorkspaceProxy); shouldUpdate(initial, changed, enabled) {
+		if enabled {
+			fn := derpMapper(api.Logger, api.ProxyHealth)
+			api.AGPL.DERPMapper.Store(&fn)
+		} else {
+			api.AGPL.DERPMapper.Store(nil)
+		}
+	}
+
+	api.entitlementsMu.Lock()
+	defer api.entitlementsMu.Unlock()
 	api.entitlements = entitlements
+	api.AGPL.SiteHandler.Entitlements.Store(&entitlements)
 
 	return nil
+}
+
+// getProxyDERPStartingRegionID returns the starting region ID that should be
+// used for workspace proxies. A proxy's actual region ID is the return value
+// from this function + it's RegionID field.
+//
+// Two ints are returned, the first is the starting region ID for proxies, and
+// the second is the maximum region ID that already exists in the DERP map.
+func getProxyDERPStartingRegionID(derpMap *tailcfg.DERPMap) (sID int64, mID int64) {
+	var maxRegionID int64
+	for _, region := range derpMap.Regions {
+		rid := int64(region.RegionID)
+		if rid > maxRegionID {
+			maxRegionID = rid
+		}
+	}
+	if maxRegionID < 0 {
+		maxRegionID = 0
+	}
+
+	// Round to the nearest 10,000 with a sufficient buffer of at least 2,000.
+	// The buffer allows for future "fixed" regions to be added to the base DERP
+	// map without conflicting with proxy region IDs (standard DERP maps usually
+	// use incrementing IDs for new regions).
+	//
+	// Example:
+	//  maxRegionID = -2_000 -> startingRegionID = 10_000
+	//  maxRegionID = 8_000 -> startingRegionID = 10_000
+	//  maxRegionID = 8_500 -> startingRegionID = 20_000
+	//  maxRegionID = 12_000 -> startingRegionID = 20_000
+	//  maxRegionID = 20_000 -> startingRegionID = 30_000
+	const roundStartingRegionID = 10_000
+	const startingRegionIDBuffer = 2_000
+	// Add the buffer first.
+	startingRegionID := maxRegionID + startingRegionIDBuffer
+	// Round UP to the nearest 10,000. Go's math.Ceil rounds up to the nearest
+	// integer, so we need to divide by 10,000 first and then multiply by
+	// 10,000.
+	startingRegionID = int64(math.Ceil(float64(startingRegionID)/roundStartingRegionID) * roundStartingRegionID)
+	// This should never be hit but it's here just in case.
+	if startingRegionID < roundStartingRegionID {
+		startingRegionID = roundStartingRegionID
+	}
+
+	return startingRegionID, maxRegionID
+}
+
+var (
+	lastDerpConflictMutex sync.Mutex
+	lastDerpConflictLog   time.Time
+)
+
+func derpMapper(logger slog.Logger, proxyHealth *proxyhealth.ProxyHealth) func(*tailcfg.DERPMap) *tailcfg.DERPMap {
+	return func(derpMap *tailcfg.DERPMap) *tailcfg.DERPMap {
+		derpMap = derpMap.Clone()
+
+		// Find the starting region ID that we'll use for proxies. This must be
+		// deterministic based on the derp map.
+		startingRegionID, largestRegionID := getProxyDERPStartingRegionID(derpMap)
+		if largestRegionID >= 1<<32 {
+			// Enforce an upper bound on the region ID. This shouldn't be hit in
+			// practice, but it's a good sanity check.
+			lastDerpConflictMutex.Lock()
+			shouldLog := lastDerpConflictLog.IsZero() || time.Since(lastDerpConflictLog) > time.Minute
+			if shouldLog {
+				lastDerpConflictLog = time.Now()
+			}
+			lastDerpConflictMutex.Unlock()
+			if shouldLog {
+				logger.Warn(
+					context.Background(),
+					"existing DERP region IDs are too large, proxy region IDs will not be populated in the derp map. Please ensure that all DERP region IDs are less than 2^32",
+					slog.F("largest_region_id", largestRegionID),
+					slog.F("max_region_id", int64(1<<32-1)),
+				)
+				return derpMap
+			}
+		}
+
+		// Add all healthy proxies to the DERP map.
+		statusMap := proxyHealth.HealthStatus()
+	statusLoop:
+		for _, status := range statusMap {
+			if status.Status != proxyhealth.Healthy || !status.Proxy.DerpEnabled {
+				// Only add healthy proxies with DERP enabled to the DERP map.
+				continue
+			}
+
+			u, err := url.Parse(status.Proxy.Url)
+			if err != nil {
+				// Not really any need to log, the proxy should be unreachable
+				// anyways and filtered out by the above condition.
+				continue
+			}
+			port := u.Port()
+			if port == "" {
+				port = "80"
+				if u.Scheme == "https" {
+					port = "443"
+				}
+			}
+			portInt, err := strconv.Atoi(port)
+			if err != nil {
+				// Not really any need to log, the proxy should be unreachable
+				// anyways and filtered out by the above condition.
+				continue
+			}
+
+			// Sanity check that the region ID and code is unique.
+			//
+			// This should be impossible to hit as the IDs are enforced to be
+			// unique by the database and the computed ID is greater than any
+			// existing ID in the DERP map.
+			regionID := int(startingRegionID) + int(status.Proxy.RegionID)
+			regionCode := fmt.Sprintf("coder_%s", strings.ToLower(status.Proxy.Name))
+			regionName := status.Proxy.DisplayName
+			if regionName == "" {
+				regionName = status.Proxy.Name
+			}
+			for _, r := range derpMap.Regions {
+				if r.RegionID == regionID || r.RegionCode == regionCode {
+					// Log a warning if we haven't logged one in the last
+					// minute.
+					lastDerpConflictMutex.Lock()
+					shouldLog := lastDerpConflictLog.IsZero() || time.Since(lastDerpConflictLog) > time.Minute
+					if shouldLog {
+						lastDerpConflictLog = time.Now()
+					}
+					lastDerpConflictMutex.Unlock()
+					if shouldLog {
+						logger.Warn(context.Background(),
+							"proxy region ID or code conflict, ignoring workspace proxy for DERP map",
+							slog.F("proxy_id", status.Proxy.ID),
+							slog.F("proxy_name", status.Proxy.Name),
+							slog.F("proxy_display_name", status.Proxy.DisplayName),
+							slog.F("proxy_url", status.Proxy.Url),
+							slog.F("proxy_region_id", status.Proxy.RegionID),
+							slog.F("proxy_computed_region_id", regionID),
+							slog.F("proxy_computed_region_code", regionCode),
+						)
+					}
+
+					continue statusLoop
+				}
+			}
+
+			derpMap.Regions[regionID] = &tailcfg.DERPRegion{
+				// EmbeddedRelay ONLY applies to the primary.
+				EmbeddedRelay: false,
+				RegionID:      regionID,
+				RegionCode:    regionCode,
+				RegionName:    regionName,
+				Nodes: []*tailcfg.DERPNode{
+					{
+						Name:      fmt.Sprintf("%da", regionID),
+						RegionID:  regionID,
+						HostName:  u.Hostname(),
+						DERPPort:  portInt,
+						STUNPort:  -1,
+						ForceHTTP: u.Scheme == "http",
+					},
+				},
+			}
+		}
+
+		return derpMap
+	}
 }
 
 // @Summary Get entitlements
@@ -477,6 +812,17 @@ func (api *API) runEntitlementsLoop(ctx context.Context) {
 	updates := make(chan struct{}, 1)
 	subscribed := false
 
+	defer func() {
+		// If this function ends, it means the context was canceled and this
+		// coderd is shutting down. In this case, post a pubsub message to
+		// tell other coderd's to resync their entitlements. This is required to
+		// make sure things like replica counts are updated in the UI.
+		// Ignore the error, as this is just a best effort. If it fails,
+		// the system will eventually recover as replicas timeout
+		// if their heartbeats stop. The best effort just tries to update the
+		// UI faster if it succeeds.
+		_ = api.Pubsub.Publish(PubsubEventLicenses, []byte("going away"))
+	}()
 	for {
 		select {
 		case <-ctx.Done():

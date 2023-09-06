@@ -11,8 +11,8 @@ It's common to also let developers to connect via web IDEs.
 
 In Coder, web IDEs are defined as
 [coder_app](https://registry.terraform.io/providers/coder/coder/latest/docs/resources/app)
-resources in the template. With our generic model, any web application can
-be used as a Coder application. For example:
+resources in the template. With our generic model, any web application can be
+used as a Coder application. For example:
 
 ```hcl
 # Add button to open Portainer in the workspace dashboard
@@ -36,7 +36,9 @@ resource "coder_app" "portainer" {
 
 ![code-server in a workspace](../images/code-server-ide.png)
 
-[code-server](https://github.com/coder/coder) is our supported method of running VS Code in the web browser. A simple way to install code-server in Linux/macOS workspaces is via the Coder agent in your template:
+[code-server](https://github.com/coder/coder) is our supported method of running
+VS Code in the web browser. A simple way to install code-server in Linux/macOS
+workspaces is via the Coder agent in your template:
 
 ```console
 # edit your template
@@ -62,7 +64,9 @@ resource "coder_agent" "main" {
 }
 ```
 
-For advanced use, we recommend installing code-server in your VM snapshot or container image. Here's a Dockerfile which leverages some special [code-server features](https://coder.com/docs/code-server/):
+For advanced use, we recommend installing code-server in your VM snapshot or
+container image. Here's a Dockerfile which leverages some special
+[code-server features](https://coder.com/docs/code-server/):
 
 ```Dockerfile
 FROM codercom/enterprise-base:ubuntu
@@ -79,7 +83,8 @@ RUN code-server --install-extension eamodio.gitlens
 # or use a process manager like supervisord
 ```
 
-You'll also need to specify a `coder_app` resource related to the agent. This is how code-server is displayed on the workspace page.
+You'll also need to specify a `coder_app` resource related to the agent. This is
+how code-server is displayed on the workspace page.
 
 ```hcl
 resource "coder_app" "code-server" {
@@ -88,6 +93,7 @@ resource "coder_app" "code-server" {
   display_name = "code-server"
   url          = "http://localhost:13337/?folder=/home/coder"
   icon         = "/icon/code.svg"
+  subdomain    = true
 
   healthcheck {
     url       = "http://localhost:13337/healthz"
@@ -97,12 +103,6 @@ resource "coder_app" "code-server" {
 
 }
 ```
-
-## JetBrains Projector
-
-[JetBrains Projector](https://jetbrains.github.io/projector-client/mkdocs/latest/) is a JetBrains Incubator project which renders JetBrains IDEs in the web browser. JetBrains has [suspended the project](https://lp.jetbrains.com/projector/) so Coder no longer provides example templates or support.
-
-Use [JetBrains Gateway](./gateway.md) to remotely connect to a Coder workspace.
 
 ## JupyterLab
 

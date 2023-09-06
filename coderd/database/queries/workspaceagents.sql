@@ -1,13 +1,3 @@
--- name: GetWorkspaceAgentByAuthToken :one
-SELECT
-	*
-FROM
-	workspace_agents
-WHERE
-	auth_token = $1
-ORDER BY
-	created_at DESC;
-
 -- name: GetWorkspaceAgentByID :one
 SELECT
 	*
@@ -60,10 +50,11 @@ INSERT INTO
 		startup_script_behavior,
 		startup_script_timeout_seconds,
 		shutdown_script,
-		shutdown_script_timeout_seconds
+		shutdown_script_timeout_seconds,
+		display_apps
 	)
 VALUES
-	($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21) RETURNING *;
+	($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22) RETURNING *;
 
 -- name: UpdateWorkspaceAgentConnectionByID :exec
 UPDATE
@@ -83,15 +74,28 @@ UPDATE
 SET
 	version = $2,
 	expanded_directory = $3,
-	subsystem = $4
+	subsystems = $4
 WHERE
 	id = $1;
+
+-- name: GetWorkspaceAgentLifecycleStateByID :one
+SELECT
+	lifecycle_state,
+	started_at,
+	ready_at
+FROM
+	workspace_agents
+WHERE
+	id = $1;
+
 
 -- name: UpdateWorkspaceAgentLifecycleStateByID :exec
 UPDATE
 	workspace_agents
 SET
-	lifecycle_state = $2
+	lifecycle_state = $2,
+	started_at = $3,
+	ready_at = $4
 WHERE
 	id = $1;
 
@@ -127,43 +131,44 @@ FROM
 WHERE
 	workspace_agent_id = $1;
 
--- name: UpdateWorkspaceAgentStartupLogOverflowByID :exec
+-- name: UpdateWorkspaceAgentLogOverflowByID :exec
 UPDATE
 	workspace_agents
 SET
-	startup_logs_overflowed = $2
+	logs_overflowed = $2
 WHERE
 	id = $1;
 
--- name: GetWorkspaceAgentStartupLogsAfter :many
+-- name: GetWorkspaceAgentLogsAfter :many
 SELECT
 	*
 FROM
-	workspace_agent_startup_logs
+	workspace_agent_logs
 WHERE
 	agent_id = $1
 	AND (
 		id > @created_after
 	) ORDER BY id ASC;
 
--- name: InsertWorkspaceAgentStartupLogs :many
+-- name: InsertWorkspaceAgentLogs :many
 WITH new_length AS (
 	UPDATE workspace_agents SET
-	startup_logs_length = startup_logs_length + @output_length WHERE workspace_agents.id = @agent_id
+	logs_length = logs_length + @output_length WHERE workspace_agents.id = @agent_id
 )
 INSERT INTO
-		workspace_agent_startup_logs (agent_id, created_at, output, level)
+		workspace_agent_logs (agent_id, created_at, output, level, source)
 	SELECT
 		@agent_id :: uuid AS agent_id,
 		unnest(@created_at :: timestamptz [ ]) AS created_at,
 		unnest(@output :: VARCHAR(1024) [ ]) AS output,
-		unnest(@level :: log_level [ ]) AS level
-	RETURNING workspace_agent_startup_logs.*;
+		unnest(@level :: log_level [ ]) AS level,
+		unnest(@source :: workspace_agent_log_source [ ]) AS source
+	RETURNING workspace_agent_logs.*;
 
 -- If an agent hasn't connected in the last 7 days, we purge it's logs.
 -- Logs can take up a lot of space, so it's important we clean up frequently.
--- name: DeleteOldWorkspaceAgentStartupLogs :exec
-DELETE FROM workspace_agent_startup_logs WHERE agent_id IN
+-- name: DeleteOldWorkspaceAgentLogs :exec
+DELETE FROM workspace_agent_logs WHERE agent_id IN
 	(SELECT id FROM workspace_agents WHERE last_connected_at IS NOT NULL
 		AND last_connected_at < NOW() - INTERVAL '7 day');
 
@@ -186,3 +191,56 @@ WHERE
     	WHERE
 			wb.workspace_id = @workspace_id :: uuid
 	);
+
+-- name: GetWorkspaceAgentAndOwnerByAuthToken :one
+SELECT
+	sqlc.embed(workspace_agents),
+	workspaces.id AS workspace_id,
+	users.id AS owner_id,
+	users.username AS owner_name,
+	users.status AS owner_status,
+	array_cat(
+		array_append(users.rbac_roles, 'member'),
+		array_append(ARRAY[]::text[], 'organization-member:' || organization_members.organization_id::text)
+	)::text[] as owner_roles,
+	array_agg(COALESCE(group_members.group_id::text, ''))::text[] AS owner_groups
+FROM users
+	INNER JOIN
+		workspaces
+	ON
+		workspaces.owner_id = users.id
+	INNER JOIN
+		workspace_builds
+	ON
+		workspace_builds.workspace_id = workspaces.id
+	INNER JOIN
+		workspace_resources
+	ON
+		workspace_resources.job_id = workspace_builds.job_id
+	INNER JOIN
+		workspace_agents
+	ON
+		workspace_agents.resource_id = workspace_resources.id
+	INNER JOIN -- every user is a member of some org
+		organization_members
+	ON
+		organization_members.user_id = users.id
+	LEFT JOIN -- as they may not be a member of any groups
+		group_members
+	ON
+		group_members.user_id = users.id
+WHERE
+	-- TODO: we can add more conditions here, such as:
+	-- 1) The user must be active
+	-- 2) The user must not be deleted
+	-- 3) The workspace must be running
+	workspace_agents.auth_token = @auth_token
+GROUP BY
+	workspace_agents.id,
+	workspaces.id,
+	users.id,
+	organization_members.organization_id,
+	workspace_builds.build_number
+ORDER BY
+	workspace_builds.build_number DESC
+LIMIT 1;

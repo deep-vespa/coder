@@ -5,13 +5,13 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/coder/coder/cli/clitest"
-	"github.com/coder/coder/coderd/coderdtest"
-	"github.com/coder/coder/codersdk"
-	"github.com/coder/coder/enterprise/coderd/coderdenttest"
-	"github.com/coder/coder/enterprise/coderd/license"
-	"github.com/coder/coder/pty/ptytest"
-	"github.com/coder/coder/testutil"
+	"github.com/coder/coder/v2/cli/clitest"
+	"github.com/coder/coder/v2/coderd/coderdtest"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/enterprise/coderd/coderdenttest"
+	"github.com/coder/coder/v2/enterprise/coderd/license"
+	"github.com/coder/coder/v2/pty/ptytest"
+	"github.com/coder/coder/v2/testutil"
 )
 
 func TestGroupList(t *testing.T) {
@@ -20,14 +20,11 @@ func TestGroupList(t *testing.T) {
 	t.Run("OK", func(t *testing.T) {
 		t.Parallel()
 
-		client := coderdenttest.New(t, nil)
-		admin := coderdtest.CreateFirstUser(t, client)
-
-		_ = coderdenttest.AddLicense(t, client, coderdenttest.LicenseOptions{
+		client, admin := coderdenttest.New(t, &coderdenttest.Options{LicenseOptions: &coderdenttest.LicenseOptions{
 			Features: license.Features{
 				codersdk.FeatureTemplateRBAC: 1,
 			},
-		})
+		}})
 
 		ctx := testutil.Context(t, testutil.WaitLong)
 		_, user1 := coderdtest.CreateAnotherUser(t, client, admin.OrganizationID)
@@ -77,29 +74,32 @@ func TestGroupList(t *testing.T) {
 		}
 	})
 
-	t.Run("NoGroups", func(t *testing.T) {
+	t.Run("Everyone", func(t *testing.T) {
 		t.Parallel()
 
-		client := coderdenttest.New(t, nil)
-		_ = coderdtest.CreateFirstUser(t, client)
-
-		_ = coderdenttest.AddLicense(t, client, coderdenttest.LicenseOptions{
+		client, user := coderdenttest.New(t, &coderdenttest.Options{LicenseOptions: &coderdenttest.LicenseOptions{
 			Features: license.Features{
 				codersdk.FeatureTemplateRBAC: 1,
 			},
-		})
+		}})
 
 		inv, conf := newCLI(t, "groups", "list")
 
 		pty := ptytest.New(t)
 
-		inv.Stderr = pty.Output()
+		inv.Stdout = pty.Output()
 		clitest.SetupConfig(t, client, conf)
 
 		err := inv.Run()
 		require.NoError(t, err)
 
-		pty.ExpectMatch("No groups found")
-		pty.ExpectMatch("coder groups create <name>")
+		matches := []string{
+			"NAME", "ORGANIZATION ID", "MEMBERS", " AVATAR URL",
+			"Everyone", user.OrganizationID.String(), coderdtest.FirstUserParams.Email, "",
+		}
+
+		for _, match := range matches {
+			pty.ExpectMatch(match)
+		}
 	})
 }

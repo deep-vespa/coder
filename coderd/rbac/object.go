@@ -28,6 +28,21 @@ var (
 		Type: "workspace",
 	}
 
+	// ResourceWorkspaceBuild refers to permissions necessary to
+	// insert a workspace build job.
+	// create/delete = ?
+	// read = read workspace builds
+	// update = insert/update workspace builds.
+	ResourceWorkspaceBuild = Object{
+		Type: "workspace_build",
+	}
+
+	// ResourceWorkspaceDormant is returned if a workspace is dormant.
+	// It grants restricted permissions on workspace builds.
+	ResourceWorkspaceDormant = Object{
+		Type: "workspace_dormant",
+	}
+
 	// ResourceWorkspaceProxy CRUD. Org
 	//	create/delete = make or delete proxies
 	// 	read = read proxy urls
@@ -173,7 +188,17 @@ var (
 	ResourceSystem = Object{
 		Type: "system",
 	}
+
+	// ResourceTailnetCoordinator is a pseudo-resource for use by the tailnet coordinator
+	ResourceTailnetCoordinator = Object{
+		Type: "tailnet_coordinator",
+	}
 )
+
+// ResourceUserObject is a helper function to create a user object for authz checks.
+func ResourceUserObject(userID uuid.UUID) Object {
+	return ResourceUser.WithID(userID).WithOwner(userID.String())
+}
 
 // Object is used to create objects for authz checks when you have none in
 // hand to run the check on.

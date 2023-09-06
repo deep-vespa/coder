@@ -14,12 +14,10 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/xerrors"
 
-	"github.com/coder/coder/cli/clibase"
-	"github.com/coder/coder/cli/cliui"
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/coderd/util/ptr"
-	"github.com/coder/coder/codersdk"
-	"github.com/coder/coder/provisionerd"
+	"github.com/coder/coder/v2/cli/clibase"
+	"github.com/coder/coder/v2/cli/cliui"
+	"github.com/coder/coder/v2/coderd/util/ptr"
+	"github.com/coder/coder/v2/codersdk"
 )
 
 func (r *RootCmd) templateCreate() *clibase.Cmd {
@@ -28,9 +26,12 @@ func (r *RootCmd) templateCreate() *clibase.Cmd {
 		provisionerTags []string
 		variablesFile   string
 		variables       []string
-		defaultTTL      time.Duration
-		failureTTL      time.Duration
-		inactivityTTL   time.Duration
+		disableEveryone bool
+
+		defaultTTL    time.Duration
+		failureTTL    time.Duration
+		inactivityTTL time.Duration
+		maxTTL        time.Duration
 
 		uploadFlags templateUploadFlags
 	)
@@ -43,7 +44,7 @@ func (r *RootCmd) templateCreate() *clibase.Cmd {
 			r.InitClient(client),
 		),
 		Handler: func(inv *clibase.Invocation) error {
-			if failureTTL != 0 || inactivityTTL != 0 {
+			if failureTTL != 0 || inactivityTTL != 0 || maxTTL != 0 {
 				// This call can be removed when workspace_actions is no longer experimental
 				experiments, exErr := client.Experiments(inv.Context())
 				if exErr != nil {
@@ -86,6 +87,13 @@ func (r *RootCmd) templateCreate() *clibase.Cmd {
 				return xerrors.Errorf("A template already exists named %q!", templateName)
 			}
 
+			err = uploadFlags.checkForLockfile(inv)
+			if err != nil {
+				return xerrors.Errorf("check for lockfile: %w", err)
+			}
+
+			message := uploadFlags.templateMessage(inv)
+
 			// Confirm upload of the directory.
 			resp, err := uploadFlags.upload(inv, client)
 			if err != nil {
@@ -98,9 +106,10 @@ func (r *RootCmd) templateCreate() *clibase.Cmd {
 			}
 
 			job, err := createValidTemplateVersion(inv, createValidTemplateVersionArgs{
+				Message:         message,
 				Client:          client,
 				Organization:    organization,
-				Provisioner:     database.ProvisionerType(provisioner),
+				Provisioner:     codersdk.ProvisionerType(provisioner),
 				FileID:          resp.ID,
 				ProvisionerTags: tags,
 				VariablesFile:   variablesFile,
@@ -121,11 +130,13 @@ func (r *RootCmd) templateCreate() *clibase.Cmd {
 			}
 
 			createReq := codersdk.CreateTemplateRequest{
-				Name:                templateName,
-				VersionID:           job.ID,
-				DefaultTTLMillis:    ptr.Ref(defaultTTL.Milliseconds()),
-				FailureTTLMillis:    ptr.Ref(failureTTL.Milliseconds()),
-				InactivityTTLMillis: ptr.Ref(inactivityTTL.Milliseconds()),
+				Name:                       templateName,
+				VersionID:                  job.ID,
+				DefaultTTLMillis:           ptr.Ref(defaultTTL.Milliseconds()),
+				FailureTTLMillis:           ptr.Ref(failureTTL.Milliseconds()),
+				MaxTTLMillis:               ptr.Ref(maxTTL.Milliseconds()),
+				TimeTilDormantMillis:       ptr.Ref(inactivityTTL.Milliseconds()),
+				DisableEveryoneGroupAccess: disableEveryone,
 			}
 
 			_, err = client.CreateTemplate(inv.Context(), organization.ID, createReq)
@@ -145,6 +156,12 @@ func (r *RootCmd) templateCreate() *clibase.Cmd {
 	}
 	cmd.Options = clibase.OptionSet{
 		{
+			Flag: "private",
+			Description: "Disable the default behavior of granting template access to the 'everyone' group. " +
+				"The template permissions must be updated to allow non-admin users to use this template.",
+			Value: clibase.BoolOf(&disableEveryone),
+		},
+		{
 			Flag:        "variables-file",
 			Description: "Specify a file path with values for Terraform-managed variables.",
 			Value:       clibase.StringOf(&variablesFile),
@@ -155,29 +172,38 @@ func (r *RootCmd) templateCreate() *clibase.Cmd {
 			Value:       clibase.StringArrayOf(&variables),
 		},
 		{
+			Flag:        "var",
+			Description: "Alias of --variable.",
+			Value:       clibase.StringArrayOf(&variables),
+		},
+		{
 			Flag:        "provisioner-tag",
 			Description: "Specify a set of tags to target provisioner daemons.",
 			Value:       clibase.StringArrayOf(&provisionerTags),
 		},
 		{
 			Flag:        "default-ttl",
-			Description: "Specify a default TTL for workspaces created from this template.",
+			Description: "Specify a default TTL for workspaces created from this template. It is the default time before shutdown - workspaces created from this template default to this value. Maps to \"Default autostop\" in the UI.",
 			Default:     "24h",
 			Value:       clibase.DurationOf(&defaultTTL),
 		},
 		{
 			Flag:        "failure-ttl",
-			Description: "Specify a failure TTL for workspaces created from this template. This licensed feature's default is 0h (off).",
+			Description: "Specify a failure TTL for workspaces created from this template. It is the amount of time after a failed \"start\" build before coder automatically schedules a \"stop\" build to cleanup.This licensed feature's default is 0h (off). Maps to \"Failure cleanup\"in the UI.",
 			Default:     "0h",
 			Value:       clibase.DurationOf(&failureTTL),
 		},
 		{
 			Flag:        "inactivity-ttl",
-			Description: "Specify an inactivity TTL for workspaces created from this template. This licensed feature's default is 0h (off).",
+			Description: "Specify an inactivity TTL for workspaces created from this template. It is the amount of time the workspace is not used before it is be stopped and auto-locked. This includes across multiple builds (e.g. auto-starts and stops). This licensed feature's default is 0h (off). Maps to \"Dormancy threshold\" in the UI.",
 			Default:     "0h",
 			Value:       clibase.DurationOf(&inactivityTTL),
 		},
-		uploadFlags.option(),
+		{
+			Flag:        "max-ttl",
+			Description: "Edit the template maximum time before shutdown - workspaces created from this template must shutdown within the given duration after starting. This is an enterprise-only feature.",
+			Value:       clibase.DurationOf(&maxTTL),
+		},
 		{
 			Flag:        "test.provisioner",
 			Description: "Customize the provisioner backend.",
@@ -187,14 +213,16 @@ func (r *RootCmd) templateCreate() *clibase.Cmd {
 		},
 		cliui.SkipPromptOption(),
 	}
+	cmd.Options = append(cmd.Options, uploadFlags.options()...)
 	return cmd
 }
 
 type createValidTemplateVersionArgs struct {
 	Name         string
+	Message      string
 	Client       *codersdk.Client
 	Organization codersdk.Organization
-	Provisioner  database.ProvisionerType
+	Provisioner  codersdk.ProvisionerType
 	FileID       uuid.UUID
 
 	VariablesFile string
@@ -225,9 +253,10 @@ func createValidTemplateVersion(inv *clibase.Invocation, args createValidTemplat
 
 	req := codersdk.CreateTemplateVersionRequest{
 		Name:               args.Name,
+		Message:            args.Message,
 		StorageMethod:      codersdk.ProvisionerStorageMethodFile,
 		FileID:             args.FileID,
-		Provisioner:        codersdk.ProvisionerType(args.Provisioner),
+		Provisioner:        args.Provisioner,
 		ProvisionerTags:    args.ProvisionerTags,
 		UserVariableValues: variableValues,
 	}
@@ -253,7 +282,10 @@ func createValidTemplateVersion(inv *clibase.Invocation, args createValidTemplat
 	})
 	if err != nil {
 		var jobErr *cliui.ProvisionerJobError
-		if errors.As(err, &jobErr) && !provisionerd.IsMissingParameterErrorCode(string(jobErr.Code)) {
+		if errors.As(err, &jobErr) && !codersdk.JobIsMissingParameterErrorCode(jobErr.Code) {
+			return nil, err
+		}
+		if err != nil {
 			return nil, err
 		}
 	}

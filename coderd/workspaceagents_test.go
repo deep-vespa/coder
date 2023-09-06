@@ -2,33 +2,34 @@ package coderd_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
-	"net/http/httptest"
-	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/oauth2"
+	"tailscale.com/tailcfg"
 
 	"cdr.dev/slog"
 	"cdr.dev/slog/sloggers/slogtest"
-	"github.com/coder/coder/agent"
-	"github.com/coder/coder/coderd/coderdtest"
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/coderd/gitauth"
-	"github.com/coder/coder/codersdk"
-	"github.com/coder/coder/codersdk/agentsdk"
-	"github.com/coder/coder/provisioner/echo"
-	"github.com/coder/coder/provisionersdk/proto"
-	"github.com/coder/coder/testutil"
+	"github.com/coder/coder/v2/agent"
+	"github.com/coder/coder/v2/coderd/coderdtest"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/database/dbtime"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/codersdk/agentsdk"
+	"github.com/coder/coder/v2/provisioner/echo"
+	"github.com/coder/coder/v2/provisionersdk/proto"
+	"github.com/coder/coder/v2/tailnet/tailnettest"
+	"github.com/coder/coder/v2/testutil"
 )
 
 func TestWorkspaceAgent(t *testing.T) {
@@ -43,10 +44,10 @@ func TestWorkspaceAgent(t *testing.T) {
 		tmpDir := t.TempDir()
 		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
 			Parse:         echo.ParseComplete,
-			ProvisionPlan: echo.ProvisionComplete,
-			ProvisionApply: []*proto.Provision_Response{{
-				Type: &proto.Provision_Response_Complete{
-					Complete: &proto.Provision_Complete{
+			ProvisionPlan: echo.PlanComplete,
+			ProvisionApply: []*proto.Response{{
+				Type: &proto.Response_Apply{
+					Apply: &proto.ApplyComplete{
 						Resources: []*proto.Resource{{
 							Name: "example",
 							Type: "aws_instance",
@@ -75,6 +76,7 @@ func TestWorkspaceAgent(t *testing.T) {
 		require.Equal(t, tmpDir, workspace.LatestBuild.Resources[0].Agents[0].Directory)
 		_, err = client.WorkspaceAgent(ctx, workspace.LatestBuild.Resources[0].Agents[0].ID)
 		require.NoError(t, err)
+		require.True(t, workspace.LatestBuild.Resources[0].Agents[0].Health.Healthy)
 	})
 	t.Run("HasFallbackTroubleshootingURL", func(t *testing.T) {
 		t.Parallel()
@@ -86,10 +88,10 @@ func TestWorkspaceAgent(t *testing.T) {
 		tmpDir := t.TempDir()
 		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
 			Parse:         echo.ParseComplete,
-			ProvisionPlan: echo.ProvisionComplete,
-			ProvisionApply: []*proto.Provision_Response{{
-				Type: &proto.Provision_Response_Complete{
-					Complete: &proto.Provision_Complete{
+			ProvisionPlan: echo.PlanComplete,
+			ProvisionApply: []*proto.Response{{
+				Type: &proto.Response_Apply{
+					Apply: &proto.ApplyComplete{
 						Resources: []*proto.Resource{{
 							Name: "example",
 							Type: "aws_instance",
@@ -131,10 +133,10 @@ func TestWorkspaceAgent(t *testing.T) {
 
 		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
 			Parse:         echo.ParseComplete,
-			ProvisionPlan: echo.ProvisionComplete,
-			ProvisionApply: []*proto.Provision_Response{{
-				Type: &proto.Provision_Response_Complete{
-					Complete: &proto.Provision_Complete{
+			ProvisionPlan: echo.PlanComplete,
+			ProvisionApply: []*proto.Response{{
+				Type: &proto.Response_Apply{
+					Apply: &proto.ApplyComplete{
 						Resources: []*proto.Resource{{
 							Name: "example",
 							Type: "aws_instance",
@@ -170,6 +172,99 @@ func TestWorkspaceAgent(t *testing.T) {
 		}, testutil.IntervalMedium, "agent status timeout")
 
 		require.Equal(t, wantTroubleshootingURL, workspace.LatestBuild.Resources[0].Agents[0].TroubleshootingURL)
+		require.False(t, workspace.LatestBuild.Resources[0].Agents[0].Health.Healthy)
+		require.NotEmpty(t, workspace.LatestBuild.Resources[0].Agents[0].Health.Reason)
+	})
+
+	t.Run("DisplayApps", func(t *testing.T) {
+		t.Parallel()
+		client := coderdtest.New(t, &coderdtest.Options{
+			IncludeProvisionerDaemon: true,
+		})
+		user := coderdtest.CreateFirstUser(t, client)
+		authToken := uuid.NewString()
+		tmpDir := t.TempDir()
+		apps := &proto.DisplayApps{
+			Vscode:               true,
+			VscodeInsiders:       true,
+			WebTerminal:          true,
+			PortForwardingHelper: true,
+			SshHelper:            true,
+		}
+
+		echoResp := &echo.Responses{
+			Parse:         echo.ParseComplete,
+			ProvisionPlan: echo.PlanComplete,
+			ProvisionApply: []*proto.Response{{
+				Type: &proto.Response_Apply{
+					Apply: &proto.ApplyComplete{
+						Resources: []*proto.Resource{
+							{
+								Name: "example",
+								Type: "aws_instance",
+								Agents: []*proto.Agent{
+									{
+										Id:        uuid.NewString(),
+										Directory: tmpDir,
+										Auth: &proto.Agent_Token{
+											Token: authToken,
+										},
+										DisplayApps: apps,
+									},
+								},
+							},
+						},
+					},
+				},
+			}},
+		}
+
+		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, echoResp)
+		template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
+		coderdtest.AwaitTemplateVersionJob(t, client, version.ID)
+		workspace := coderdtest.CreateWorkspace(t, client, user.OrganizationID, template.ID)
+		coderdtest.AwaitWorkspaceBuildJob(t, client, workspace.LatestBuild.ID)
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
+		defer cancel()
+
+		workspace, err := client.Workspace(ctx, workspace.ID)
+		require.NoError(t, err)
+		agent, err := client.WorkspaceAgent(ctx, workspace.LatestBuild.Resources[0].Agents[0].ID)
+		require.NoError(t, err)
+		expectedApps := []codersdk.DisplayApp{
+			codersdk.DisplayAppPortForward,
+			codersdk.DisplayAppSSH,
+			codersdk.DisplayAppVSCodeDesktop,
+			codersdk.DisplayAppVSCodeInsiders,
+			codersdk.DisplayAppWebTerminal,
+		}
+		require.ElementsMatch(t, expectedApps, agent.DisplayApps)
+
+		// Flips all the apps to false.
+		apps.PortForwardingHelper = false
+		apps.Vscode = false
+		apps.VscodeInsiders = false
+		apps.SshHelper = false
+		apps.WebTerminal = false
+
+		version = coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, echoResp,
+			func(req *codersdk.CreateTemplateVersionRequest) {
+				req.TemplateID = template.ID
+			})
+
+		err = client.UpdateActiveTemplateVersion(ctx, template.ID, codersdk.UpdateActiveTemplateVersion{
+			ID: version.ID,
+		})
+		require.NoError(t, err)
+		coderdtest.AwaitTemplateVersionJob(t, client, version.ID)
+		// Creating another workspace is just easier.
+		workspace = coderdtest.CreateWorkspace(t, client, user.OrganizationID, template.ID)
+		build := coderdtest.AwaitWorkspaceBuildJob(t, client, workspace.LatestBuild.ID)
+		require.NoError(t, err)
+		agent, err = client.WorkspaceAgent(ctx, build.Resources[0].Agents[0].ID)
+		require.NoError(t, err)
+		require.Len(t, agent.DisplayApps, 0)
 	})
 }
 
@@ -185,10 +280,10 @@ func TestWorkspaceAgentStartupLogs(t *testing.T) {
 		authToken := uuid.NewString()
 		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
 			Parse:         echo.ParseComplete,
-			ProvisionPlan: echo.ProvisionComplete,
-			ProvisionApply: []*proto.Provision_Response{{
-				Type: &proto.Provision_Response_Complete{
-					Complete: &proto.Provision_Complete{
+			ProvisionPlan: echo.PlanComplete,
+			ProvisionApply: []*proto.Response{{
+				Type: &proto.Response_Apply{
+					Apply: &proto.ApplyComplete{
 						Resources: []*proto.Resource{{
 							Name: "example",
 							Type: "aws_instance",
@@ -210,27 +305,119 @@ func TestWorkspaceAgentStartupLogs(t *testing.T) {
 
 		agentClient := agentsdk.New(client.URL)
 		agentClient.SetSessionToken(authToken)
-		err := agentClient.PatchStartupLogs(ctx, agentsdk.PatchStartupLogs{
-			Logs: []agentsdk.StartupLog{{
-				CreatedAt: database.Now(),
-				Output:    "testing",
-			}},
+		err := agentClient.PatchLogs(ctx, agentsdk.PatchLogs{
+			Logs: []agentsdk.Log{
+				{
+					CreatedAt: dbtime.Now(),
+					Output:    "testing",
+				},
+				{
+					CreatedAt: dbtime.Now(),
+					Output:    "testing2",
+				},
+			},
 		})
 		require.NoError(t, err)
 
-		logs, closer, err := client.WorkspaceAgentStartupLogsAfter(ctx, build.Resources[0].Agents[0].ID, -500)
+		logs, closer, err := client.WorkspaceAgentLogsAfter(ctx, build.Resources[0].Agents[0].ID, 0, true)
 		require.NoError(t, err)
 		defer func() {
 			_ = closer.Close()
 		}()
-		var logChunk []codersdk.WorkspaceAgentStartupLog
+		var logChunk []codersdk.WorkspaceAgentLog
 		select {
 		case <-ctx.Done():
 		case logChunk = <-logs:
 		}
 		require.NoError(t, ctx.Err())
-		require.Len(t, logChunk, 1)
+		require.Len(t, logChunk, 2) // No EOF.
 		require.Equal(t, "testing", logChunk[0].Output)
+		require.Equal(t, "testing2", logChunk[1].Output)
+	})
+	t.Run("Close logs on outdated build", func(t *testing.T) {
+		t.Parallel()
+		ctx := testutil.Context(t, testutil.WaitMedium)
+		client := coderdtest.New(t, &coderdtest.Options{
+			IncludeProvisionerDaemon: true,
+		})
+		user := coderdtest.CreateFirstUser(t, client)
+		authToken := uuid.NewString()
+		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
+			Parse:         echo.ParseComplete,
+			ProvisionPlan: echo.PlanComplete,
+			ProvisionApply: []*proto.Response{{
+				Type: &proto.Response_Apply{
+					Apply: &proto.ApplyComplete{
+						Resources: []*proto.Resource{{
+							Name: "example",
+							Type: "aws_instance",
+							Agents: []*proto.Agent{{
+								Id: uuid.NewString(),
+								Auth: &proto.Agent_Token{
+									Token: authToken,
+								},
+							}},
+						}},
+					},
+				},
+			}},
+		})
+		template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
+		coderdtest.AwaitTemplateVersionJob(t, client, version.ID)
+		workspace := coderdtest.CreateWorkspace(t, client, user.OrganizationID, template.ID)
+		build := coderdtest.AwaitWorkspaceBuildJob(t, client, workspace.LatestBuild.ID)
+
+		agentClient := agentsdk.New(client.URL)
+		agentClient.SetSessionToken(authToken)
+		err := agentClient.PatchLogs(ctx, agentsdk.PatchLogs{
+			Logs: []agentsdk.Log{
+				{
+					CreatedAt: dbtime.Now(),
+					Output:    "testing",
+				},
+			},
+		})
+		require.NoError(t, err)
+
+		logs, closer, err := client.WorkspaceAgentLogsAfter(ctx, build.Resources[0].Agents[0].ID, 0, true)
+		require.NoError(t, err)
+		defer func() {
+			_ = closer.Close()
+		}()
+
+		first := make(chan struct{})
+		go func() {
+			select {
+			case <-ctx.Done():
+				assert.Fail(t, "context done while waiting in goroutine")
+			case <-logs:
+				close(first)
+			}
+		}()
+		select {
+		case <-ctx.Done():
+			require.FailNow(t, "context done while waiting for first log")
+		case <-first:
+		}
+
+		_ = coderdtest.CreateWorkspaceBuild(t, client, workspace, database.WorkspaceTransitionStart)
+
+		// Send a new log message to trigger a re-check.
+		err = agentClient.PatchLogs(ctx, agentsdk.PatchLogs{
+			Logs: []agentsdk.Log{
+				{
+					CreatedAt: dbtime.Now(),
+					Output:    "testing2",
+				},
+			},
+		})
+		require.NoError(t, err)
+
+		select {
+		case <-ctx.Done():
+			require.FailNow(t, "context done while waiting for logs close")
+		case <-logs:
+		}
 	})
 	t.Run("PublishesOnOverflow", func(t *testing.T) {
 		t.Parallel()
@@ -242,10 +429,10 @@ func TestWorkspaceAgentStartupLogs(t *testing.T) {
 		authToken := uuid.NewString()
 		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
 			Parse:         echo.ParseComplete,
-			ProvisionPlan: echo.ProvisionComplete,
-			ProvisionApply: []*proto.Provision_Response{{
-				Type: &proto.Provision_Response_Complete{
-					Complete: &proto.Provision_Complete{
+			ProvisionPlan: echo.PlanComplete,
+			ProvisionApply: []*proto.Response{{
+				Type: &proto.Response_Apply{
+					Apply: &proto.ApplyComplete{
 						Resources: []*proto.Resource{{
 							Name: "example",
 							Type: "aws_instance",
@@ -270,9 +457,9 @@ func TestWorkspaceAgentStartupLogs(t *testing.T) {
 
 		agentClient := agentsdk.New(client.URL)
 		agentClient.SetSessionToken(authToken)
-		err = agentClient.PatchStartupLogs(ctx, agentsdk.PatchStartupLogs{
-			Logs: []agentsdk.StartupLog{{
-				CreatedAt: database.Now(),
+		err = agentClient.PatchLogs(ctx, agentsdk.PatchLogs{
+			Logs: []agentsdk.Log{{
+				CreatedAt: dbtime.Now(),
 				Output:    strings.Repeat("a", (1<<20)+1),
 			}},
 		})
@@ -289,7 +476,7 @@ func TestWorkspaceAgentStartupLogs(t *testing.T) {
 				t.FailNow()
 			case update = <-updates:
 			}
-			if update.LatestBuild.Resources[0].Agents[0].StartupLogsOverflowed {
+			if update.LatestBuild.Resources[0].Agents[0].LogsOverflowed {
 				break
 			}
 		}
@@ -309,7 +496,7 @@ func TestWorkspaceAgentListen(t *testing.T) {
 		authToken := uuid.NewString()
 		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
 			Parse:          echo.ParseComplete,
-			ProvisionPlan:  echo.ProvisionComplete,
+			ProvisionPlan:  echo.PlanComplete,
 			ProvisionApply: echo.ProvisionApplyWithAgent(authToken),
 		})
 		template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
@@ -350,7 +537,7 @@ func TestWorkspaceAgentListen(t *testing.T) {
 		authToken := uuid.NewString()
 		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
 			Parse:          echo.ParseComplete,
-			ProvisionPlan:  echo.ProvisionComplete,
+			ProvisionPlan:  echo.PlanComplete,
 			ProvisionApply: echo.ProvisionApplyWithAgent(authToken),
 		})
 
@@ -361,10 +548,10 @@ func TestWorkspaceAgentListen(t *testing.T) {
 
 		version = coderdtest.UpdateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
 			Parse:         echo.ParseComplete,
-			ProvisionPlan: echo.ProvisionComplete,
-			ProvisionApply: []*proto.Provision_Response{{
-				Type: &proto.Provision_Response_Complete{
-					Complete: &proto.Provision_Complete{
+			ProvisionPlan: echo.PlanComplete,
+			ProvisionApply: []*proto.Response{{
+				Type: &proto.Response_Apply{
+					Apply: &proto.ApplyComplete{
 						Resources: []*proto.Resource{{
 							Name: "example",
 							Type: "aws_instance",
@@ -396,7 +583,9 @@ func TestWorkspaceAgentListen(t *testing.T) {
 
 		_, err = agentClient.Listen(ctx)
 		require.Error(t, err)
-		require.ErrorContains(t, err, "build is outdated")
+		var sdkErr *codersdk.Error
+		require.ErrorAs(t, err, &sdkErr)
+		require.Equal(t, http.StatusForbidden, sdkErr.StatusCode())
 	})
 }
 
@@ -407,7 +596,7 @@ func TestWorkspaceAgentTailnet(t *testing.T) {
 	authToken := uuid.NewString()
 	version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
 		Parse:          echo.ParseComplete,
-		ProvisionPlan:  echo.ProvisionComplete,
+		ProvisionPlan:  echo.PlanComplete,
 		ProvisionApply: echo.ProvisionApplyWithAgent(authToken),
 	})
 	template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
@@ -444,6 +633,82 @@ func TestWorkspaceAgentTailnet(t *testing.T) {
 	require.Equal(t, "test", strings.TrimSpace(string(output)))
 }
 
+func TestWorkspaceAgentTailnetDirectDisabled(t *testing.T) {
+	t.Parallel()
+
+	dv := coderdtest.DeploymentValues(t)
+	err := dv.DERP.Config.BlockDirect.Set("true")
+	require.NoError(t, err)
+	require.True(t, dv.DERP.Config.BlockDirect.Value())
+
+	client, daemonCloser := coderdtest.NewWithProvisionerCloser(t, &coderdtest.Options{
+		DeploymentValues: dv,
+	})
+	user := coderdtest.CreateFirstUser(t, client)
+	authToken := uuid.NewString()
+	version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
+		Parse:          echo.ParseComplete,
+		ProvisionPlan:  echo.PlanComplete,
+		ProvisionApply: echo.ProvisionApplyWithAgent(authToken),
+	})
+	template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
+	coderdtest.AwaitTemplateVersionJob(t, client, version.ID)
+	workspace := coderdtest.CreateWorkspace(t, client, user.OrganizationID, template.ID)
+	coderdtest.AwaitWorkspaceBuildJob(t, client, workspace.LatestBuild.ID)
+	daemonCloser.Close()
+
+	ctx := testutil.Context(t, testutil.WaitLong)
+
+	// Verify that the manifest has DisableDirectConnections set to true.
+	agentClient := agentsdk.New(client.URL)
+	agentClient.SetSessionToken(authToken)
+	manifest, err := agentClient.Manifest(ctx)
+	require.NoError(t, err)
+	require.True(t, manifest.DisableDirectConnections)
+
+	agentCloser := agent.New(agent.Options{
+		Client: agentClient,
+		Logger: slogtest.Make(t, nil).Named("agent").Leveled(slog.LevelDebug),
+	})
+	defer agentCloser.Close()
+	resources := coderdtest.AwaitWorkspaceAgents(t, client, workspace.ID)
+	agentID := resources[0].Agents[0].ID
+
+	// Verify that the connection data has no STUN ports and
+	// DisableDirectConnections set to true.
+	res, err := client.Request(ctx, http.MethodGet, fmt.Sprintf("/api/v2/workspaceagents/%s/connection", agentID), nil)
+	require.NoError(t, err)
+	defer res.Body.Close()
+	require.Equal(t, http.StatusOK, res.StatusCode)
+	var connInfo codersdk.WorkspaceAgentConnectionInfo
+	err = json.NewDecoder(res.Body).Decode(&connInfo)
+	require.NoError(t, err)
+	require.True(t, connInfo.DisableDirectConnections)
+	for _, region := range connInfo.DERPMap.Regions {
+		t.Logf("region %s (%v)", region.RegionCode, region.EmbeddedRelay)
+		for _, node := range region.Nodes {
+			t.Logf("  node %s (stun %d)", node.Name, node.STUNPort)
+			require.EqualValues(t, -1, node.STUNPort)
+			// tailnet.NewDERPMap() will create nodes with "stun" in the name,
+			// but not if direct is disabled.
+			require.NotContains(t, node.Name, "stun")
+			require.False(t, node.STUNOnly)
+		}
+	}
+
+	conn, err := client.DialWorkspaceAgent(ctx, resources[0].Agents[0].ID, &codersdk.DialWorkspaceAgentOptions{
+		Logger: slogtest.Make(t, nil).Named("client").Leveled(slog.LevelDebug),
+	})
+	require.NoError(t, err)
+	defer conn.Close()
+	require.True(t, conn.BlockEndpoints())
+
+	require.True(t, conn.AwaitReachable(ctx))
+	_, p2p, _, err := conn.Ping(ctx)
+	require.NoError(t, err)
+	require.False(t, p2p)
+}
+
 func TestWorkspaceAgentListeningPorts(t *testing.T) {
 	t.Parallel()
 
@@ -460,10 +725,10 @@ func TestWorkspaceAgentListeningPorts(t *testing.T) {
 		authToken := uuid.NewString()
 		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
 			Parse:         echo.ParseComplete,
-			ProvisionPlan: echo.ProvisionComplete,
-			ProvisionApply: []*proto.Provision_Response{{
-				Type: &proto.Provision_Response_Complete{
-					Complete: &proto.Provision_Complete{
+			ProvisionPlan: echo.PlanComplete,
+			ProvisionApply: []*proto.Response{{
+				Type: &proto.Response_Apply{
+					Apply: &proto.ApplyComplete{
 						Resources: []*proto.Resource{{
 							Name: "example",
 							Type: "aws_instance",
@@ -718,9 +983,9 @@ func TestWorkspaceAgentAppHealth(t *testing.T) {
 	}
 	version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
 		Parse: echo.ParseComplete,
-		ProvisionApply: []*proto.Provision_Response{{
-			Type: &proto.Provision_Response_Complete{
-				Complete: &proto.Provision_Complete{
+		ProvisionApply: []*proto.Response{{
+			Type: &proto.Response_Apply{
+				Apply: &proto.ApplyComplete{
 					Resources: []*proto.Resource{{
 						Name: "example",
 						Type: "aws_instance",
@@ -792,270 +1057,6 @@ func TestWorkspaceAgentAppHealth(t *testing.T) {
 	require.EqualValues(t, codersdk.WorkspaceAppHealthUnhealthy, manifest.Apps[1].Health)
 }
 
-// nolint:bodyclose
-func TestWorkspaceAgentsGitAuth(t *testing.T) {
-	t.Parallel()
-	t.Run("NoMatchingConfig", func(t *testing.T) {
-		t.Parallel()
-		client := coderdtest.New(t, &coderdtest.Options{
-			IncludeProvisionerDaemon: true,
-			GitAuthConfigs:           []*gitauth.Config{},
-		})
-		user := coderdtest.CreateFirstUser(t, client)
-		authToken := uuid.NewString()
-		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
-			Parse:          echo.ParseComplete,
-			ProvisionPlan:  echo.ProvisionComplete,
-			ProvisionApply: echo.ProvisionApplyWithAgent(authToken),
-		})
-		template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
-		coderdtest.AwaitTemplateVersionJob(t, client, version.ID)
-		workspace := coderdtest.CreateWorkspace(t, client, user.OrganizationID, template.ID)
-		coderdtest.AwaitWorkspaceBuildJob(t, client, workspace.LatestBuild.ID)
-
-		agentClient := agentsdk.New(client.URL)
-		agentClient.SetSessionToken(authToken)
-		_, err := agentClient.GitAuth(context.Background(), "github.com", false)
-		var apiError *codersdk.Error
-		require.ErrorAs(t, err, &apiError)
-		require.Equal(t, http.StatusNotFound, apiError.StatusCode())
-	})
-	t.Run("ReturnsURL", func(t *testing.T) {
-		t.Parallel()
-		client := coderdtest.New(t, &coderdtest.Options{
-			IncludeProvisionerDaemon: true,
-			GitAuthConfigs: []*gitauth.Config{{
-				OAuth2Config: &testutil.OAuth2Config{},
-				ID:           "github",
-				Regex:        regexp.MustCompile(`github\.com`),
-				Type:         codersdk.GitProviderGitHub,
-			}},
-		})
-		user := coderdtest.CreateFirstUser(t, client)
-		authToken := uuid.NewString()
-		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
-			Parse:         echo.ParseComplete,
-			ProvisionPlan: echo.ProvisionComplete,
-			ProvisionApply: []*proto.Provision_Response{{
-				Type: &proto.Provision_Response_Complete{
-					Complete: &proto.Provision_Complete{
-						Resources: []*proto.Resource{{
-							Name: "example",
-							Type: "aws_instance",
-							Agents: []*proto.Agent{{
-								Id: uuid.NewString(),
-								Auth: &proto.Agent_Token{
-									Token: authToken,
-								},
-							}},
-						}},
-					},
-				},
-			}},
-		})
-		template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
-		coderdtest.AwaitTemplateVersionJob(t, client, version.ID)
-		workspace := coderdtest.CreateWorkspace(t, client, user.OrganizationID, template.ID)
-		coderdtest.AwaitWorkspaceBuildJob(t, client, workspace.LatestBuild.ID)
-
-		agentClient := agentsdk.New(client.URL)
-		agentClient.SetSessionToken(authToken)
-		token, err := agentClient.GitAuth(context.Background(), "github.com/asd/asd", false)
-		require.NoError(t, err)
-		require.True(t, strings.HasSuffix(token.URL, fmt.Sprintf("/gitauth/%s", "github")))
-	})
-	t.Run("UnauthorizedCallback", func(t *testing.T) {
-		t.Parallel()
-		client := coderdtest.New(t, &coderdtest.Options{
-			IncludeProvisionerDaemon: true,
-			GitAuthConfigs: []*gitauth.Config{{
-				OAuth2Config: &testutil.OAuth2Config{},
-				ID:           "github",
-				Regex:        regexp.MustCompile(`github\.com`),
-				Type:         codersdk.GitProviderGitHub,
-			}},
-		})
-		resp := coderdtest.RequestGitAuthCallback(t, "github", client)
-		require.Equal(t, http.StatusSeeOther, resp.StatusCode)
-	})
-	t.Run("AuthorizedCallback", func(t *testing.T) {
-		t.Parallel()
-		client := coderdtest.New(t, &coderdtest.Options{
-			IncludeProvisionerDaemon: true,
-			GitAuthConfigs: []*gitauth.Config{{
-				OAuth2Config: &testutil.OAuth2Config{},
-				ID:           "github",
-				Regex:        regexp.MustCompile(`github\.com`),
-				Type:         codersdk.GitProviderGitHub,
-			}},
-		})
-		_ = coderdtest.CreateFirstUser(t, client)
-		resp := coderdtest.RequestGitAuthCallback(t, "github", client)
-		require.Equal(t, http.StatusTemporaryRedirect, resp.StatusCode)
-		location, err := resp.Location()
-		require.NoError(t, err)
-		require.Equal(t, "/gitauth", location.Path)
-
-		// Callback again to simulate updating the token.
-		resp = coderdtest.RequestGitAuthCallback(t, "github", client)
-		require.Equal(t, http.StatusTemporaryRedirect, resp.StatusCode)
-	})
-	t.Run("ValidateURL", func(t *testing.T) {
-		t.Parallel()
-		ctx := testutil.Context(t, testutil.WaitLong)
-
-		srv := httptest.NewServer(nil)
-		defer srv.Close()
-		client := coderdtest.New(t, &coderdtest.Options{
-			IncludeProvisionerDaemon: true,
-			GitAuthConfigs: []*gitauth.Config{{
-				ValidateURL:  srv.URL,
-				OAuth2Config: &testutil.OAuth2Config{},
-				ID:           "github",
-				Regex:        regexp.MustCompile(`github\.com`),
-				Type:         codersdk.GitProviderGitHub,
-			}},
-		})
-		user := coderdtest.CreateFirstUser(t, client)
-		authToken := uuid.NewString()
-		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
-			Parse:          echo.ParseComplete,
-			ProvisionPlan:  echo.ProvisionComplete,
-			ProvisionApply: echo.ProvisionApplyWithAgent(authToken),
-		})
-		template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
-		coderdtest.AwaitTemplateVersionJob(t, client, version.ID)
-		workspace := coderdtest.CreateWorkspace(t, client, user.OrganizationID, template.ID)
-		coderdtest.AwaitWorkspaceBuildJob(t, client, workspace.LatestBuild.ID)
-
-		agentClient := agentsdk.New(client.URL)
-		agentClient.SetSessionToken(authToken)
-
-		resp := coderdtest.RequestGitAuthCallback(t, "github", client)
-		require.Equal(t, http.StatusTemporaryRedirect, resp.StatusCode)
-
-		// If the validation URL says unauthorized, the callback
-		// URL to re-authenticate should be returned.
-		srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusUnauthorized)
-		})
-		res, err := agentClient.GitAuth(ctx, "github.com/asd/asd", false)
-		require.NoError(t, err)
-		require.NotEmpty(t, res.URL)
-
-		// If the validation URL gives a non-OK status code, this
-		// should be treated as an internal server error.
-		srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusForbidden)
-			w.Write([]byte("Something went wrong!"))
-		})
-		_, err = agentClient.GitAuth(ctx, "github.com/asd/asd", false)
-		var apiError *codersdk.Error
-		require.ErrorAs(t, err, &apiError)
-		require.Equal(t, http.StatusInternalServerError, apiError.StatusCode())
-		require.Equal(t, "validate git auth token: status 403: body: Something went wrong!", apiError.Detail)
-	})
-
-	t.Run("ExpiredNoRefresh", func(t *testing.T) {
-		t.Parallel()
-		client := coderdtest.New(t, &coderdtest.Options{
-			IncludeProvisionerDaemon: true,
-			GitAuthConfigs: []*gitauth.Config{{
-				OAuth2Config: &testutil.OAuth2Config{
-					Token: &oauth2.Token{
-						AccessToken:  "token",
-						RefreshToken: "something",
-						Expiry:       database.Now().Add(-time.Hour),
-					},
-				},
-				ID:        "github",
-				Regex:     regexp.MustCompile(`github\.com`),
-				Type:      codersdk.GitProviderGitHub,
-				NoRefresh: true,
-			}},
-		})
-		user := coderdtest.CreateFirstUser(t, client)
-		authToken := uuid.NewString()
-		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
-			Parse:          echo.ParseComplete,
-			ProvisionPlan:  echo.ProvisionComplete,
-			ProvisionApply: echo.ProvisionApplyWithAgent(authToken),
-		})
-		template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
-		coderdtest.AwaitTemplateVersionJob(t, client, version.ID)
-		workspace := coderdtest.CreateWorkspace(t, client, user.OrganizationID, template.ID)
-		coderdtest.AwaitWorkspaceBuildJob(t, client, workspace.LatestBuild.ID)
-
-		agentClient := agentsdk.New(client.URL)
-		agentClient.SetSessionToken(authToken)
-
-		token, err := agentClient.GitAuth(context.Background(), "github.com/asd/asd", false)
-		require.NoError(t, err)
-		require.NotEmpty(t, token.URL)
-
-		// In the configuration, we set our OAuth provider
-		// to return an expired token. Coder consumes this
-		// and stores it.
-		resp := coderdtest.RequestGitAuthCallback(t, "github", client)
-		require.Equal(t, http.StatusTemporaryRedirect, resp.StatusCode)
-
-		// Because the token is expired and `NoRefresh` is specified,
-		// a redirect URL should be returned again.
-		token, err = agentClient.GitAuth(context.Background(), "github.com/asd/asd", false)
-		require.NoError(t, err)
-		require.NotEmpty(t, token.URL)
-	})
-
-	t.Run("FullFlow", func(t *testing.T) {
-		t.Parallel()
-		client := coderdtest.New(t, &coderdtest.Options{
-			IncludeProvisionerDaemon: true,
-			GitAuthConfigs: []*gitauth.Config{{
-				OAuth2Config: &testutil.OAuth2Config{},
-				ID:           "github",
-				Regex:        regexp.MustCompile(`github\.com`),
-				Type:         codersdk.GitProviderGitHub,
-			}},
-		})
-		user := coderdtest.CreateFirstUser(t, client)
-		authToken := uuid.NewString()
-		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
-			Parse:          echo.ParseComplete,
-			ProvisionPlan:  echo.ProvisionComplete,
-			ProvisionApply: echo.ProvisionApplyWithAgent(authToken),
-		})
-		template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
-		coderdtest.AwaitTemplateVersionJob(t, client, version.ID)
-		workspace := coderdtest.CreateWorkspace(t, client, user.OrganizationID, template.ID)
-		coderdtest.AwaitWorkspaceBuildJob(t, client, workspace.LatestBuild.ID)
-
-		agentClient := agentsdk.New(client.URL)
-		agentClient.SetSessionToken(authToken)
-
-		token, err := agentClient.GitAuth(context.Background(), "github.com/asd/asd", false)
-		require.NoError(t, err)
-		require.NotEmpty(t, token.URL)
-
-		// Start waiting for the token callback...
-		tokenChan := make(chan agentsdk.GitAuthResponse, 1)
-		go func() {
-			token, err := agentClient.GitAuth(context.Background(), "github.com/asd/asd", true)
-			assert.NoError(t, err)
-			tokenChan <- token
-		}()
-
-		time.Sleep(250 * time.Millisecond)
-
-		resp := coderdtest.RequestGitAuthCallback(t, "github", client)
-		require.Equal(t, http.StatusTemporaryRedirect, resp.StatusCode)
-		token = <-tokenChan
-		require.Equal(t, "access_token", token.Username)
-
-		token, err = agentClient.GitAuth(context.Background(), "github.com/asd/asd", false)
-		require.NoError(t, err)
-	})
-}
-
 func TestWorkspaceAgentReportStats(t *testing.T) {
 	t.Parallel()
 
@@ -1069,7 +1070,7 @@ func TestWorkspaceAgentReportStats(t *testing.T) {
 		authToken := uuid.NewString()
 		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
 			Parse:          echo.ParseComplete,
-			ProvisionPlan:  echo.ProvisionComplete,
+			ProvisionPlan:  echo.PlanComplete,
 			ProvisionApply: echo.ProvisionApplyWithAgent(authToken),
 		})
 		template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
@@ -1118,7 +1119,7 @@ func TestWorkspaceAgent_LifecycleState(t *testing.T) {
 		authToken := uuid.NewString()
 		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
 			Parse:          echo.ParseComplete,
-			ProvisionPlan:  echo.ProvisionComplete,
+			ProvisionPlan:  echo.PlanComplete,
 			ProvisionApply: echo.ProvisionApplyWithAgent(authToken),
 		})
 		template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
@@ -1158,7 +1159,8 @@ func TestWorkspaceAgent_LifecycleState(t *testing.T) {
 				ctx := testutil.Context(t, testutil.WaitLong)
 
 				err := agentClient.PostLifecycle(ctx, agentsdk.PostLifecycleRequest{
-					State: tt.state,
+					State:     tt.state,
+					ChangedAt: time.Now(),
 				})
 				if tt.wantErr {
 					require.Error(t, err)
@@ -1189,10 +1191,10 @@ func TestWorkspaceAgent_Metadata(t *testing.T) {
 	authToken := uuid.NewString()
 	version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
 		Parse:         echo.ParseComplete,
-		ProvisionPlan: echo.ProvisionComplete,
-		ProvisionApply: []*proto.Provision_Response{{
-			Type: &proto.Provision_Response_Complete{
-				Complete: &proto.Provision_Complete{
+		ProvisionPlan: echo.PlanComplete,
+		ProvisionApply: []*proto.Response{{
+			Type: &proto.Response_Apply{
+				Apply: &proto.ApplyComplete{
 					Resources: []*proto.Resource{{
 						Name: "example",
 						Type: "aws_instance",
@@ -1328,7 +1330,7 @@ func TestWorkspaceAgent_Metadata(t *testing.T) {
 	require.Len(t, update, 3)
 	check(wantMetadata1, update[0], true)
 
-	const maxValueLen = 32 << 10
+	const maxValueLen = 2048
 	tooLongValueMetadata := wantMetadata1
 	tooLongValueMetadata.Value = strings.Repeat("a", maxValueLen*2)
 	tooLongValueMetadata.Error = ""
@@ -1359,7 +1361,7 @@ func TestWorkspaceAgent_Startup(t *testing.T) {
 		authToken := uuid.NewString()
 		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
 			Parse:          echo.ParseComplete,
-			ProvisionPlan:  echo.ProvisionComplete,
+			ProvisionPlan:  echo.PlanComplete,
 			ProvisionApply: echo.ProvisionApplyWithAgent(authToken),
 		})
 		template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
@@ -1372,16 +1374,23 @@ func TestWorkspaceAgent_Startup(t *testing.T) {
 
 		ctx := testutil.Context(t, testutil.WaitMedium)
 
-		const (
-			expectedVersion   = "v1.2.3"
-			expectedDir       = "/home/coder"
-			expectedSubsystem = codersdk.AgentSubsystemEnvbox
+		var (
+			expectedVersion    = "v1.2.3"
+			expectedDir        = "/home/coder"
+			expectedSubsystems = []codersdk.AgentSubsystem{
+				codersdk.AgentSubsystemEnvbox,
+				codersdk.AgentSubsystemExectrace,
+			}
 		)
 
 		err := agentClient.PostStartup(ctx, agentsdk.PostStartupRequest{
 			Version:           expectedVersion,
 			ExpandedDirectory: expectedDir,
-			Subsystem:         expectedSubsystem,
+			Subsystems: []codersdk.AgentSubsystem{
+				// Not sorted.
+				expectedSubsystems[1],
+				expectedSubsystems[0],
+			},
 		})
 		require.NoError(t, err)
 
@@ -1392,7 +1401,8 @@ func TestWorkspaceAgent_Startup(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, expectedVersion, wsagent.Version)
 		require.Equal(t, expectedDir, wsagent.ExpandedDirectory)
-		require.Equal(t, expectedSubsystem, wsagent.Subsystem)
+		// Sorted
+		require.Equal(t, expectedSubsystems, wsagent.Subsystems)
 	})
 
 	t.Run("InvalidSemver", func(t *testing.T) {
@@ -1405,7 +1415,7 @@ func TestWorkspaceAgent_Startup(t *testing.T) {
 		authToken := uuid.NewString()
 		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
 			Parse:          echo.ParseComplete,
-			ProvisionPlan:  echo.ProvisionComplete,
+			ProvisionPlan:  echo.PlanComplete,
 			ProvisionApply: echo.ProvisionApplyWithAgent(authToken),
 		})
 		template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
@@ -1426,4 +1436,107 @@ func TestWorkspaceAgent_Startup(t *testing.T) {
 		require.True(t, ok)
 		require.Equal(t, http.StatusBadRequest, cerr.StatusCode())
 	})
+}
+
+// TestWorkspaceAgent_UpdatedDERP runs a real coderd server, with a real agent
+// and a real client, and updates the DERP map live to ensure connections still
+// work.
+func TestWorkspaceAgent_UpdatedDERP(t *testing.T) {
+	t.Parallel()
+
+	logger := slogtest.Make(t, nil).Leveled(slog.LevelDebug)
+
+	dv := coderdtest.DeploymentValues(t)
+	err := dv.DERP.Config.BlockDirect.Set("true")
+	require.NoError(t, err)
+
+	client, closer, api := coderdtest.NewWithAPI(t, &coderdtest.Options{
+		IncludeProvisionerDaemon: true,
+		DeploymentValues:         dv,
+	})
+	defer closer.Close()
+	user := coderdtest.CreateFirstUser(t, client)
+
+	// Change the DERP mapper to our custom one.
+	var currentDerpMap atomic.Pointer[tailcfg.DERPMap]
+	originalDerpMap, _ := tailnettest.RunDERPAndSTUN(t)
+	currentDerpMap.Store(originalDerpMap)
+	derpMapFn := func(_ *tailcfg.DERPMap) *tailcfg.DERPMap {
+		return currentDerpMap.Load().Clone()
+	}
+	api.DERPMapper.Store(&derpMapFn)
+
+	// Start workspace a workspace agent.
+	agentToken := uuid.NewString()
+	version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
+		Parse:          echo.ParseComplete,
+		ProvisionPlan:  echo.PlanComplete,
+		ProvisionApply: echo.ProvisionApplyWithAgent(agentToken),
+	})
+	template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
+	coderdtest.AwaitTemplateVersionJob(t, client, version.ID)
+	workspace := coderdtest.CreateWorkspace(t, client, user.OrganizationID, template.ID)
+	coderdtest.AwaitWorkspaceBuildJob(t, client, workspace.LatestBuild.ID)
+	agentClient := agentsdk.New(client.URL)
+	agentClient.SetSessionToken(agentToken)
+	agentCloser := agent.New(agent.Options{
+		Client: agentClient,
+		Logger: logger.Named("agent"),
+	})
+	defer func() {
+		_ = agentCloser.Close()
+	}()
+	resources := coderdtest.AwaitWorkspaceAgents(t, client, workspace.ID)
+	agentID := resources[0].Agents[0].ID
+
+	// Connect from a client.
+	ctx := testutil.Context(t, testutil.WaitLong)
+	conn1, err := client.DialWorkspaceAgent(ctx, agentID, &codersdk.DialWorkspaceAgentOptions{
+		Logger: logger.Named("client1"),
+	})
+	require.NoError(t, err)
+	defer conn1.Close()
+	ok := conn1.AwaitReachable(ctx)
+	require.True(t, ok)
+
+	// Change the DERP map and change the region ID.
+	newDerpMap, _ := tailnettest.RunDERPAndSTUN(t)
+	require.NotNil(t, newDerpMap)
+	newDerpMap.Regions[2] = newDerpMap.Regions[1]
+	delete(newDerpMap.Regions, 1)
+	newDerpMap.Regions[2].RegionID = 2
+	for _, node := range newDerpMap.Regions[2].Nodes {
+		node.RegionID = 2
+	}
+	currentDerpMap.Store(newDerpMap)
+
+	// Wait for the agent's DERP map to be updated.
+	require.Eventually(t, func() bool {
+		conn := agentCloser.TailnetConn()
+		if conn == nil {
+			return false
+		}
+		regionIDs := conn.DERPMap().RegionIDs()
+		return len(regionIDs) == 1 && regionIDs[0] == 2 && conn.Node().PreferredDERP == 2
+	}, testutil.WaitLong, testutil.IntervalFast)
+
+	// Wait for the DERP map to be updated on the existing client.
+	require.Eventually(t, func() bool {
+		regionIDs := conn1.Conn.DERPMap().RegionIDs()
+		return len(regionIDs) == 1 && regionIDs[0] == 2
+	}, testutil.WaitLong, testutil.IntervalFast)
+
+	// The first client should still be able to reach the agent.
+	ok = conn1.AwaitReachable(ctx)
+	require.True(t, ok)
+
+	// Connect from a second client.
+	conn2, err := client.DialWorkspaceAgent(ctx, agentID, &codersdk.DialWorkspaceAgentOptions{
+		Logger: logger.Named("client2"),
+	})
+	require.NoError(t, err)
+	defer conn2.Close()
+	ok = conn2.AwaitReachable(ctx)
+	require.True(t, ok)
+	require.Equal(t, []int{2}, conn2.DERPMap().RegionIDs())
 }

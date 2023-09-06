@@ -4,9 +4,9 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/coderd/httpapi"
-	"github.com/coder/coder/codersdk"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/httpapi"
+	"github.com/coder/coder/v2/codersdk"
 )
 
 type (
@@ -39,7 +39,7 @@ func ExtractOrganizationParam(db database.Store) func(http.Handler) http.Handler
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
-			orgID, ok := parseUUID(rw, r, "organization")
+			orgID, ok := ParseUUIDParam(rw, r, "organization")
 			if !ok {
 				return
 			}

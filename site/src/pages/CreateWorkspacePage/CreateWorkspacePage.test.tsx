@@ -12,6 +12,7 @@ import {
   MockTemplateVersionParameter2,
   MockTemplateVersionParameter3,
   MockTemplateVersionGitAuth,
+  MockOrganization,
 } from "testHelpers/entities"
 import {
   renderWithAuth,
@@ -141,7 +142,7 @@ describe("CreateWorkspacePage", () => {
     renderCreateWorkspacePage()
     await waitForLoaderToBeRemoved()
 
-    const element = await screen.findByText("Create workspace")
+    const element = await screen.findByText("Create Workspace")
     expect(element).toBeDefined()
     const secondParameter = await screen.findByText(
       MockTemplateVersionParameter2.description,
@@ -216,5 +217,30 @@ describe("CreateWorkspacePage", () => {
     await userEvent.click(submitButton)
 
     await screen.findByText("You must authenticate to create a workspace!")
+  })
+
+  it("auto create a workspace if uses mode=auto", async () => {
+    const param = "first_parameter"
+    const paramValue = "It works!"
+    const createWorkspaceSpy = jest.spyOn(API, "createWorkspace")
+
+    renderWithAuth(<CreateWorkspacePage />, {
+      route:
+        "/templates/" +
+        MockTemplate.name +
+        `/workspace?param.${param}=${paramValue}&mode=auto`,
+      path: "/templates/:template/workspace",
+    })
+
+    await waitFor(() => {
+      expect(createWorkspaceSpy).toBeCalledWith(
+        MockOrganization.id,
+        "me",
+        expect.objectContaining({
+          template_id: MockTemplate.id,
+          rich_parameter_values: [{ name: param, value: paramValue }],
+        }),
+      )
+    })
   })
 })

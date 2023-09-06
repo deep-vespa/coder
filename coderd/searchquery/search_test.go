@@ -9,11 +9,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/coderd/rbac"
-	"github.com/coder/coder/coderd/searchquery"
-	"github.com/coder/coder/coderd/util/ptr"
-	"github.com/coder/coder/codersdk"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/rbac"
+	"github.com/coder/coder/v2/coderd/searchquery"
+	"github.com/coder/coder/v2/coderd/util/ptr"
+	"github.com/coder/coder/v2/codersdk"
 )
 
 func TestSearchWorkspace(t *testing.T) {
@@ -142,7 +142,7 @@ func TestSearchWorkspace(t *testing.T) {
 		{
 			Name:                  "ExtraKeys",
 			Query:                 `foo:bar`,
-			ExpectedErrorContains: `Query param "foo" is not a valid query param`,
+			ExpectedErrorContains: `"foo" is not a valid query param`,
 		},
 	}
 
@@ -239,12 +239,19 @@ func TestSearchAudit(t *testing.T) {
 		{
 			Name:                  "ExtraKeys",
 			Query:                 `foo:bar`,
-			ExpectedErrorContains: `Query param "foo" is not a valid query param`,
+			ExpectedErrorContains: `"foo" is not a valid query param`,
 		},
 		{
 			Name:                  "Dates",
 			Query:                 "date_from:2006",
 			ExpectedErrorContains: "valid date format",
+		},
+		{
+			Name:  "ResourceTarget",
+			Query: "resource_target:foo",
+			Expected: database.GetAuditLogsOffsetParams{
+				ResourceTarget: "foo",
+			},
 		},
 	}
 
@@ -363,7 +370,7 @@ func TestSearchUsers(t *testing.T) {
 		{
 			Name:                  "ExtraKeys",
 			Query:                 `foo:bar`,
-			ExpectedErrorContains: `Query param "foo" is not a valid query param`,
+			ExpectedErrorContains: `"foo" is not a valid query param`,
 		},
 	}
 

@@ -7,6 +7,7 @@ import {
   MockTemplateVersion,
   MockWorkspaceBuildLogs,
 } from "testHelpers/entities"
+import { Language } from "../../../components/TemplateVersionEditor/PublishTemplateVersionDialog"
 
 // For some reason this component in Jest is throwing a MUI style warning so,
 // since we don't need it for this test, we can mock it out
@@ -16,7 +17,7 @@ jest.mock("components/TemplateResourcesTable/TemplateResourcesTable", () => {
   }
 })
 
-test("Use custom name and set it as active when publishing", async () => {
+test("Use custom name, message and set it as active when publishing", async () => {
   const user = userEvent.setup()
   renderWithAuth(<TemplateVersionEditorPage />, {
     extraRoutes: [
@@ -64,15 +65,16 @@ test("Use custom name and set it as active when publishing", async () => {
   const nameField = within(publishDialog).getByLabelText("Version name")
   await user.clear(nameField)
   await user.type(nameField, "v1.0")
-  await user.click(
-    within(publishDialog).getByLabelText("Promote to default version"),
-  )
+  const messageField = within(publishDialog).getByLabelText("Message")
+  await user.clear(messageField)
+  await user.type(messageField, "Informative message")
   await user.click(
     within(publishDialog).getByRole("button", { name: "Publish" }),
   )
   await waitFor(() => {
     expect(patchTemplateVersion).toBeCalledWith("new-version-id", {
       name: "v1.0",
+      message: "Informative message",
     })
   })
   expect(updateActiveTemplateVersion).toBeCalledWith("test-template", {
@@ -129,17 +131,25 @@ test("Do not mark as active if promote is not checked", async () => {
   await user.clear(nameField)
   await user.type(nameField, "v1.0")
   await user.click(
+    within(publishDialog).getByLabelText(Language.defaultCheckboxLabel),
+  )
+  await user.click(
     within(publishDialog).getByRole("button", { name: "Publish" }),
   )
   await waitFor(() => {
     expect(patchTemplateVersion).toBeCalledWith("new-version-id", {
       name: "v1.0",
+      message: "",
     })
   })
   expect(updateActiveTemplateVersion).toBeCalledTimes(0)
 })
 
-test("Patch request is not send when the name is not updated", async () => {
+test("Patch request is not send when there are no changes", async () => {
+  const MockTemplateVersionWithEmptyMessage = {
+    ...MockTemplateVersion,
+    message: "",
+  }
   const user = userEvent.setup()
   renderWithAuth(<TemplateVersionEditorPage />, {
     extraRoutes: [
@@ -155,10 +165,11 @@ test("Patch request is not send when the name is not updated", async () => {
   jest.spyOn(api, "uploadTemplateFile").mockResolvedValueOnce({ hash: "hash" })
   jest
     .spyOn(api, "createTemplateVersion")
-    .mockResolvedValueOnce(MockTemplateVersion)
-  jest
-    .spyOn(api, "getTemplateVersion")
-    .mockResolvedValue({ ...MockTemplateVersion, id: "new-version-id" })
+    .mockResolvedValueOnce(MockTemplateVersionWithEmptyMessage)
+  jest.spyOn(api, "getTemplateVersion").mockResolvedValue({
+    ...MockTemplateVersionWithEmptyMessage,
+    id: "new-version-id",
+  })
   jest
     .spyOn(api, "watchBuildLogsByTemplateVersionId")
     .mockImplementation((_, options) => {
@@ -174,7 +185,7 @@ test("Patch request is not send when the name is not updated", async () => {
   // Publish
   const patchTemplateVersion = jest
     .spyOn(api, "patchTemplateVersion")
-    .mockResolvedValue(MockTemplateVersion)
+    .mockResolvedValue(MockTemplateVersionWithEmptyMessage)
   await within(topbar).findByText("Success")
   const publishButton = within(topbar).getByRole("button", {
     name: "Publish version",
@@ -183,7 +194,7 @@ test("Patch request is not send when the name is not updated", async () => {
   const publishDialog = await screen.findByTestId("dialog")
   // It is using the name from the template version
   const nameField = within(publishDialog).getByLabelText("Version name")
-  expect(nameField).toHaveValue(MockTemplateVersion.name)
+  expect(nameField).toHaveValue(MockTemplateVersionWithEmptyMessage.name)
   // Publish
   await user.click(
     within(publishDialog).getByRole("button", { name: "Publish" }),

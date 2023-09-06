@@ -13,19 +13,20 @@ import (
 	"tailscale.com/derp"
 	"tailscale.com/types/key"
 
-	"github.com/coder/coder/cli/clibase"
-	"github.com/coder/coder/cryptorand"
-	"github.com/coder/coder/enterprise/audit"
-	"github.com/coder/coder/enterprise/audit/backends"
-	"github.com/coder/coder/enterprise/coderd"
-	"github.com/coder/coder/enterprise/trialer"
-	"github.com/coder/coder/tailnet"
+	"github.com/coder/coder/v2/cli/clibase"
+	"github.com/coder/coder/v2/cryptorand"
+	"github.com/coder/coder/v2/enterprise/audit"
+	"github.com/coder/coder/v2/enterprise/audit/backends"
+	"github.com/coder/coder/v2/enterprise/coderd"
+	"github.com/coder/coder/v2/enterprise/coderd/dormancy"
+	"github.com/coder/coder/v2/enterprise/trialer"
+	"github.com/coder/coder/v2/tailnet"
 
-	agplcoderd "github.com/coder/coder/coderd"
+	agplcoderd "github.com/coder/coder/v2/coderd"
 )
 
-func (r *RootCmd) server() *clibase.Cmd {
-	cmd := r.Server(func(ctx context.Context, options *agplcoderd.Options) (*agplcoderd.API, io.Closer, error) {
+func (r *RootCmd) Server(_ func()) *clibase.Cmd {
+	cmd := r.RootCmd.Server(func(ctx context.Context, options *agplcoderd.Options) (*agplcoderd.API, io.Closer, error) {
 		if options.DeploymentValues.DERP.Server.RelayURL.String() != "" {
 			_, err := url.Parse(options.DeploymentValues.DERP.Server.RelayURL.String())
 			if err != nil {
@@ -49,7 +50,9 @@ func (r *RootCmd) server() *clibase.Cmd {
 			}
 		}
 		options.DERPServer.SetMeshKey(meshKey)
-		options.Auditor = audit.NewAuditor(audit.DefaultFilter,
+		options.Auditor = audit.NewAuditor(
+			options.Database,
+			audit.DefaultFilter,
 			backends.NewPostgres(options.Database, true),
 			backends.NewSlog(options.Logger),
 		)
@@ -57,14 +60,18 @@ func (r *RootCmd) server() *clibase.Cmd {
 		options.TrialGenerator = trialer.New(options.Database, "https://v2-licensor.coder.com/trial", coderd.Keys)
 
 		o := &coderd.Options{
-			AuditLogging:           true,
-			BrowserOnly:            options.DeploymentValues.BrowserOnly.Value(),
-			SCIMAPIKey:             []byte(options.DeploymentValues.SCIMAPIKey.Value()),
-			RBAC:                   true,
-			DERPServerRelayAddress: options.DeploymentValues.DERP.Server.RelayURL.String(),
-			DERPServerRegionID:     int(options.DeploymentValues.DERP.Server.RegionID.Value()),
-			Options:                options,
-			ProxyHealthInterval:    options.DeploymentValues.ProxyHealthStatusInterval.Value(),
+			Options:                   options,
+			AuditLogging:              true,
+			BrowserOnly:               options.DeploymentValues.BrowserOnly.Value(),
+			SCIMAPIKey:                []byte(options.DeploymentValues.SCIMAPIKey.Value()),
+			RBAC:                      true,
+			DERPServerRelayAddress:    options.DeploymentValues.DERP.Server.RelayURL.String(),
+			DERPServerRegionID:        int(options.DeploymentValues.DERP.Server.RegionID.Value()),
+			ProxyHealthInterval:       options.DeploymentValues.ProxyHealthStatusInterval.Value(),
+			DefaultQuietHoursSchedule: options.DeploymentValues.UserQuietHoursSchedule.DefaultSchedule.Value(),
+			ProvisionerDaemonPSK:      options.DeploymentValues.Provisioner.DaemonPSK.Value(),
+
+			CheckInactiveUsersCancelFunc: dormancy.CheckInactiveUsers(ctx, options.Logger, options.Database),
 		}
 
 		api, err := coderd.New(ctx, o)

@@ -15,10 +15,13 @@ import (
 	"github.com/pion/udp"
 	"golang.org/x/xerrors"
 
-	"github.com/coder/coder/agent/agentssh"
-	"github.com/coder/coder/cli/clibase"
-	"github.com/coder/coder/cli/cliui"
-	"github.com/coder/coder/codersdk"
+	"cdr.dev/slog"
+	"cdr.dev/slog/sloggers/sloghuman"
+
+	"github.com/coder/coder/v2/agent/agentssh"
+	"github.com/coder/coder/v2/cli/clibase"
+	"github.com/coder/coder/v2/cli/cliui"
+	"github.com/coder/coder/v2/codersdk"
 )
 
 func (r *RootCmd) portForward() *clibase.Cmd {
@@ -29,7 +32,7 @@ func (r *RootCmd) portForward() *clibase.Cmd {
 	client := new(codersdk.Client)
 	cmd := &clibase.Cmd{
 		Use:     "port-forward <workspace>",
-		Short:   "Forward ports from machine to a workspace",
+		Short:   `Forward ports from a workspace to the local machine. For reverse port forwarding, use "coder ssh -R".`,
 		Aliases: []string{"tunnel"},
 		Long: formatExamples(
 			example{
@@ -87,18 +90,26 @@ func (r *RootCmd) portForward() *clibase.Cmd {
 				}
 			}
 
-			err = cliui.Agent(ctx, inv.Stderr, cliui.AgentOptions{
-				WorkspaceName: workspace.Name,
-				Fetch: func(ctx context.Context) (codersdk.WorkspaceAgent, error) {
-					return client.WorkspaceAgent(ctx, workspaceAgent.ID)
-				},
-				Wait: false,
+			err = cliui.Agent(ctx, inv.Stderr, workspaceAgent.ID, cliui.AgentOptions{
+				Fetch: client.WorkspaceAgent,
+				Wait:  false,
 			})
 			if err != nil {
 				return xerrors.Errorf("await agent: %w", err)
 			}
 
-			conn, err := client.DialWorkspaceAgent(ctx, workspaceAgent.ID, nil)
+			var logger slog.Logger
+			if r.verbose {
+				logger = slog.Make(sloghuman.Sink(inv.Stdout)).Leveled(slog.LevelDebug)
+			}
+
+			if r.disableDirect {
+				_, _ = fmt.Fprintln(inv.Stderr, "Direct connections disabled.")
+			}
+			conn, err := client.DialWorkspaceAgent(ctx, workspaceAgent.ID, &codersdk.DialWorkspaceAgentOptions{
+				Logger:         logger,
+				BlockEndpoints: r.disableDirect,
+			})
 			if err != nil {
 				return err
 			}

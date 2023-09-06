@@ -33,6 +33,12 @@ import { pageTitle } from "utils/page"
 import { groupMachine } from "xServices/groups/groupXService"
 import { Maybe } from "components/Conditionals/Maybe"
 import { makeStyles } from "@mui/styles"
+import {
+  PaginationStatus,
+  TableToolbar,
+} from "components/TableToolbar/TableToolbar"
+import { UserAvatar } from "components/UserAvatar/UserAvatar"
+import { isEveryoneGroup } from "utils/groups"
 
 const AddGroupMember: React.FC<{
   isLoading: boolean
@@ -101,7 +107,9 @@ export const GroupPage: React.FC = () => {
   return (
     <>
       <Helmet>
-        <title>{pageTitle(group?.name ?? "Loading...")}</title>
+        <title>
+          {pageTitle((group?.display_name || group?.name) ?? "Loading...")}
+        </title>
       </Helmet>
       <ChooseOne>
         <Cond condition={isLoading}>
@@ -117,6 +125,7 @@ export const GroupPage: React.FC = () => {
                     <Button startIcon={<SettingsOutlined />}>Settings</Button>
                   </Link>
                   <Button
+                    disabled={group?.id === group?.organization_id}
                     onClick={() => {
                       send("DELETE")
                     }}
@@ -127,14 +136,25 @@ export const GroupPage: React.FC = () => {
                 </Maybe>
               }
             >
-              <PageHeaderTitle>{group?.name}</PageHeaderTitle>
+              <PageHeaderTitle>
+                {group?.display_name || group?.name}
+              </PageHeaderTitle>
               <PageHeaderSubtitle>
-                {group?.members.length} members
+                {/* Show the name if it differs from the display name. */}
+                {group?.display_name && group?.display_name !== group?.name
+                  ? group?.name
+                  : ""}{" "}
               </PageHeaderSubtitle>
             </PageHeader>
 
-            <Stack spacing={2.5}>
-              <Maybe condition={canUpdateGroup}>
+            <Stack spacing={1}>
+              <Maybe
+                condition={
+                  canUpdateGroup &&
+                  group !== undefined &&
+                  !isEveryoneGroup(group)
+                }
+              >
                 <AddGroupMember
                   isLoading={state.matches("addingMember")}
                   onSubmit={(user, reset) => {
@@ -146,6 +166,15 @@ export const GroupPage: React.FC = () => {
                   }}
                 />
               </Maybe>
+              <TableToolbar>
+                <PaginationStatus
+                  isLoading={Boolean(isLoading)}
+                  showing={group?.members.length ?? 0}
+                  total={group?.members.length ?? 0}
+                  label="members"
+                />
+              </TableToolbar>
+
               <TableContainer>
                 <Table>
                   <TableHead>
@@ -173,6 +202,12 @@ export const GroupPage: React.FC = () => {
                           <TableRow key={member.id}>
                             <TableCell width="99%">
                               <AvatarData
+                                avatar={
+                                  <UserAvatar
+                                    username={member.username}
+                                    avatarURL={member.avatar_url}
+                                  />
+                                }
                                 title={member.username}
                                 subtitle={member.email}
                               />
@@ -190,7 +225,8 @@ export const GroupPage: React.FC = () => {
                                           userId: member.id,
                                         })
                                       },
-                                      disabled: false,
+                                      disabled:
+                                        group.id === group.organization_id,
                                     },
                                   ]}
                                 />

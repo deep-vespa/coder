@@ -9,9 +9,8 @@ import (
 	"github.com/jedib0t/go-pretty/v6/table"
 	"golang.org/x/mod/semver"
 
-	"github.com/coder/coder/coderd/database"
-
-	"github.com/coder/coder/codersdk"
+	"github.com/coder/coder/v2/coderd/database/dbtime"
+	"github.com/coder/coder/v2/codersdk"
 )
 
 type WorkspaceResourcesOptions struct {
@@ -50,6 +49,7 @@ func WorkspaceResources(writer io.Writer, resources []codersdk.WorkspaceResource
 	row := table.Row{"Resource"}
 	if !options.HideAgentState {
 		row = append(row, "Status")
+		row = append(row, "Health")
 		row = append(row, "Version")
 	}
 	if !options.HideAccess {
@@ -81,6 +81,7 @@ func WorkspaceResources(writer io.Writer, resources []codersdk.WorkspaceResource
 			DefaultStyles.Bold.Render(resourceAddress),
 			"",
 			"",
+			"",
 		})
 		// Display all agents associated with the resource.
 		for index, agent := range resource.Agents {
@@ -93,13 +94,13 @@ func WorkspaceResources(writer io.Writer, resources []codersdk.WorkspaceResource
 				fmt.Sprintf("%s─ %s (%s, %s)", pipe, agent.Name, agent.OperatingSystem, agent.Architecture),
 			}
 			if !options.HideAgentState {
-				var agentStatus string
-				var agentVersion string
+				var agentStatus, agentHealth, agentVersion string
 				if !options.HideAgentState {
 					agentStatus = renderAgentStatus(agent)
+					agentHealth = renderAgentHealth(agent)
 					agentVersion = renderAgentVersion(agent.Version, options.ServerVersion)
 				}
-				row = append(row, agentStatus, agentVersion)
+				row = append(row, agentStatus, agentHealth, agentVersion)
 			}
 			if !options.HideAccess {
 				sshCommand := "coder ssh " + options.WorkspaceName
@@ -120,15 +121,15 @@ func WorkspaceResources(writer io.Writer, resources []codersdk.WorkspaceResource
 func renderAgentStatus(agent codersdk.WorkspaceAgent) string {
 	switch agent.Status {
 	case codersdk.WorkspaceAgentConnecting:
-		since := database.Now().Sub(agent.CreatedAt)
+		since := dbtime.Now().Sub(agent.CreatedAt)
 		return DefaultStyles.Warn.Render("⦾ connecting") + " " +
 			DefaultStyles.Placeholder.Render("["+strconv.Itoa(int(since.Seconds()))+"s]")
 	case codersdk.WorkspaceAgentDisconnected:
-		since := database.Now().Sub(*agent.DisconnectedAt)
+		since := dbtime.Now().Sub(*agent.DisconnectedAt)
 		return DefaultStyles.Error.Render("⦾ disconnected") + " " +
 			DefaultStyles.Placeholder.Render("["+strconv.Itoa(int(since.Seconds()))+"s]")
 	case codersdk.WorkspaceAgentTimeout:
-		since := database.Now().Sub(agent.CreatedAt)
+		since := dbtime.Now().Sub(agent.CreatedAt)
 		return fmt.Sprintf(
 			"%s %s",
 			DefaultStyles.Warn.Render("⦾ timeout"),
@@ -139,6 +140,13 @@ func renderAgentStatus(agent codersdk.WorkspaceAgent) string {
 	default:
 		return DefaultStyles.Warn.Render("○ unknown")
 	}
+}
+
+func renderAgentHealth(agent codersdk.WorkspaceAgent) string {
+	if agent.Health.Healthy {
+		return DefaultStyles.Keyword.Render("✔ healthy")
+	}
+	return DefaultStyles.Error.Render("✘ " + agent.Health.Reason)
 }
 
 func renderAgentVersion(agentVersion, serverVersion string) string {

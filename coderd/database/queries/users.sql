@@ -1,3 +1,18 @@
+-- name: UpdateUserLoginType :one
+UPDATE
+	users
+SET
+	login_type = @new_login_type,
+	hashed_password = CASE WHEN @new_login_type = 'password' :: login_type THEN
+		users.hashed_password
+	ELSE
+		-- If the login type is not password, then the password should be
+        -- cleared.
+		'':: bytea
+	END
+WHERE
+	id = @user_id RETURNING *;
+
 -- name: GetUserByID :one
 SELECT
 	*
@@ -39,43 +54,7 @@ SELECT
 FROM
 	users
 WHERE
-    status = 'active'::user_status AND deleted = false;
-
--- name: GetFilteredUserCount :one
--- This will never count deleted users.
-SELECT
-	COUNT(*)
-FROM
-	users
-WHERE
-	users.deleted = false
-	-- Start filters
-	-- Filter by name, email or username
-	AND CASE
-		WHEN @search :: text != '' THEN (
-			email ILIKE concat('%', @search, '%')
-			OR username ILIKE concat('%', @search, '%')
-		)
-		ELSE true
-	END
-	-- Filter by status
-	AND CASE
-		-- @status needs to be a text because it can be empty, If it was
-		-- user_status enum, it would not.
-		WHEN cardinality(@status :: user_status[]) > 0 THEN
-			status = ANY(@status :: user_status[])
-		ELSE true
-	END
-	-- Filter by rbac_roles
-	AND CASE
-		-- @rbac_role allows filtering by rbac roles. If 'member' is included, show everyone, as everyone is a member.
-		WHEN cardinality(@rbac_role :: text[]) > 0 AND 'member' != ANY(@rbac_role :: text[])
-		THEN rbac_roles && @rbac_role :: text[]
-		ELSE true
-	END
-	-- Authorize Filter clause will be injected below in GetAuthorizedUserCount
-	-- @authorize_filter
-;
+	status = 'active'::user_status AND deleted = false;
 
 -- name: InsertUser :one
 INSERT INTO
@@ -176,12 +155,26 @@ WHERE
 	-- Filter by rbac_roles
 	AND CASE
 		-- @rbac_role allows filtering by rbac roles. If 'member' is included, show everyone, as
-	    -- everyone is a member.
+		-- everyone is a member.
 		WHEN cardinality(@rbac_role :: text[]) > 0 AND 'member' != ANY(@rbac_role :: text[]) THEN
-		    rbac_roles && @rbac_role :: text[]
+			rbac_roles && @rbac_role :: text[]
+		ELSE true
+	END
+	-- Filter by last_seen
+	AND CASE
+		WHEN @last_seen_before :: timestamp with time zone != '0001-01-01 00:00:00Z' THEN
+			last_seen_at <= @last_seen_before
+		ELSE true
+	END
+	AND CASE
+		WHEN @last_seen_after :: timestamp with time zone != '0001-01-01 00:00:00Z' THEN
+			last_seen_at >= @last_seen_after
 		ELSE true
 	END
 	-- End of filters
+
+	-- Authorize Filter clause will be injected below in GetAuthorizedUsers
+	-- @authorize_filter
 ORDER BY
 	-- Deterministic and consistent ordering of all users. This is to ensure consistent pagination.
 	LOWER(username) ASC OFFSET @offset_opt
@@ -248,3 +241,24 @@ FROM
 	users
 WHERE
 	id = @user_id;
+
+-- name: UpdateUserQuietHoursSchedule :one
+UPDATE
+	users
+SET
+	quiet_hours_schedule = $2
+WHERE
+	id = $1
+RETURNING *;
+
+
+-- name: UpdateInactiveUsersToDormant :many
+UPDATE
+    users
+SET
+    status = 'dormant'::user_status,
+	updated_at = @updated_at
+WHERE
+    last_seen_at < @last_seen_after :: timestamp
+    AND status = 'active'::user_status
+RETURNING id, email, last_seen_at;

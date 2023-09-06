@@ -26,8 +26,9 @@ dry_run=0
 old_version=
 ref=HEAD
 increment=
+force=0
 
-args="$(getopt -o h -l dry-run,help,old-version:,ref:,major,minor,patch -- "$@")"
+args="$(getopt -o h -l dry-run,help,old-version:,ref:,major,minor,patch,force -- "$@")"
 eval set -- "$args"
 while true; do
 	case "$1" in
@@ -52,6 +53,10 @@ while true; do
 			error "Cannot specify multiple version increments."
 		fi
 		increment=${1#--}
+		shift
+		;;
+	--force)
+		force=1
 		shift
 		;;
 	--)
@@ -90,7 +95,12 @@ if ((COMMIT_METADATA_BREAKING == 1)); then
 		increment=minor
 	fi
 	if [[ $prev_increment != "$increment" ]]; then
-		log "Breaking change detected, changing version increment from \"$prev_increment\" to \"$increment\"."
+		if ((force == 1)); then
+			log "Breaking change detected but --force provided, would use \"$increment\" but keeping \"$prev_increment\"."
+			increment=$prev_increment
+		else
+			log "Breaking change detected, changing version increment from \"$prev_increment\" to \"$increment\"."
+		fi
 	else
 		log "Breaking change detected, provided increment is sufficient, using \"$increment\" increment."
 	fi
@@ -108,7 +118,13 @@ minor)
 	version_parts[2]=0
 	;;
 major)
-	version_parts[0]=$((version_parts[0] + 1))
+	# Jump from v0.x to v2.x to avoid naming conflicts
+	# with Coder v1 (https://coder.com/docs/v1)
+	if [ "${version_parts[0]}" -eq 0 ]; then
+		version_parts[0]=2
+	else
+		version_parts[0]=$((version_parts[0] + 1))
+	fi
 	version_parts[1]=0
 	version_parts[2]=0
 	;;

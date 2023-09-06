@@ -34,16 +34,16 @@ import (
 	"go.uber.org/goleak"
 	"gopkg.in/yaml.v3"
 
-	"github.com/coder/coder/cli"
-	"github.com/coder/coder/cli/clitest"
-	"github.com/coder/coder/cli/config"
-	"github.com/coder/coder/coderd/coderdtest"
-	"github.com/coder/coder/coderd/database/postgres"
-	"github.com/coder/coder/coderd/telemetry"
-	"github.com/coder/coder/codersdk"
-	"github.com/coder/coder/cryptorand"
-	"github.com/coder/coder/pty/ptytest"
-	"github.com/coder/coder/testutil"
+	"github.com/coder/coder/v2/cli"
+	"github.com/coder/coder/v2/cli/clitest"
+	"github.com/coder/coder/v2/cli/config"
+	"github.com/coder/coder/v2/coderd/coderdtest"
+	"github.com/coder/coder/v2/coderd/database/postgres"
+	"github.com/coder/coder/v2/coderd/telemetry"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/cryptorand"
+	"github.com/coder/coder/v2/pty/ptytest"
+	"github.com/coder/coder/v2/testutil"
 )
 
 func TestReadGitAuthProvidersFromEnv(t *testing.T) {
@@ -881,59 +881,115 @@ func TestServer(t *testing.T) {
 	})
 	t.Run("Prometheus", func(t *testing.T) {
 		t.Parallel()
-		random, err := net.Listen("tcp", "127.0.0.1:0")
-		require.NoError(t, err)
-		_ = random.Close()
-		tcpAddr, valid := random.Addr().(*net.TCPAddr)
-		require.True(t, valid)
-		randomPort := tcpAddr.Port
 
-		inv, cfg := clitest.New(t,
-			"server",
-			"--in-memory",
-			"--http-address", ":0",
-			"--access-url", "http://example.com",
-			"--provisioner-daemons", "1",
-			"--prometheus-enable",
-			"--prometheus-address", ":"+strconv.Itoa(randomPort),
-			"--cache-dir", t.TempDir(),
-		)
-
-		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
-		defer cancel()
-
-		clitest.Start(t, inv)
-		_ = waitAccessURL(t, cfg)
-
-		var res *http.Response
-		require.Eventually(t, func() bool {
-			req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("http://127.0.0.1:%d", randomPort), nil)
-			assert.NoError(t, err)
-			// nolint:bodyclose
-			res, err = http.DefaultClient.Do(req)
-			return err == nil
-		}, testutil.WaitShort, testutil.IntervalFast)
-		defer res.Body.Close()
-
-		scanner := bufio.NewScanner(res.Body)
-		hasActiveUsers := false
-		hasWorkspaces := false
-		for scanner.Scan() {
-			// This metric is manually registered to be tracked in the server. That's
-			// why we test it's tracked here.
-			if strings.HasPrefix(scanner.Text(), "coderd_api_active_users_duration_hour") {
-				hasActiveUsers = true
-				continue
-			}
-			if strings.HasPrefix(scanner.Text(), "coderd_api_workspace_latest_build_total") {
-				hasWorkspaces = true
-				continue
-			}
-			t.Logf("scanned %s", scanner.Text())
+		randomPort := func(t *testing.T) int {
+			random, err := net.Listen("tcp", "127.0.0.1:0")
+			require.NoError(t, err)
+			_ = random.Close()
+			tcpAddr, valid := random.Addr().(*net.TCPAddr)
+			require.True(t, valid)
+			return tcpAddr.Port
 		}
-		require.NoError(t, scanner.Err())
-		require.True(t, hasActiveUsers)
-		require.True(t, hasWorkspaces)
+
+		t.Run("DBMetricsDisabled", func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
+			defer cancel()
+
+			randPort := randomPort(t)
+			inv, cfg := clitest.New(t,
+				"server",
+				"--in-memory",
+				"--http-address", ":0",
+				"--access-url", "http://example.com",
+				"--provisioner-daemons", "1",
+				"--prometheus-enable",
+				"--prometheus-address", ":"+strconv.Itoa(randPort),
+				// "--prometheus-collect-db-metrics", // disabled by default
+				"--cache-dir", t.TempDir(),
+			)
+
+			clitest.Start(t, inv)
+			_ = waitAccessURL(t, cfg)
+
+			var res *http.Response
+			require.Eventually(t, func() bool {
+				req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("http://127.0.0.1:%d", randPort), nil)
+				assert.NoError(t, err)
+				// nolint:bodyclose
+				res, err = http.DefaultClient.Do(req)
+				return err == nil
+			}, testutil.WaitShort, testutil.IntervalFast)
+			defer res.Body.Close()
+
+			scanner := bufio.NewScanner(res.Body)
+			hasActiveUsers := false
+			hasWorkspaces := false
+			for scanner.Scan() {
+				// This metric is manually registered to be tracked in the server. That's
+				// why we test it's tracked here.
+				if strings.HasPrefix(scanner.Text(), "coderd_api_active_users_duration_hour") {
+					hasActiveUsers = true
+					continue
+				}
+				if strings.HasPrefix(scanner.Text(), "coderd_api_workspace_latest_build_total") {
+					hasWorkspaces = true
+					continue
+				}
+				if strings.HasPrefix(scanner.Text(), "coderd_db_query_latencies_seconds") {
+					t.Fatal("db metrics should not be tracked when --prometheus-collect-db-metrics is not enabled")
+				}
+				t.Logf("scanned %s", scanner.Text())
+			}
+			require.NoError(t, scanner.Err())
+			require.True(t, hasActiveUsers)
+			require.True(t, hasWorkspaces)
+		})
+
+		t.Run("DBMetricsEnabled", func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
+			defer cancel()
+
+			randPort := randomPort(t)
+			inv, cfg := clitest.New(t,
+				"server",
+				"--in-memory",
+				"--http-address", ":0",
+				"--access-url", "http://example.com",
+				"--provisioner-daemons", "1",
+				"--prometheus-enable",
+				"--prometheus-address", ":"+strconv.Itoa(randPort),
+				"--prometheus-collect-db-metrics",
+				"--cache-dir", t.TempDir(),
+			)
+
+			clitest.Start(t, inv)
+			_ = waitAccessURL(t, cfg)
+
+			var res *http.Response
+			require.Eventually(t, func() bool {
+				req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("http://127.0.0.1:%d", randPort), nil)
+				assert.NoError(t, err)
+				// nolint:bodyclose
+				res, err = http.DefaultClient.Do(req)
+				return err == nil
+			}, testutil.WaitShort, testutil.IntervalFast)
+			defer res.Body.Close()
+
+			scanner := bufio.NewScanner(res.Body)
+			hasDBMetrics := false
+			for scanner.Scan() {
+				if strings.HasPrefix(scanner.Text(), "coderd_db_query_latencies_seconds") {
+					hasDBMetrics = true
+				}
+				t.Logf("scanned %s", scanner.Text())
+			}
+			require.NoError(t, scanner.Err())
+			require.True(t, hasDBMetrics)
+		})
 	})
 	t.Run("GitHubOAuth", func(t *testing.T) {
 		t.Parallel()
@@ -1039,6 +1095,8 @@ func TestServer(t *testing.T) {
 			require.False(t, deploymentConfig.Values.OIDC.IgnoreUserInfo.Value())
 			require.Empty(t, deploymentConfig.Values.OIDC.GroupField.Value())
 			require.Empty(t, deploymentConfig.Values.OIDC.GroupMapping.Value)
+			require.Empty(t, deploymentConfig.Values.OIDC.UserRoleField.Value())
+			require.Empty(t, deploymentConfig.Values.OIDC.UserRoleMapping.Value)
 			require.Equal(t, "OpenID Connect", deploymentConfig.Values.OIDC.SignInText.Value())
 			require.Empty(t, deploymentConfig.Values.OIDC.IconURL.Value())
 		})
@@ -1247,10 +1305,11 @@ func TestServer(t *testing.T) {
 
 			root, _ := clitest.New(t,
 				"server",
-				"--verbose",
+				"--log-filter=.*",
 				"--in-memory",
 				"--http-address", ":0",
 				"--access-url", "http://example.com",
+				"--provisioner-daemons-echo",
 				"--log-human", fiName,
 			)
 			clitest.Start(t, root)
@@ -1264,10 +1323,11 @@ func TestServer(t *testing.T) {
 
 			root, _ := clitest.New(t,
 				"server",
-				"--verbose",
+				"--log-filter=.*",
 				"--in-memory",
 				"--http-address", ":0",
 				"--access-url", "http://example.com",
+				"--provisioner-daemons-echo",
 				"--log-human", fi,
 			)
 			clitest.Start(t, root)
@@ -1281,10 +1341,11 @@ func TestServer(t *testing.T) {
 
 			root, _ := clitest.New(t,
 				"server",
-				"--verbose",
+				"--log-filter=.*",
 				"--in-memory",
 				"--http-address", ":0",
 				"--access-url", "http://example.com",
+				"--provisioner-daemons-echo",
 				"--log-json", fi,
 			)
 			clitest.Start(t, root)
@@ -1301,10 +1362,11 @@ func TestServer(t *testing.T) {
 
 			inv, _ := clitest.New(t,
 				"server",
-				"--verbose",
+				"--log-filter=.*",
 				"--in-memory",
 				"--http-address", ":0",
 				"--access-url", "http://example.com",
+				"--provisioner-daemons-echo",
 				"--log-stackdriver", fi,
 			)
 			// Attach pty so we get debug output from the command if this test
@@ -1335,10 +1397,11 @@ func TestServer(t *testing.T) {
 			// HTTP.
 			inv, _ := clitest.New(t,
 				"server",
-				"--verbose",
+				"--log-filter=.*",
 				"--in-memory",
 				"--http-address", ":0",
 				"--access-url", "http://example.com",
+				"--provisioner-daemons-echo",
 				"--log-human", fi1,
 				"--log-json", fi2,
 				"--log-stackdriver", fi3,
@@ -1432,31 +1495,6 @@ func TestServer(t *testing.T) {
 			w.Cancel()
 			w.RequireSuccess()
 		})
-	})
-	t.Run("DisableDERP", func(t *testing.T) {
-		t.Parallel()
-
-		// Make sure that $CODER_DERP_SERVER_STUN_ADDRESSES can be set to
-		// disable STUN.
-
-		inv, cfg := clitest.New(t,
-			"server",
-			"--in-memory",
-			"--http-address", ":0",
-			"--access-url", "https://example.com",
-		)
-		inv.Environ.Set("CODER_DERP_SERVER_STUN_ADDRESSES", "disable")
-		ptytest.New(t).Attach(inv)
-		clitest.Start(t, inv)
-		gotURL := waitAccessURL(t, cfg)
-		client := codersdk.New(gotURL)
-
-		ctx := testutil.Context(t, testutil.WaitMedium)
-		_ = coderdtest.CreateFirstUser(t, client)
-		gotConfig, err := client.DeploymentConfig(ctx)
-		require.NoError(t, err)
-
-		require.Len(t, gotConfig.Values.DERP.Server.STUNAddresses, 0)
 	})
 }
 

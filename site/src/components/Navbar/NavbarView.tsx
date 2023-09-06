@@ -11,7 +11,7 @@ import { colors } from "theme/colors"
 import * as TypesGen from "../../api/typesGenerated"
 import { navHeight } from "../../theme/constants"
 import { combineClasses } from "../../utils/combineClasses"
-import { UserDropdown } from "../UserDropdown/UsersDropdown"
+import { UserDropdown } from "../UserDropdown/UserDropdown"
 import Box from "@mui/material/Box"
 import Menu from "@mui/material/Menu"
 import Button from "@mui/material/Button"
@@ -23,6 +23,8 @@ import Divider from "@mui/material/Divider"
 import Skeleton from "@mui/material/Skeleton"
 import { BUTTON_SM_HEIGHT } from "theme/theme"
 import { ProxyStatusLatency } from "components/ProxyStatusLatency/ProxyStatusLatency"
+import { usePermissions } from "hooks/usePermissions"
+import Typography from "@mui/material/Typography"
 
 export const USERS_LINK = `/users?filter=${encodeURIComponent("status:active")}`
 
@@ -34,6 +36,7 @@ export interface NavbarViewProps {
   onSignOut: () => void
   canViewAuditLog: boolean
   canViewDeployment: boolean
+  canViewAllUsers: boolean
   proxyContextValue?: ProxyContextValue
 }
 
@@ -50,8 +53,9 @@ const NavItems: React.FC<
     className?: string
     canViewAuditLog: boolean
     canViewDeployment: boolean
+    canViewAllUsers: boolean
   }>
-> = ({ className, canViewAuditLog, canViewDeployment }) => {
+> = ({ className, canViewAuditLog, canViewDeployment, canViewAllUsers }) => {
   const styles = useStyles()
   const location = useLocation()
 
@@ -73,11 +77,13 @@ const NavItems: React.FC<
           {Language.templates}
         </NavLink>
       </ListItem>
-      <ListItem button className={styles.item}>
-        <NavLink className={styles.link} to={USERS_LINK}>
-          {Language.users}
-        </NavLink>
-      </ListItem>
+      {canViewAllUsers && (
+        <ListItem button className={styles.item}>
+          <NavLink className={styles.link} to={USERS_LINK}>
+            {Language.users}
+          </NavLink>
+        </ListItem>
+      )}
       {canViewAuditLog && (
         <ListItem button className={styles.item}>
           <NavLink className={styles.link} to="/audit">
@@ -87,7 +93,7 @@ const NavItems: React.FC<
       )}
       {canViewDeployment && (
         <ListItem button className={styles.item}>
-          <NavLink className={styles.link} to="/settings/deployment/general">
+          <NavLink className={styles.link} to="/deployment/general">
             {Language.deployment}
           </NavLink>
         </ListItem>
@@ -103,6 +109,7 @@ export const NavbarView: FC<NavbarViewProps> = ({
   onSignOut,
   canViewAuditLog,
   canViewDeployment,
+  canViewAllUsers,
   proxyContextValue,
 }) => {
   const styles = useStyles()
@@ -140,6 +147,7 @@ export const NavbarView: FC<NavbarViewProps> = ({
             <NavItems
               canViewAuditLog={canViewAuditLog}
               canViewDeployment={canViewDeployment}
+              canViewAllUsers={canViewAllUsers}
             />
           </div>
         </Drawer>
@@ -156,6 +164,7 @@ export const NavbarView: FC<NavbarViewProps> = ({
           className={styles.desktopNavItems}
           canViewAuditLog={canViewAuditLog}
           canViewDeployment={canViewDeployment}
+          canViewAllUsers={canViewAllUsers}
         />
 
         <Box
@@ -187,6 +196,7 @@ const ProxyMenu: FC<{ proxyContextValue: ProxyContextValue }> = ({
 }) => {
   const buttonRef = useRef<HTMLButtonElement>(null)
   const [isOpen, setIsOpen] = useState(false)
+  const [refetchDate, setRefetchDate] = useState<Date>()
   const selectedProxy = proxyContextValue.proxy.proxy
   const refreshLatencies = proxyContextValue.refetchProxyLatencies
   const closeMenu = () => setIsOpen(false)
@@ -194,6 +204,27 @@ const ProxyMenu: FC<{ proxyContextValue: ProxyContextValue }> = ({
   const latencies = proxyContextValue.proxyLatencies
   const isLoadingLatencies = Object.keys(latencies).length === 0
   const isLoading = proxyContextValue.isLoading || isLoadingLatencies
+  const permissions = usePermissions()
+  const proxyLatencyLoading = (proxy: TypesGen.Region): boolean => {
+    if (!refetchDate) {
+      // Only show loading if the user manually requested a refetch
+      return false
+    }
+
+    const latency = latencies?.[proxy.id]
+    // Only show a loading spinner if:
+    //  - A latency exists. This means the latency was fetched at some point, so the
+    //    loader *should* be resolved.
+    //  - The proxy is healthy. If it is not, the loader might never resolve.
+    //  - The latency reported is older than the refetch date. This means the latency
+    //    is stale and we should show a loading spinner until the new latency is
+    //    fetched.
+    if (proxy.healthy && latency && latency.at < refetchDate) {
+      return true
+    }
+
+    return false
+  }
 
   if (isLoading) {
     return (
@@ -232,6 +263,7 @@ const ProxyMenu: FC<{ proxyContextValue: ProxyContextValue }> = ({
             {selectedProxy.display_name}
             <ProxyStatusLatency
               latency={latencies?.[selectedProxy.id]?.latencyMS}
+              isLoading={proxyLatencyLoading(selectedProxy)}
             />
           </Box>
         ) : (
@@ -245,50 +277,106 @@ const ProxyMenu: FC<{ proxyContextValue: ProxyContextValue }> = ({
         onClose={closeMenu}
         sx={{ "& .MuiMenu-paper": { py: 1 } }}
       >
-        {proxyContextValue.proxies?.map((proxy) => (
-          <MenuItem
-            onClick={() => {
-              if (!proxy.healthy) {
-                displayError("Please select a healthy workspace proxy.")
-                closeMenu()
-                return
-              }
-
-              proxyContextValue.setProxy(proxy)
-              closeMenu()
-            }}
-            key={proxy.id}
-            selected={proxy.id === selectedProxy?.id}
-            sx={{
-              fontSize: 14,
-            }}
-          >
-            <Box display="flex" gap={3} alignItems="center" width="100%">
-              <Box width={14} height={14} lineHeight={0}>
-                <Box
-                  component="img"
-                  src={proxy.icon_url}
-                  alt=""
-                  sx={{ objectFit: "contain" }}
-                  width="100%"
-                  height="100%"
-                />
-              </Box>
-              {proxy.display_name}
-              <ProxyStatusLatency latency={latencies?.[proxy.id]?.latencyMS} />
-            </Box>
-          </MenuItem>
-        ))}
-        <Divider sx={{ borderColor: (theme) => theme.palette.divider }} />
-        <MenuItem
-          sx={{ fontSize: 14 }}
-          onClick={() => {
-            navigate("/settings/workspace-proxies")
+        <Box
+          sx={{
+            w: "100%",
+            fontSize: 14,
+            padding: 2,
+            maxWidth: "320px",
+            lineHeight: "140%",
           }}
         >
-          Proxy settings
-        </MenuItem>
-        <MenuItem sx={{ fontSize: 14 }} onClick={refreshLatencies}>
+          <Typography
+            component="h4"
+            sx={{
+              fontSize: "inherit",
+              fontWeight: 600,
+              lineHeight: "inherit",
+              margin: 0,
+            }}
+          >
+            Select a region nearest to you
+          </Typography>
+          <Typography
+            component="p"
+            sx={{
+              fontSize: 13,
+              color: (theme) => theme.palette.text.secondary,
+              lineHeight: "inherit",
+              marginTop: 0.5,
+            }}
+          >
+            Workspace proxies improve terminal and web app connections to
+            workspaces. This does not apply to CLI connections. A region must be
+            manually selected, otherwise the default primary region will be
+            used.
+          </Typography>
+        </Box>
+        <Divider sx={{ borderColor: (theme) => theme.palette.divider }} />
+        {proxyContextValue.proxies
+          ?.sort((a, b) => {
+            const latencyA = latencies?.[a.id]?.latencyMS ?? Infinity
+            const latencyB = latencies?.[b.id]?.latencyMS ?? Infinity
+            return latencyA - latencyB
+          })
+          .map((proxy) => (
+            <MenuItem
+              onClick={() => {
+                if (!proxy.healthy) {
+                  displayError("Please select a healthy workspace proxy.")
+                  closeMenu()
+                  return
+                }
+
+                proxyContextValue.setProxy(proxy)
+                closeMenu()
+              }}
+              key={proxy.id}
+              selected={proxy.id === selectedProxy?.id}
+              sx={{
+                fontSize: 14,
+              }}
+            >
+              <Box display="flex" gap={3} alignItems="center" width="100%">
+                <Box width={14} height={14} lineHeight={0}>
+                  <Box
+                    component="img"
+                    src={proxy.icon_url}
+                    alt=""
+                    sx={{ objectFit: "contain" }}
+                    width="100%"
+                    height="100%"
+                  />
+                </Box>
+                {proxy.display_name}
+                <ProxyStatusLatency
+                  latency={latencies?.[proxy.id]?.latencyMS}
+                  isLoading={proxyLatencyLoading(proxy)}
+                />
+              </Box>
+            </MenuItem>
+          ))}
+        <Divider sx={{ borderColor: (theme) => theme.palette.divider }} />
+        {Boolean(permissions.editWorkspaceProxies) && (
+          <MenuItem
+            sx={{ fontSize: 14 }}
+            onClick={() => {
+              navigate("deployment/workspace-proxies")
+            }}
+          >
+            Proxy settings
+          </MenuItem>
+        )}
+        <MenuItem
+          sx={{ fontSize: 14 }}
+          onClick={(e) => {
+            // Stop the menu from closing
+            e.stopPropagation()
+            // Refresh the latencies.
+            const refetchDate = refreshLatencies()
+            setRefetchDate(refetchDate)
+          }}
+        >
           Refresh Latencies
         </MenuItem>
       </Menu>
@@ -297,6 +385,9 @@ const ProxyMenu: FC<{ proxyContextValue: ProxyContextValue }> = ({
 }
 
 const useStyles = makeStyles((theme) => ({
+  displayInitial: {
+    display: "initial",
+  },
   root: {
     height: navHeight,
     background: theme.palette.background.paper,

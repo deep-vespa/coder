@@ -15,11 +15,11 @@ import (
 	"tailscale.com/tailcfg"
 
 	"cdr.dev/slog"
-
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/coderd/database/db2sdk"
-	"github.com/coder/coder/coderd/database/dbauthz"
-	"github.com/coder/coder/tailnet"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/database/db2sdk"
+	"github.com/coder/coder/v2/coderd/database/dbauthz"
+	"github.com/coder/coder/v2/coderd/database/dbtime"
+	"github.com/coder/coder/v2/tailnet"
 )
 
 const (
@@ -58,7 +58,7 @@ func ActiveUsers(ctx context.Context, registerer prometheus.Registerer, db datab
 			case <-ticker.C:
 			}
 
-			apiKeys, err := db.GetAPIKeysLastUsedAfter(ctx, database.Now().Add(-1*time.Hour))
+			apiKeys, err := db.GetAPIKeysLastUsedAfter(ctx, dbtime.Now().Add(-1*time.Hour))
 			if err != nil {
 				continue
 			}
@@ -143,7 +143,7 @@ func Workspaces(ctx context.Context, registerer prometheus.Registerer, db databa
 }
 
 // Agents tracks the total number of workspaces with labels on status.
-func Agents(ctx context.Context, logger slog.Logger, registerer prometheus.Registerer, db database.Store, coordinator *atomic.Pointer[tailnet.Coordinator], derpMap *tailcfg.DERPMap, agentInactiveDisconnectTimeout, duration time.Duration) (func(), error) {
+func Agents(ctx context.Context, logger slog.Logger, registerer prometheus.Registerer, db database.Store, coordinator *atomic.Pointer[tailnet.Coordinator], derpMapFn func() *tailcfg.DERPMap, agentInactiveDisconnectTimeout, duration time.Duration) (func(), error) {
 	if duration == 0 {
 		duration = 1 * time.Minute
 	}
@@ -153,7 +153,7 @@ func Agents(ctx context.Context, logger slog.Logger, registerer prometheus.Regis
 		Subsystem: "agents",
 		Name:      "up",
 		Help:      "The number of active agents per workspace.",
-	}, []string{usernameLabel, workspaceNameLabel}))
+	}, []string{usernameLabel, workspaceNameLabel, "template_name", "template_version"}))
 	err := registerer.Register(agentsGauge)
 	if err != nil {
 		return nil, err
@@ -222,8 +222,9 @@ func Agents(ctx context.Context, logger slog.Logger, registerer prometheus.Regis
 			case <-ticker.C:
 			}
 
-			logger.Debug(ctx, "Agent metrics collection is starting")
+			logger.Debug(ctx, "agent metrics collection is starting")
 			timer := prometheus.NewTimer(metricsCollectorAgents)
+			derpMap := derpMapFn()
 
 			workspaceRows, err := db.GetWorkspaces(ctx, database.GetWorkspacesParams{
 				AgentInactiveDisconnectTimeoutSeconds: int64(agentInactiveDisconnectTimeout.Seconds()),
@@ -234,29 +235,35 @@ func Agents(ctx context.Context, logger slog.Logger, registerer prometheus.Regis
 			}
 
 			for _, workspace := range workspaceRows {
+				templateName := workspace.TemplateName
+				templateVersionName := workspace.TemplateVersionName.String
+				if !workspace.TemplateVersionName.Valid {
+					templateVersionName = "unknown"
+				}
+
 				user, err := db.GetUserByID(ctx, workspace.OwnerID)
 				if err != nil {
-					logger.Error(ctx, "can't get user", slog.F("user_id", workspace.OwnerID), slog.Error(err))
-					agentsGauge.WithLabelValues(VectorOperationAdd, 0, user.Username, workspace.Name)
+					logger.Error(ctx, "can't get user from the database", slog.F("user_id", workspace.OwnerID), slog.Error(err))
+					agentsGauge.WithLabelValues(VectorOperationAdd, 0, user.Username, workspace.Name, templateName, templateVersionName)
 					continue
 				}
 
 				agents, err := db.GetWorkspaceAgentsInLatestBuildByWorkspaceID(ctx, workspace.ID)
 				if err != nil {
 					logger.Error(ctx, "can't get workspace agents", slog.F("workspace_id", workspace.ID), slog.Error(err))
-					agentsGauge.WithLabelValues(VectorOperationAdd, 0, user.Username, workspace.Name)
+					agentsGauge.WithLabelValues(VectorOperationAdd, 0, user.Username, workspace.Name, templateName, templateVersionName)
 					continue
 				}
 
 				if len(agents) == 0 {
 					logger.Debug(ctx, "workspace agents are unavailable", slog.F("workspace_id", workspace.ID))
-					agentsGauge.WithLabelValues(VectorOperationAdd, 0, user.Username, workspace.Name)
+					agentsGauge.WithLabelValues(VectorOperationAdd, 0, user.Username, workspace.Name, templateName, templateVersionName)
 					continue
 				}
 
 				for _, agent := range agents {
 					// Collect information about agents
-					agentsGauge.WithLabelValues(VectorOperationAdd, 1, user.Username, workspace.Name)
+					agentsGauge.WithLabelValues(VectorOperationAdd, 1, user.Username, workspace.Name, templateName, templateVersionName)
 
 					connectionStatus := agent.Status(agentInactiveDisconnectTimeout)
 					node := (*coordinator.Load()).Node(agent.ID)
@@ -314,7 +321,7 @@ func Agents(ctx context.Context, logger slog.Logger, registerer prometheus.Regis
 			agentsAppsGauge.Commit()
 
 		done:
-			logger.Debug(ctx, "Agent metrics collection is done")
+			logger.Debug(ctx, "agent metrics collection is done")
 			timer.ObserveDuration()
 			ticker.Reset(duration)
 		}
@@ -447,7 +454,7 @@ func AgentStats(ctx context.Context, logger slog.Logger, registerer prometheus.R
 			case <-ticker.C:
 			}
 
-			logger.Debug(ctx, "Agent metrics collection is starting")
+			logger.Debug(ctx, "agent metrics collection is starting")
 			timer := prometheus.NewTimer(metricsCollectorAgentStats)
 
 			checkpoint := time.Now()
@@ -482,7 +489,7 @@ func AgentStats(ctx context.Context, logger slog.Logger, registerer prometheus.R
 				}
 			}
 
-			logger.Debug(ctx, "Agent metrics collection is done", slog.F("len", len(stats)))
+			logger.Debug(ctx, "agent metrics collection is done", slog.F("len", len(stats)))
 			timer.ObserveDuration()
 
 			createdAfter = checkpoint

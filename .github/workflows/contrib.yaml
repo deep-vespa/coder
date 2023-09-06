@@ -25,7 +25,8 @@ jobs:
     permissions:
       pull-requests: write
     steps:
-      - uses: hmarr/auto-approve-action@v3
+      - name: auto-approve dependabot
+        uses: hmarr/auto-approve-action@v3
         if: github.actor == 'dependabot[bot]'
 
   cla:
@@ -45,14 +46,16 @@ jobs:
           path-to-document: "https://github.com/coder/cla/blob/main/README.md"
           # branch should not be protected
           branch: "main"
-          allowlist: dependabot*
+          # Some users have signed a corporate CLA with Coder so are exempt from signing our community one.
+          allowlist: "coryb,aaronlehmann,dependabot*"
 
   release-labels:
     runs-on: ubuntu-latest
     # Skip tagging for draft PRs.
     if: ${{ github.event_name == 'pull_request_target' && success() && !github.event.pull_request.draft }}
     steps:
-      - uses: actions/github-script@v6
+      - name: release-labels
+        uses: actions/github-script@v6
         with:
           # This script ensures PR title and labels are in sync:
           #

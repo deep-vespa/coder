@@ -7,11 +7,15 @@ import (
 	"fmt"
 	"net/http"
 	"net/mail"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/golang-jwt/jwt/v4"
 	"github.com/google/go-github/v43/github"
 	"github.com/google/uuid"
 	"github.com/moby/moby/pkg/namesgenerator"
@@ -19,16 +23,179 @@ import (
 	"golang.org/x/xerrors"
 
 	"cdr.dev/slog"
-	"github.com/coder/coder/coderd/apikey"
-	"github.com/coder/coder/coderd/audit"
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/coderd/database/dbauthz"
-	"github.com/coder/coder/coderd/httpapi"
-	"github.com/coder/coder/coderd/httpmw"
-	"github.com/coder/coder/coderd/rbac"
-	"github.com/coder/coder/coderd/userpassword"
-	"github.com/coder/coder/codersdk"
+	"github.com/coder/coder/v2/coderd/apikey"
+	"github.com/coder/coder/v2/coderd/audit"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/database/dbauthz"
+	"github.com/coder/coder/v2/coderd/database/dbtime"
+	"github.com/coder/coder/v2/coderd/httpapi"
+	"github.com/coder/coder/v2/coderd/httpmw"
+	"github.com/coder/coder/v2/coderd/rbac"
+	"github.com/coder/coder/v2/coderd/userpassword"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/cryptorand"
+	"github.com/coder/coder/v2/site"
 )
+
+const (
+	userAuthLoggerName      = "userauth"
+	OAuthConvertCookieValue = "coder_oauth_convert_jwt"
+	mergeStateStringPrefix  = "convert-"
+)
+
+type OAuthConvertStateClaims struct {
+	jwt.RegisteredClaims
+
+	UserID        uuid.UUID          `json:"user_id"`
+	State         string             `json:"state"`
+	FromLoginType codersdk.LoginType `json:"from_login_type"`
+	ToLoginType   codersdk.LoginType `json:"to_login_type"`
+}
+
+// postConvertLoginType replies with an oauth state token capable of converting
+// the user to an oauth user.
+//
+// @Summary Convert user from password to oauth authentication
+// @ID convert-user-from-password-to-oauth-authentication
+// @Security CoderSessionToken
+// @Accept json
+// @Produce json
+// @Tags Authorization
+// @Param request body codersdk.ConvertLoginRequest true "Convert request"
+// @Param user path string true "User ID, name, or me"
+// @Success 201 {object} codersdk.OAuthConversionResponse
+// @Router /users/{user}/convert-login [post]
+func (api *API) postConvertLoginType(rw http.ResponseWriter, r *http.Request) {
+	var (
+		user              = httpmw.UserParam(r)
+		ctx               = r.Context()
+		auditor           = api.Auditor.Load()
+		aReq, commitAudit = audit.InitRequest[database.AuditOAuthConvertState](rw, &audit.RequestParams{
+			Audit:   *auditor,
+			Log:     api.Logger,
+			Request: r,
+			Action:  database.AuditActionCreate,
+		})
+	)
+	aReq.Old = database.AuditOAuthConvertState{}
+	defer commitAudit()
+
+	var req codersdk.ConvertLoginRequest
+	if !httpapi.Read(ctx, rw, r, &req) {
+		return
+	}
+
+	switch req.ToType {
+	case codersdk.LoginTypeGithub, codersdk.LoginTypeOIDC:
+		// Allowed!
+	case codersdk.LoginTypeNone, codersdk.LoginTypePassword, codersdk.LoginTypeToken:
+		// These login types are not allowed to be converted to at this time.
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: fmt.Sprintf("Cannot convert to login type %q.", req.ToType),
+		})
+		return
+	default:
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: fmt.Sprintf("Unknown login type %q.", req.ToType),
+		})
+		return
+	}
+
+	// This handles the email/pass checking.
+	user, _, ok := api.loginRequest(ctx, rw, codersdk.LoginWithPasswordRequest{
+		Email:    user.Email,
+		Password: req.Password,
+	})
+	if !ok {
+		return
+	}
+
+	// Only support converting from password auth.
+	if user.LoginType != database.LoginTypePassword {
+		// This is checked in loginRequest, but checked again here in case that shared
+		// function changes its checks. Just some defensive programming.
+		// This login type is **required** to be password based to prevent
+		// users from converting other login types to OIDC.
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: "User account must have password based authentication.",
+		})
+		return
+	}
+
+	stateString, err := cryptorand.String(32)
+	if err != nil {
+		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Internal error generating state string.",
+			Detail:  err.Error(),
+		})
+		return
+	}
+	// The prefix is used to identify this state string as a conversion state
+	// without needing to hit the database. The random string is the CSRF protection.
+	stateString = fmt.Sprintf("%s%s", mergeStateStringPrefix, stateString)
+
+	// This JWT is the signed payload to authorize the convert to oauth request.
+	// When the user does the oauth flow, this jwt will be sent back to coderd.
+	// The included information in this payload links it to a state string, so
+	// this request is tied 1:1 with an oauth state.
+	// This JWT also includes information to tie it 1:1 with a coder deployment
+	// and user account. This is mainly to inform the user if they are accidentally
+	// switching between coder deployments if the OIDC is misconfigured.
+	// Eg: Developers with more than 1 deployment.
+	now := time.Now()
+	claims := &OAuthConvertStateClaims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    api.DeploymentID,
+			Subject:   stateString,
+			Audience:  []string{user.ID.String()},
+			ExpiresAt: jwt.NewNumericDate(now.Add(time.Minute * 5)),
+			NotBefore: jwt.NewNumericDate(now.Add(time.Second * -1)),
+			IssuedAt:  jwt.NewNumericDate(now),
+			ID:        uuid.NewString(),
+		},
+		UserID:        user.ID,
+		State:         stateString,
+		FromLoginType: codersdk.LoginType(user.LoginType),
+		ToLoginType:   req.ToType,
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS512, claims)
+	// Key must be a byte slice, not an array. So make sure to include the [:]
+	tokenString, err := token.SignedString(api.OAuthSigningKey[:])
+	if err != nil {
+		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Internal error signing state jwt.",
+			Detail:  err.Error(),
+		})
+		return
+	}
+
+	aReq.New = database.AuditOAuthConvertState{
+		CreatedAt:     claims.IssuedAt.Time,
+		ExpiresAt:     claims.ExpiresAt.Time,
+		FromLoginType: database.LoginType(claims.FromLoginType),
+		ToLoginType:   database.LoginType(claims.ToLoginType),
+		UserID:        claims.UserID,
+	}
+
+	http.SetCookie(rw, &http.Cookie{
+		Name:     OAuthConvertCookieValue,
+		Path:     "/",
+		Value:    tokenString,
+		Expires:  claims.ExpiresAt.Time,
+		Secure:   api.SecureAuthCookie,
+		HttpOnly: true,
+		// Must be SameSite to work on the redirected auth flow from the
+		// oauth provider.
+		SameSite: http.SameSiteLaxMode,
+	})
+	httpapi.Write(ctx, rw, http.StatusCreated, codersdk.OAuthConversionResponse{
+		StateString: stateString,
+		ExpiresAt:   claims.ExpiresAt.Time,
+		ToType:      claims.ToLoginType,
+		UserID:      claims.UserID,
+	})
+}
 
 // Authenticates the user with an email and password.
 //
@@ -44,6 +211,7 @@ func (api *API) postLogin(rw http.ResponseWriter, r *http.Request) {
 	var (
 		ctx               = r.Context()
 		auditor           = api.Auditor.Load()
+		logger            = api.Logger.Named(userAuthLoggerName)
 		aReq, commitAudit = audit.InitRequest[database.APIKey](rw, &audit.RequestParams{
 			Audit:   *auditor,
 			Log:     api.Logger,
@@ -59,66 +227,12 @@ func (api *API) postLogin(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	//nolint:gocritic // In order to login, we need to get the user first!
-	user, err := api.Database.GetUserByEmailOrUsername(dbauthz.AsSystemRestricted(ctx), database.GetUserByEmailOrUsernameParams{
-		Email: loginWithPassword.Email,
-	})
-	if err != nil && !xerrors.Is(err, sql.ErrNoRows) {
-		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
-			Message: "Internal error.",
-		})
-		return
-	}
-
+	user, roles, ok := api.loginRequest(ctx, rw, loginWithPassword)
+	// 'user.ID' will be empty, or will be an actual value. Either is correct
+	// here.
 	aReq.UserID = user.ID
-
-	// If the user doesn't exist, it will be a default struct.
-	equal, err := userpassword.Compare(string(user.HashedPassword), loginWithPassword.Password)
-	if err != nil {
-		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
-			Message: "Internal error.",
-		})
-		return
-	}
-	if !equal {
-		// This message is the same as above to remove ease in detecting whether
-		// users are registered or not. Attackers still could with a timing attack.
-		httpapi.Write(ctx, rw, http.StatusUnauthorized, codersdk.Response{
-			Message: "Incorrect email or password.",
-		})
-		return
-	}
-
-	// If password authentication is disabled and the user does not have the
-	// owner role, block the request.
-	if api.DeploymentValues.DisablePasswordAuth {
-		httpapi.Write(ctx, rw, http.StatusForbidden, codersdk.Response{
-			Message: "Password authentication is disabled.",
-		})
-		return
-	}
-
-	if user.LoginType != database.LoginTypePassword {
-		httpapi.Write(ctx, rw, http.StatusForbidden, codersdk.Response{
-			Message: fmt.Sprintf("Incorrect login type, attempting to use %q but user is of login type %q", database.LoginTypePassword, user.LoginType),
-		})
-		return
-	}
-
-	//nolint:gocritic // System needs to fetch user roles in order to login user.
-	roles, err := api.Database.GetAuthorizationUserRoles(dbauthz.AsSystemRestricted(ctx), user.ID)
-	if err != nil {
-		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
-			Message: "Internal error.",
-		})
-		return
-	}
-
-	// If the user logged into a suspended account, reject the login request.
-	if roles.Status != database.UserStatusActive {
-		httpapi.Write(ctx, rw, http.StatusUnauthorized, codersdk.Response{
-			Message: "Your account is suspended. Contact an admin to reactivate your account.",
-		})
+	if !ok {
+		// user failed to login
 		return
 	}
 
@@ -137,6 +251,7 @@ func (api *API) postLogin(rw http.ResponseWriter, r *http.Request) {
 		DeploymentValues: api.DeploymentValues,
 	})
 	if err != nil {
+		logger.Error(ctx, "unable to create API key", slog.Error(err))
 		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
 			Message: "Failed to create API key.",
 			Detail:  err.Error(),
@@ -151,6 +266,99 @@ func (api *API) postLogin(rw http.ResponseWriter, r *http.Request) {
 	httpapi.Write(ctx, rw, http.StatusCreated, codersdk.LoginWithPasswordResponse{
 		SessionToken: cookie.Value,
 	})
+}
+
+// loginRequest will process a LoginWithPasswordRequest and return the user if
+// the credentials are correct. If 'false' is returned, the authentication failed
+// and the appropriate error will be written to the ResponseWriter.
+//
+// The user struct is always returned, even if authentication failed. This is
+// to support knowing what user attempted to login.
+func (api *API) loginRequest(ctx context.Context, rw http.ResponseWriter, req codersdk.LoginWithPasswordRequest) (database.User, database.GetAuthorizationUserRolesRow, bool) {
+	logger := api.Logger.Named(userAuthLoggerName)
+
+	//nolint:gocritic // In order to login, we need to get the user first!
+	user, err := api.Database.GetUserByEmailOrUsername(dbauthz.AsSystemRestricted(ctx), database.GetUserByEmailOrUsernameParams{
+		Email: req.Email,
+	})
+	if err != nil && !xerrors.Is(err, sql.ErrNoRows) {
+		logger.Error(ctx, "unable to fetch user by email", slog.Error(err))
+		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Internal error.",
+		})
+		return user, database.GetAuthorizationUserRolesRow{}, false
+	}
+
+	// If the user doesn't exist, it will be a default struct.
+	equal, err := userpassword.Compare(string(user.HashedPassword), req.Password)
+	if err != nil {
+		logger.Error(ctx, "unable to compare passwords", slog.Error(err))
+		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Internal error.",
+		})
+		return user, database.GetAuthorizationUserRolesRow{}, false
+	}
+
+	if !equal {
+		// This message is the same as above to remove ease in detecting whether
+		// users are registered or not. Attackers still could with a timing attack.
+		httpapi.Write(ctx, rw, http.StatusUnauthorized, codersdk.Response{
+			Message: "Incorrect email or password.",
+		})
+		return user, database.GetAuthorizationUserRolesRow{}, false
+	}
+
+	// If password authentication is disabled and the user does not have the
+	// owner role, block the request.
+	if api.DeploymentValues.DisablePasswordAuth {
+		httpapi.Write(ctx, rw, http.StatusForbidden, codersdk.Response{
+			Message: "Password authentication is disabled.",
+		})
+		return user, database.GetAuthorizationUserRolesRow{}, false
+	}
+
+	if user.LoginType != database.LoginTypePassword {
+		httpapi.Write(ctx, rw, http.StatusForbidden, codersdk.Response{
+			Message: fmt.Sprintf("Incorrect login type, attempting to use %q but user is of login type %q", database.LoginTypePassword, user.LoginType),
+		})
+		return user, database.GetAuthorizationUserRolesRow{}, false
+	}
+
+	if user.Status == database.UserStatusDormant {
+		//nolint:gocritic // System needs to update status of the user account (dormant -> active).
+		user, err = api.Database.UpdateUserStatus(dbauthz.AsSystemRestricted(ctx), database.UpdateUserStatusParams{
+			ID:        user.ID,
+			Status:    database.UserStatusActive,
+			UpdatedAt: dbtime.Now(),
+		})
+		if err != nil {
+			logger.Error(ctx, "unable to update user status to active", slog.Error(err))
+			httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+				Message: "Internal error occurred. Try again later, or contact an admin for assistance.",
+			})
+			return user, database.GetAuthorizationUserRolesRow{}, false
+		}
+	}
+
+	//nolint:gocritic // System needs to fetch user roles in order to login user.
+	roles, err := api.Database.GetAuthorizationUserRoles(dbauthz.AsSystemRestricted(ctx), user.ID)
+	if err != nil {
+		logger.Error(ctx, "unable to fetch authorization user roles", slog.Error(err))
+		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Internal error.",
+		})
+		return user, database.GetAuthorizationUserRolesRow{}, false
+	}
+
+	// If the user logged into a suspended account, reject the login request.
+	if roles.Status != database.UserStatusActive {
+		httpapi.Write(ctx, rw, http.StatusUnauthorized, codersdk.Response{
+			Message: fmt.Sprintf("Your account is %s. Contact an admin to reactivate your account.", roles.Status),
+		})
+		return user, database.GetAuthorizationUserRolesRow{}, false
+	}
+
+	return user, roles, true
 }
 
 // Clear the user's session cookie.
@@ -188,8 +396,11 @@ func (api *API) postLogout(rw http.ResponseWriter, r *http.Request) {
 	apiKey := httpmw.APIKey(r)
 	aReq.Old = apiKey
 
+	logger := api.Logger.Named(userAuthLoggerName)
+
 	err := api.Database.DeleteAPIKeyByID(ctx, apiKey.ID)
 	if err != nil {
+		logger.Error(ctx, "unable to delete API key", slog.F("api_key", apiKey.ID), slog.Error(err))
 		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
 			Message: "Internal error deleting API key.",
 			Detail:  err.Error(),
@@ -203,6 +414,7 @@ func (api *API) postLogout(rw http.ResponseWriter, r *http.Request) {
 	// to access the app again.
 	err = api.Database.DeleteApplicationConnectAPIKeysByUserID(ctx, apiKey.UserID)
 	if err != nil {
+		logger.Error(ctx, "unable to invalidate subdomain app tokens", slog.F("user_id", apiKey.UserID), slog.Error(err))
 		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
 			Message: "Internal error deleting app tokens.",
 			Detail:  err.Error(),
@@ -293,11 +505,14 @@ func (api *API) userOAuth2Github(rw http.ResponseWriter, r *http.Request) {
 
 	oauthClient := oauth2.NewClient(ctx, oauth2.StaticTokenSource(state.Token))
 
+	logger := api.Logger.Named(userAuthLoggerName)
+
 	var selectedMemberships []*github.Membership
 	var organizationNames []string
 	if !api.GithubOAuth2Config.AllowEveryone {
 		memberships, err := api.GithubOAuth2Config.ListOrganizationMemberships(ctx, oauthClient)
 		if err != nil {
+			logger.Error(ctx, "unable to list organization members", slog.Error(err))
 			httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
 				Message: "Internal error fetching authenticated Github user organizations.",
 				Detail:  err.Error(),
@@ -328,6 +543,7 @@ func (api *API) userOAuth2Github(rw http.ResponseWriter, r *http.Request) {
 
 	ghUser, err := api.GithubOAuth2Config.AuthenticatedUser(ctx, oauthClient)
 	if err != nil {
+		logger.Error(ctx, "oauth2: unable to fetch authenticated user", slog.Error(err))
 		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
 			Message: "Internal error fetching authenticated Github user.",
 			Detail:  err.Error(),
@@ -366,6 +582,7 @@ func (api *API) userOAuth2Github(rw http.ResponseWriter, r *http.Request) {
 
 	emails, err := api.GithubOAuth2Config.ListEmails(ctx, oauthClient)
 	if err != nil {
+		logger.Error(ctx, "oauth2: unable to list emails", slog.Error(err))
 		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
 			Message: "Internal error fetching personal Github user.",
 			Detail:  err.Error(),
@@ -390,6 +607,7 @@ func (api *API) userOAuth2Github(rw http.ResponseWriter, r *http.Request) {
 
 	user, link, err := findLinkedUser(ctx, api.Database, githubLinkedID(ghUser), verifiedEmail.GetEmail())
 	if err != nil {
+		logger.Error(ctx, "oauth2: unable to find linked user", slog.F("gh_user", ghUser.Name), slog.Error(err))
 		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
 			Message: "Failed to find linked user.",
 			Detail:  err.Error(),
@@ -403,7 +621,7 @@ func (api *API) userOAuth2Github(rw http.ResponseWriter, r *http.Request) {
 		aReq.Action = database.AuditActionRegister
 	}
 
-	cookie, key, err := api.oauthLogin(r, oauthLoginParams{
+	params := (&oauthLoginParams{
 		User:         user,
 		Link:         link,
 		State:        state,
@@ -413,16 +631,18 @@ func (api *API) userOAuth2Github(rw http.ResponseWriter, r *http.Request) {
 		Email:        verifiedEmail.GetEmail(),
 		Username:     ghUser.GetLogin(),
 		AvatarURL:    ghUser.GetAvatarURL(),
+	}).SetInitAuditRequest(func(params *audit.RequestParams) (*audit.Request[database.User], func()) {
+		return audit.InitRequest[database.User](rw, params)
 	})
+	cookies, key, err := api.oauthLogin(r, params)
+	defer params.CommitAuditLogs()
 	var httpErr httpError
 	if xerrors.As(err, &httpErr) {
-		httpapi.Write(ctx, rw, httpErr.code, codersdk.Response{
-			Message: httpErr.msg,
-			Detail:  httpErr.detail,
-		})
+		httpErr.Write(rw, r)
 		return
 	}
 	if err != nil {
+		logger.Error(ctx, "oauth2: login failed", slog.F("user", user.Username), slog.Error(err))
 		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
 			Message: "Failed to process OAuth login.",
 			Detail:  err.Error(),
@@ -432,7 +652,9 @@ func (api *API) userOAuth2Github(rw http.ResponseWriter, r *http.Request) {
 	aReq.New = key
 	aReq.UserID = key.UserID
 
-	http.SetCookie(rw, cookie)
+	for _, cookie := range cookies {
+		http.SetCookie(rw, cookie)
+	}
 
 	redirect := state.Redirect
 	if redirect == "" {
@@ -470,14 +692,36 @@ type OIDCConfig struct {
 	// groups. If the group field is the empty string, then no group updates
 	// will ever come from the OIDC provider.
 	GroupField string
+	// CreateMissingGroups controls whether groups returned by the OIDC provider
+	// are automatically created in Coder if they are missing.
+	CreateMissingGroups bool
+	// GroupFilter is a regular expression that filters the groups returned by
+	// the OIDC provider. Any group not matched by this regex will be ignored.
+	// If the group filter is nil, then no group filtering will occur.
+	GroupFilter *regexp.Regexp
 	// GroupMapping controls how groups returned by the OIDC provider get mapped
 	// to groups within Coder.
 	// map[oidcGroupName]coderGroupName
 	GroupMapping map[string]string
+	// UserRoleField selects the claim field to be used as the created user's
+	// roles. If the field is the empty string, then no role updates
+	// will ever come from the OIDC provider.
+	UserRoleField string
+	// UserRoleMapping controls how groups returned by the OIDC provider get mapped
+	// to roles within Coder.
+	// map[oidcRoleName][]coderRoleName
+	UserRoleMapping map[string][]string
+	// UserRolesDefault is the default set of roles to assign to a user if role sync
+	// is enabled.
+	UserRolesDefault []string
 	// SignInText is the text to display on the OIDC login button
 	SignInText string
 	// IconURL points to the URL of an icon to display on the OIDC login button
 	IconURL string
+}
+
+func (cfg OIDCConfig) RoleSyncEnabled() bool {
+	return cfg.UserRoleField != ""
 }
 
 // @Summary OpenID Connect Callback
@@ -521,12 +765,15 @@ func (api *API) userOIDC(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	logger := api.Logger.Named(userAuthLoggerName)
+
 	// "email_verified" is an optional claim that changes the behavior
 	// of our OIDC handler, so each property must be pulled manually out
 	// of the claim mapping.
 	claims := map[string]interface{}{}
 	err = idToken.Claims(&claims)
 	if err != nil {
+		logger.Error(ctx, "oauth2: unable to extract OIDC claims", slog.Error(err))
 		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
 			Message: "Failed to extract OIDC claims.",
 			Detail:  err.Error(),
@@ -534,7 +781,7 @@ func (api *API) userOIDC(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	api.Logger.Debug(ctx, "got oidc claims",
+	logger.Debug(ctx, "got oidc claims",
 		slog.F("source", "id_token"),
 		slog.F("claim_fields", claimFields(claims)),
 		slog.F("blank", blankFields(claims)),
@@ -556,13 +803,14 @@ func (api *API) userOIDC(rw http.ResponseWriter, r *http.Request) {
 			userInfoClaims := map[string]interface{}{}
 			err = userInfo.Claims(&userInfoClaims)
 			if err != nil {
+				logger.Error(ctx, "oauth2: unable to unmarshal user info claims", slog.Error(err))
 				httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
 					Message: "Failed to unmarshal user info claims.",
 					Detail:  err.Error(),
 				})
 				return
 			}
-			api.Logger.Debug(ctx, "got oidc claims",
+			logger.Debug(ctx, "got oidc claims",
 				slog.F("source", "userinfo"),
 				slog.F("claim_fields", claimFields(userInfoClaims)),
 				slog.F("blank", blankFields(userInfoClaims)),
@@ -573,12 +821,13 @@ func (api *API) userOIDC(rw http.ResponseWriter, r *http.Request) {
 			claims = mergeClaims(claims, userInfoClaims)
 
 			// Log all of the field names after merging.
-			api.Logger.Debug(ctx, "got oidc claims",
+			logger.Debug(ctx, "got oidc claims",
 				slog.F("source", "merged"),
 				slog.F("claim_fields", claimFields(claims)),
 				slog.F("blank", blankFields(claims)),
 			)
 		} else if !strings.Contains(err.Error(), "user info endpoint is not supported by this provider") {
+			logger.Error(ctx, "oauth2: unable to obtain user information claims", slog.Error(err))
 			httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
 				Message: "Failed to obtain user information claims.",
 				Detail:  "The attempt to fetch claims via the UserInfo endpoint failed: " + err.Error(),
@@ -588,7 +837,7 @@ func (api *API) userOIDC(rw http.ResponseWriter, r *http.Request) {
 			// The OIDC provider does not support the UserInfo endpoint.
 			// This is not an error, but we should log it as it may mean
 			// that some claims are missing.
-			api.Logger.Warn(ctx, "OIDC provider does not support the user info endpoint, ensure that all required claims are present in the id_token")
+			logger.Warn(ctx, "OIDC provider does not support the user info endpoint, ensure that all required claims are present in the id_token")
 		}
 	}
 
@@ -632,7 +881,7 @@ func (api *API) userOIDC(rw http.ResponseWriter, r *http.Request) {
 				})
 				return
 			}
-			api.Logger.Warn(ctx, "allowing unverified oidc email %q")
+			logger.Warn(ctx, "allowing unverified oidc email %q")
 		}
 	}
 
@@ -678,7 +927,7 @@ func (api *API) userOIDC(rw http.ResponseWriter, r *http.Request) {
 	// This conditional is purely to warn the user they might have misconfigured their OIDC
 	// configuration.
 	if _, groupClaimExists := claims["groups"]; !usingGroups && groupClaimExists {
-		api.Logger.Debug(ctx, "'groups' claim was returned, but 'oidc-group-field' is not set, check your coder oidc settings.")
+		logger.Debug(ctx, "claim 'groups' was returned, but 'oidc-group-field' is not set, check your coder oidc settings")
 	}
 
 	// The username is a required property in Coder. We make a best-effort
@@ -719,11 +968,69 @@ func (api *API) userOIDC(rw http.ResponseWriter, r *http.Request) {
 
 	user, link, err := findLinkedUser(ctx, api.Database, oidcLinkedID(idToken), email)
 	if err != nil {
+		logger.Error(ctx, "oauth2: unable to find linked user", slog.F("email", email), slog.Error(err))
 		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
 			Message: "Failed to find linked user.",
 			Detail:  err.Error(),
 		})
 		return
+	}
+
+	roles := api.OIDCConfig.UserRolesDefault
+	if api.OIDCConfig.RoleSyncEnabled() {
+		rolesRow, ok := claims[api.OIDCConfig.UserRoleField]
+		if !ok {
+			// If no claim is provided than we can assume the user is just
+			// a member. This is because there is no way to tell the difference
+			// between []string{} and nil for OIDC claims. IDPs omit claims
+			// if they are empty ([]string{}).
+			// Use []interface{}{} so the next typecast works.
+			rolesRow = []interface{}{}
+		}
+
+		rolesInterface, ok := rolesRow.([]interface{})
+		if !ok {
+			api.Logger.Error(ctx, "oidc claim user roles field was an unknown type",
+				slog.F("type", fmt.Sprintf("%T", rolesRow)),
+			)
+			site.RenderStaticErrorPage(rw, r, site.ErrorPageData{
+				Status:       http.StatusInternalServerError,
+				HideStatus:   true,
+				Title:        "Login disabled until OIDC config is fixed",
+				Description:  fmt.Sprintf("Roles claim must be an array of strings, type found: %T. Disabling role sync will allow login to proceed.", rolesRow),
+				RetryEnabled: false,
+				DashboardURL: "/login",
+			})
+			return
+		}
+
+		api.Logger.Debug(ctx, "roles returned in oidc claims",
+			slog.F("len", len(rolesInterface)),
+			slog.F("roles", rolesInterface),
+		)
+		for _, roleInterface := range rolesInterface {
+			role, ok := roleInterface.(string)
+			if !ok {
+				api.Logger.Error(ctx, "invalid oidc user role type",
+					slog.F("type", fmt.Sprintf("%T", rolesRow)),
+				)
+				httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+					Message: fmt.Sprintf("Invalid user role type. Expected string, got: %T", roleInterface),
+				})
+				return
+			}
+
+			if mappedRoles, ok := api.OIDCConfig.UserRoleMapping[role]; ok {
+				if len(mappedRoles) == 0 {
+					continue
+				}
+				// Mapped roles are added to the list of roles
+				roles = append(roles, mappedRoles...)
+				continue
+			}
+
+			roles = append(roles, role)
+		}
 	}
 
 	// If a new user is authenticating for the first time
@@ -732,28 +1039,34 @@ func (api *API) userOIDC(rw http.ResponseWriter, r *http.Request) {
 		aReq.Action = database.AuditActionRegister
 	}
 
-	cookie, key, err := api.oauthLogin(r, oauthLoginParams{
-		User:         user,
-		Link:         link,
-		State:        state,
-		LinkedID:     oidcLinkedID(idToken),
-		LoginType:    database.LoginTypeOIDC,
-		AllowSignups: api.OIDCConfig.AllowSignups,
-		Email:        email,
-		Username:     username,
-		AvatarURL:    picture,
-		UsingGroups:  usingGroups,
-		Groups:       groups,
+	params := (&oauthLoginParams{
+		User:                user,
+		Link:                link,
+		State:               state,
+		LinkedID:            oidcLinkedID(idToken),
+		LoginType:           database.LoginTypeOIDC,
+		AllowSignups:        api.OIDCConfig.AllowSignups,
+		Email:               email,
+		Username:            username,
+		AvatarURL:           picture,
+		UsingGroups:         usingGroups,
+		UsingRoles:          api.OIDCConfig.RoleSyncEnabled(),
+		Roles:               roles,
+		Groups:              groups,
+		CreateMissingGroups: api.OIDCConfig.CreateMissingGroups,
+		GroupFilter:         api.OIDCConfig.GroupFilter,
+	}).SetInitAuditRequest(func(params *audit.RequestParams) (*audit.Request[database.User], func()) {
+		return audit.InitRequest[database.User](rw, params)
 	})
+	cookies, key, err := api.oauthLogin(r, params)
+	defer params.CommitAuditLogs()
 	var httpErr httpError
 	if xerrors.As(err, &httpErr) {
-		httpapi.Write(ctx, rw, httpErr.code, codersdk.Response{
-			Message: httpErr.msg,
-			Detail:  httpErr.detail,
-		})
+		httpErr.Write(rw, r)
 		return
 	}
 	if err != nil {
+		logger.Error(ctx, "oauth2: login failed", slog.F("user", user.Username), slog.Error(err))
 		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
 			Message: "Failed to process OAuth login.",
 			Detail:  err.Error(),
@@ -763,7 +1076,9 @@ func (api *API) userOIDC(rw http.ResponseWriter, r *http.Request) {
 	aReq.New = key
 	aReq.UserID = key.UserID
 
-	http.SetCookie(rw, cookie)
+	for i := range cookies {
+		http.SetCookie(rw, cookies[i])
+	}
 
 	redirect := state.Redirect
 	if redirect == "" {
@@ -823,14 +1138,62 @@ type oauthLoginParams struct {
 	AvatarURL    string
 	// Is UsingGroups is true, then the user will be assigned
 	// to the Groups provided.
-	UsingGroups bool
-	Groups      []string
+	UsingGroups         bool
+	CreateMissingGroups bool
+	Groups              []string
+	GroupFilter         *regexp.Regexp
+	// Is UsingRoles is true, then the user will be assigned
+	// the roles provided.
+	UsingRoles bool
+	Roles      []string
+
+	commitLock       sync.Mutex
+	initAuditRequest func(params *audit.RequestParams) *audit.Request[database.User]
+	commits          []func()
+}
+
+func (p *oauthLoginParams) SetInitAuditRequest(f func(params *audit.RequestParams) (*audit.Request[database.User], func())) *oauthLoginParams {
+	p.initAuditRequest = func(params *audit.RequestParams) *audit.Request[database.User] {
+		p.commitLock.Lock()
+		defer p.commitLock.Unlock()
+		req, commit := f(params)
+		p.commits = append(p.commits, commit)
+		return req
+	}
+	return p
+}
+
+func (p *oauthLoginParams) CommitAuditLogs() {
+	p.commitLock.Lock()
+	defer p.commitLock.Unlock()
+	for _, f := range p.commits {
+		f()
+	}
 }
 
 type httpError struct {
-	code   int
-	msg    string
-	detail string
+	code             int
+	msg              string
+	detail           string
+	renderStaticPage bool
+}
+
+func (e httpError) Write(rw http.ResponseWriter, r *http.Request) {
+	if e.renderStaticPage {
+		site.RenderStaticErrorPage(rw, r, site.ErrorPageData{
+			Status:       e.code,
+			HideStatus:   true,
+			Title:        e.msg,
+			Description:  e.detail,
+			RetryEnabled: false,
+			DashboardURL: "/login",
+		})
+		return
+	}
+	httpapi.Write(r.Context(), rw, e.code, codersdk.Response{
+		Message: e.msg,
+		Detail:  e.detail,
+	})
 }
 
 func (e httpError) Error() string {
@@ -841,12 +1204,15 @@ func (e httpError) Error() string {
 	return e.msg
 }
 
-func (api *API) oauthLogin(r *http.Request, params oauthLoginParams) (*http.Cookie, database.APIKey, error) {
+func (api *API) oauthLogin(r *http.Request, params *oauthLoginParams) ([]*http.Cookie, database.APIKey, error) {
 	var (
-		ctx  = r.Context()
-		user database.User
+		ctx     = r.Context()
+		user    database.User
+		cookies []*http.Cookie
+		logger  = api.Logger.Named(userAuthLoggerName)
 	)
 
+	var isConvertLoginType bool
 	err := api.Database.InTx(func(tx database.Store) error {
 		var (
 			link database.UserLink
@@ -856,6 +1222,20 @@ func (api *API) oauthLogin(r *http.Request, params oauthLoginParams) (*http.Cook
 		user = params.User
 		link = params.Link
 
+		// If you do a convert to OIDC and your email does not match, we need to
+		// catch this and not make a new account.
+		if isMergeStateString(params.State.StateString) {
+			// Always clear this cookie. If it succeeds, we no longer need it.
+			// If it fails, we no longer care about it.
+			cookies = append(cookies, clearOAuthConvertCookie())
+			user, err = api.convertUserToOauth(ctx, r, tx, params)
+			if err != nil {
+				return err
+			}
+			params.User = user
+			isConvertLoginType = true
+		}
+
 		if user.ID == uuid.Nil && !params.AllowSignups {
 			return httpError{
 				code: http.StatusForbidden,
@@ -864,13 +1244,7 @@ func (api *API) oauthLogin(r *http.Request, params oauthLoginParams) (*http.Cook
 		}
 
 		if user.ID != uuid.Nil && user.LoginType != params.LoginType {
-			return httpError{
-				code: http.StatusForbidden,
-				msg: fmt.Sprintf("Incorrect login type, attempting to use %q but user is of login type %q",
-					params.LoginType,
-					user.LoginType,
-				),
-			}
+			return wrongLoginTypeHTTPError(user.LoginType, params.LoginType)
 		}
 
 		// This can happen if a user is a built-in user but is signing in
@@ -938,6 +1312,20 @@ func (api *API) oauthLogin(r *http.Request, params oauthLoginParams) (*http.Cook
 			}
 		}
 
+		// Activate dormant user on sigin
+		if user.Status == database.UserStatusDormant {
+			//nolint:gocritic // System needs to update status of the user account (dormant -> active).
+			user, err = tx.UpdateUserStatus(dbauthz.AsSystemRestricted(ctx), database.UpdateUserStatusParams{
+				ID:        user.ID,
+				Status:    database.UserStatusActive,
+				UpdatedAt: dbtime.Now(),
+			})
+			if err != nil {
+				logger.Error(ctx, "unable to update user status to active", slog.Error(err))
+				return xerrors.Errorf("update user status: %w", err)
+			}
+		}
+
 		if link.UserID == uuid.Nil {
 			//nolint:gocritic
 			link, err = tx.InsertUserLink(dbauthz.AsSystemRestricted(ctx), database.InsertUserLinkParams{
@@ -969,10 +1357,51 @@ func (api *API) oauthLogin(r *http.Request, params oauthLoginParams) (*http.Cook
 
 		// Ensure groups are correct.
 		if params.UsingGroups {
+			filtered := params.Groups
+			if params.GroupFilter != nil {
+				filtered = make([]string, 0, len(params.Groups))
+				for _, group := range params.Groups {
+					if params.GroupFilter.MatchString(group) {
+						filtered = append(filtered, group)
+					}
+				}
+			}
+
 			//nolint:gocritic
-			err := api.Options.SetUserGroups(dbauthz.AsSystemRestricted(ctx), tx, user.ID, params.Groups)
+			err := api.Options.SetUserGroups(dbauthz.AsSystemRestricted(ctx), logger, tx, user.ID, filtered, params.CreateMissingGroups)
 			if err != nil {
 				return xerrors.Errorf("set user groups: %w", err)
+			}
+		}
+
+		// Ensure roles are correct.
+		if params.UsingRoles {
+			ignored := make([]string, 0)
+			filtered := make([]string, 0, len(params.Roles))
+			for _, role := range params.Roles {
+				if _, err := rbac.RoleByName(role); err == nil {
+					filtered = append(filtered, role)
+				} else {
+					ignored = append(ignored, role)
+				}
+			}
+
+			//nolint:gocritic
+			err := api.Options.SetUserSiteRoles(dbauthz.AsSystemRestricted(ctx), logger, tx, user.ID, filtered)
+			if err != nil {
+				return httpError{
+					code:             http.StatusBadRequest,
+					msg:              "Invalid roles through OIDC claim",
+					detail:           fmt.Sprintf("Error from role assignment attempt: %s", err.Error()),
+					renderStaticPage: true,
+				}
+			}
+			if len(ignored) > 0 {
+				logger.Debug(ctx, "OIDC roles ignored in assignment",
+					slog.F("ignored", ignored),
+					slog.F("assigned", filtered),
+					slog.F("user_id", user.ID),
+				)
 			}
 		}
 
@@ -1008,7 +1437,7 @@ func (api *API) oauthLogin(r *http.Request, params oauthLoginParams) (*http.Cook
 				ID:        user.ID,
 				Email:     user.Email,
 				Username:  user.Username,
-				UpdatedAt: database.Now(),
+				UpdatedAt: dbtime.Now(),
 				AvatarURL: user.AvatarURL,
 			})
 			if err != nil {
@@ -1022,18 +1451,147 @@ func (api *API) oauthLogin(r *http.Request, params oauthLoginParams) (*http.Cook
 		return nil, database.APIKey{}, xerrors.Errorf("in tx: %w", err)
 	}
 
-	//nolint:gocritic
-	cookie, key, err := api.createAPIKey(dbauthz.AsSystemRestricted(ctx), apikey.CreateParams{
-		UserID:           user.ID,
-		LoginType:        params.LoginType,
-		DeploymentValues: api.DeploymentValues,
-		RemoteAddr:       r.RemoteAddr,
-	})
-	if err != nil {
-		return nil, database.APIKey{}, xerrors.Errorf("create API key: %w", err)
+	var key database.APIKey
+	oldKey, _, ok := httpmw.APIKeyFromRequest(ctx, api.Database, nil, r)
+	if ok && oldKey != nil && isConvertLoginType {
+		// If this is a convert login type, and it succeeds, then delete the old
+		// session. Force the user to log back in.
+		err := api.Database.DeleteAPIKeyByID(r.Context(), oldKey.ID)
+		if err != nil {
+			// Do not block this login if we fail to delete the old API key.
+			// Just delete the cookie and continue.
+			api.Logger.Warn(r.Context(), "failed to delete old API key in convert to oidc",
+				slog.Error(err),
+				slog.F("old_api_key_id", oldKey.ID),
+				slog.F("user_id", user.ID),
+			)
+		}
+		cookies = append(cookies, &http.Cookie{
+			Name:     codersdk.SessionTokenCookie,
+			Path:     "/",
+			MaxAge:   -1,
+			Secure:   api.SecureAuthCookie,
+			HttpOnly: true,
+		})
+		// This is intentional setting the key to the deleted old key,
+		// as the user needs to be forced to log back in.
+		key = *oldKey
+	} else {
+		//nolint:gocritic
+		cookie, newKey, err := api.createAPIKey(dbauthz.AsSystemRestricted(ctx), apikey.CreateParams{
+			UserID:           user.ID,
+			LoginType:        params.LoginType,
+			DeploymentValues: api.DeploymentValues,
+			RemoteAddr:       r.RemoteAddr,
+		})
+		if err != nil {
+			return nil, database.APIKey{}, xerrors.Errorf("create API key: %w", err)
+		}
+		cookies = append(cookies, cookie)
+		key = *newKey
 	}
 
-	return cookie, *key, nil
+	return cookies, key, nil
+}
+
+// convertUserToOauth will convert a user from password base loginType to
+// an oauth login type. If it fails, it will return a httpError
+func (api *API) convertUserToOauth(ctx context.Context, r *http.Request, db database.Store, params *oauthLoginParams) (database.User, error) {
+	user := params.User
+
+	// Trying to convert to OIDC, but the email does not match.
+	// So do not make a new user, just block the request.
+	if user.ID == uuid.Nil {
+		return database.User{}, httpError{
+			code: http.StatusBadRequest,
+			msg:  fmt.Sprintf("The oidc account with the email %q does not match the email of the account you are trying to convert. Contact your administrator to resolve this issue.", params.Email),
+		}
+	}
+
+	jwtCookie, err := r.Cookie(OAuthConvertCookieValue)
+	if err != nil {
+		return database.User{}, httpError{
+			code: http.StatusBadRequest,
+			msg: fmt.Sprintf("Convert to oauth cookie not found. Missing signed jwt to authorize this action. " +
+				"Please try again."),
+		}
+	}
+	var claims OAuthConvertStateClaims
+	token, err := jwt.ParseWithClaims(jwtCookie.Value, &claims, func(token *jwt.Token) (interface{}, error) {
+		return api.OAuthSigningKey[:], nil
+	})
+	if xerrors.Is(err, jwt.ErrSignatureInvalid) || !token.Valid {
+		// These errors are probably because the user is mixing 2 coder deployments.
+		return database.User{}, httpError{
+			code: http.StatusBadRequest,
+			msg:  "Using an invalid jwt to authorize this action. Ensure there is only 1 coder deployment and try again.",
+		}
+	}
+	if err != nil {
+		return database.User{}, httpError{
+			code: http.StatusInternalServerError,
+			msg:  fmt.Sprintf("Error parsing jwt: %v", err),
+		}
+	}
+
+	// At this point, this request could be an attempt to convert from
+	// password auth to oauth auth. Always log these attempts.
+	var (
+		auditor           = *api.Auditor.Load()
+		oauthConvertAudit = params.initAuditRequest(&audit.RequestParams{
+			Audit:   auditor,
+			Log:     api.Logger,
+			Request: r,
+			Action:  database.AuditActionWrite,
+		})
+	)
+
+	oauthConvertAudit.UserID = claims.UserID
+	oauthConvertAudit.Old = user
+
+	if claims.RegisteredClaims.Issuer != api.DeploymentID {
+		return database.User{}, httpError{
+			code: http.StatusForbidden,
+			msg:  "Request to convert login type failed. Issuer mismatch. Found a cookie from another coder deployment, please try again.",
+		}
+	}
+
+	if params.State.StateString != claims.State {
+		return database.User{}, httpError{
+			code: http.StatusForbidden,
+			msg:  "Request to convert login type failed. State mismatch.",
+		}
+	}
+
+	// Make sure the merge state generated matches this OIDC login request.
+	// It needs to have the correct login type information for this
+	// user.
+	if user.ID != claims.UserID ||
+		codersdk.LoginType(user.LoginType) != claims.FromLoginType ||
+		codersdk.LoginType(params.LoginType) != claims.ToLoginType {
+		return database.User{}, httpError{
+			code: http.StatusForbidden,
+			msg:  fmt.Sprintf("Request to convert login type from %s to %s failed", user.LoginType, params.LoginType),
+		}
+	}
+
+	// Convert the user and default to the normal login flow.
+	// If the login succeeds, this transaction will commit and the user
+	// will be converted.
+	// nolint:gocritic // system query to update user login type. The user already
+	// provided their password to authenticate this request.
+	user, err = db.UpdateUserLoginType(dbauthz.AsSystemRestricted(ctx), database.UpdateUserLoginTypeParams{
+		NewLoginType: params.LoginType,
+		UserID:       user.ID,
+	})
+	if err != nil {
+		return database.User{}, httpError{
+			code: http.StatusInternalServerError,
+			msg:  "Failed to convert user to new login type",
+		}
+	}
+	oauthConvertAudit.New = user
+	return user, nil
 }
 
 // githubLinkedID returns the unique ID for a GitHub user.
@@ -1101,4 +1659,30 @@ func findLinkedUser(ctx context.Context, db database.Store, linkedID string, ema
 	}
 
 	return user, link, nil
+}
+
+func isMergeStateString(state string) bool {
+	return strings.HasPrefix(state, mergeStateStringPrefix)
+}
+
+func clearOAuthConvertCookie() *http.Cookie {
+	return &http.Cookie{
+		Name:   OAuthConvertCookieValue,
+		Path:   "/",
+		MaxAge: -1,
+	}
+}
+
+func wrongLoginTypeHTTPError(user database.LoginType, params database.LoginType) httpError {
+	addedMsg := ""
+	if user == database.LoginTypePassword {
+		addedMsg = " You can convert your account to use this login type by visiting your account settings."
+	}
+	return httpError{
+		code:             http.StatusForbidden,
+		renderStaticPage: true,
+		msg:              "Incorrect login type",
+		detail: fmt.Sprintf("Attempting to use login type %q, but the user has the login type %q.%s",
+			params, user, addedMsg),
+	}
 }

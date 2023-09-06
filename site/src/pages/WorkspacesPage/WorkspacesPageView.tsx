@@ -12,16 +12,19 @@ import {
 } from "components/PageHeader/PageHeader"
 import { Stack } from "components/Stack/Stack"
 import { WorkspaceHelpTooltip } from "components/Tooltips"
-import { WorkspacesTable } from "components/WorkspacesTable/WorkspacesTable"
+import { WorkspacesTable } from "pages/WorkspacesPage/WorkspacesTable"
 import { useLocalStorage } from "hooks"
-import difference from "lodash/difference"
-import { ImpendingDeletionBanner, Count } from "components/WorkspaceDeletion"
+import { DormantWorkspaceBanner, Count } from "components/WorkspaceDeletion"
 import { ErrorAlert } from "components/Alert/ErrorAlert"
 import { WorkspacesFilter } from "./filter/filter"
 import { hasError, isApiValidationError } from "api/errors"
-import { workspaceFilterQuery } from "utils/filters"
-import { SearchBarWithFilter } from "components/SearchBarWithFilter/SearchBarWithFilter"
-import { PaginationStatus } from "components/PaginationStatus/PaginationStatus"
+import {
+  PaginationStatus,
+  TableToolbar,
+} from "components/TableToolbar/TableToolbar"
+import Box from "@mui/material/Box"
+import Button from "@mui/material/Button"
+import DeleteOutlined from "@mui/icons-material/DeleteOutlined"
 
 export const Language = {
   pageTitle: "Workspaces",
@@ -32,70 +35,47 @@ export const Language = {
   template: "Template",
 }
 
-const presetFilters = [
-  { query: workspaceFilterQuery.me, name: Language.yourWorkspacesButton },
-  { query: workspaceFilterQuery.all, name: Language.allWorkspacesButton },
-  {
-    query: workspaceFilterQuery.running,
-    name: Language.runningWorkspacesButton,
-  },
-  {
-    query: workspaceFilterQuery.failed,
-    name: "Failed workspaces",
-  },
-]
-
 export interface WorkspacesPageViewProps {
   error: unknown
   workspaces?: Workspace[]
+  dormantWorkspaces?: Workspace[]
+  checkedWorkspaces: Workspace[]
   count?: number
-  useNewFilter?: boolean
   filterProps: ComponentProps<typeof WorkspacesFilter>
   page: number
   limit: number
   onPageChange: (page: number) => void
   onUpdateWorkspace: (workspace: Workspace) => void
+  onCheckChange: (checkedWorkspaces: Workspace[]) => void
+  onDeleteAll: () => void
+  canCheckWorkspaces: boolean
 }
 
 export const WorkspacesPageView: FC<
   React.PropsWithChildren<WorkspacesPageViewProps>
 > = ({
   workspaces,
+  dormantWorkspaces,
   error,
   limit,
   count,
   filterProps,
   onPageChange,
   onUpdateWorkspace,
-  useNewFilter,
   page,
+  checkedWorkspaces,
+  onCheckChange,
+  onDeleteAll,
+  canCheckWorkspaces,
 }) => {
-  const { saveLocal, getLocal } = useLocalStorage()
+  const { saveLocal } = useLocalStorage()
 
-  const workspaceIdsWithImpendingDeletions = workspaces
+  const workspacesDeletionScheduled = dormantWorkspaces
     ?.filter((workspace) => workspace.deleting_at)
     .map((workspace) => workspace.id)
 
-  /**
-   * Returns a boolean indicating if there are workspaces that have been
-   * recently marked for deletion but are not in local storage.
-   * If there are, we want to alert the user so they can potentially take action
-   * before deletion takes place.
-   * @returns {boolean}
-   */
-  const isNewWorkspacesImpendingDeletion = (): boolean => {
-    const dismissedList = getLocal("dismissedWorkspaceList")
-    if (!dismissedList) {
-      return true
-    }
-
-    const diff = difference(
-      workspaceIdsWithImpendingDeletions,
-      JSON.parse(dismissedList),
-    )
-
-    return diff && diff.length > 0
-  }
+  const hasDormantWorkspace =
+    dormantWorkspaces !== undefined && dormantWorkspaces.length > 0
 
   return (
     <Margins>
@@ -121,42 +101,57 @@ export const WorkspacesPageView: FC<
           <ErrorAlert error={error} />
         </Maybe>
         {/* <ImpendingDeletionBanner/> determines its own visibility */}
-        <ImpendingDeletionBanner
-          workspace={workspaces?.find((workspace) => workspace.deleting_at)}
-          shouldRedisplayBanner={isNewWorkspacesImpendingDeletion()}
+        <DormantWorkspaceBanner
+          workspaces={dormantWorkspaces}
+          shouldRedisplayBanner={hasDormantWorkspace}
           onDismiss={() =>
             saveLocal(
               "dismissedWorkspaceList",
-              JSON.stringify(workspaceIdsWithImpendingDeletions),
+              JSON.stringify(workspacesDeletionScheduled),
             )
           }
           count={Count.Multiple}
         />
 
-        {useNewFilter ? (
-          <WorkspacesFilter error={error} {...filterProps} />
-        ) : (
-          <SearchBarWithFilter
-            filter={filterProps.filter.query}
-            onFilter={filterProps.filter.debounceUpdate}
-            presetFilters={presetFilters}
-            error={error}
-          />
-        )}
+        <WorkspacesFilter error={error} {...filterProps} />
       </Stack>
 
-      <PaginationStatus
-        isLoading={!workspaces}
-        showing={workspaces?.length}
-        total={count}
-        label="workspaces"
-      />
+      <TableToolbar>
+        {checkedWorkspaces.length > 0 ? (
+          <>
+            <Box>
+              Selected <strong>{checkedWorkspaces.length}</strong> of{" "}
+              <strong>{workspaces?.length}</strong>{" "}
+              {workspaces?.length === 1 ? "workspace" : "workspaces"}
+            </Box>
+
+            <Box sx={{ marginLeft: "auto" }}>
+              <Button
+                size="small"
+                startIcon={<DeleteOutlined />}
+                onClick={onDeleteAll}
+              >
+                Delete selected
+              </Button>
+            </Box>
+          </>
+        ) : (
+          <PaginationStatus
+            isLoading={!workspaces && !error}
+            showing={workspaces?.length ?? 0}
+            total={count ?? 0}
+            label="workspaces"
+          />
+        )}
+      </TableToolbar>
 
       <WorkspacesTable
         workspaces={workspaces}
         isUsingFilter={filterProps.filter.used}
         onUpdateWorkspace={onUpdateWorkspace}
-        error={error}
+        checkedWorkspaces={checkedWorkspaces}
+        onCheckChange={onCheckChange}
+        canCheckWorkspaces={canCheckWorkspaces}
       />
       {count !== undefined && (
         <PaginationWidgetBase

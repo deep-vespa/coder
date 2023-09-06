@@ -15,16 +15,11 @@ type Params = {
 }
 
 export const TemplateVersionEditorPage: FC = () => {
-  const { version: versionName, template: templateName } = useParams() as Params
   const navigate = useNavigate()
+  const { version: versionName, template: templateName } = useParams() as Params
   const orgId = useOrganizationId()
   const [editorState, sendEvent] = useMachine(templateVersionEditorMachine, {
     context: { orgId },
-    actions: {
-      onPublish: () => {
-        navigate(`/templates/${templateName}`)
-      },
-    },
   })
   const permissions = usePermissions()
   const { isSuccess, data } = useTemplateVersionData(
@@ -59,14 +54,14 @@ export const TemplateVersionEditorPage: FC = () => {
               templateId: data.template.id,
             })
           }}
-          onCancelPublish={() => {
-            sendEvent({
-              type: "CANCEL_PUBLISH",
-            })
-          }}
           onPublish={() => {
             sendEvent({
               type: "PUBLISH",
+            })
+          }}
+          onCancelPublish={() => {
+            sendEvent({
+              type: "CANCEL_PUBLISH",
             })
           }}
           onConfirmPublish={(data) => {
@@ -78,8 +73,15 @@ export const TemplateVersionEditorPage: FC = () => {
           isAskingPublishParameters={editorState.matches(
             "askPublishParameters",
           )}
-          publishingError={editorState.context.publishingError}
           isPublishing={editorState.matches("publishingVersion")}
+          publishingError={editorState.context.publishingError}
+          publishedVersion={editorState.context.lastSuccessfulPublishedVersion}
+          publishedVersionIsDefault={
+            editorState.context.lastSuccessfulPublishIsDefault
+          }
+          onCreateWorkspace={() => {
+            navigate(`/templates/${templateName}/workspace`)
+          }}
           disablePreview={editorState.hasTag("loading")}
           disableUpdate={
             editorState.hasTag("loading") ||

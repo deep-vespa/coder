@@ -10,12 +10,13 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"cdr.dev/slog/sloggers/slogtest"
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/coderd/database/dbfake"
-	"github.com/coder/coder/coderd/database/dbgen"
-	"github.com/coder/coder/coderd/metricscache"
-	"github.com/coder/coder/codersdk"
-	"github.com/coder/coder/testutil"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/database/dbfake"
+	"github.com/coder/coder/v2/coderd/database/dbgen"
+	"github.com/coder/coder/v2/coderd/database/dbtime"
+	"github.com/coder/coder/v2/coderd/metricscache"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/testutil"
 )
 
 func dateH(year, month, day, hour int) time.Time {
@@ -349,14 +350,18 @@ func TestCache_BuildTime(t *testing.T) {
 
 			defer cache.Close()
 
-			template, err := db.InsertTemplate(ctx, database.InsertTemplateParams{
-				ID:          uuid.New(),
+			id := uuid.New()
+			err := db.InsertTemplate(ctx, database.InsertTemplateParams{
+				ID:          id,
 				Provisioner: database.ProvisionerTypeEcho,
 			})
 			require.NoError(t, err)
+			template, err := db.GetTemplateByID(ctx, id)
+			require.NoError(t, err)
 
-			templateVersion, err := db.InsertTemplateVersion(ctx, database.InsertTemplateVersionParams{
-				ID:         uuid.New(),
+			templateVersionID := uuid.New()
+			err = db.InsertTemplateVersion(ctx, database.InsertTemplateVersionParams{
+				ID:         templateVersionID,
 				TemplateID: uuid.NullUUID{UUID: template.ID, Valid: true},
 			})
 			require.NoError(t, err)
@@ -381,8 +386,8 @@ func TestCache_BuildTime(t *testing.T) {
 				})
 				require.NoError(t, err)
 
-				_, err = db.InsertWorkspaceBuild(ctx, database.InsertWorkspaceBuildParams{
-					TemplateVersionID: templateVersion.ID,
+				err = db.InsertWorkspaceBuild(ctx, database.InsertWorkspaceBuildParams{
+					TemplateVersionID: templateVersionID,
 					JobID:             job.ID,
 					Transition:        tt.args.transition,
 					Reason:            database.BuildReasonInitiator,
@@ -440,7 +445,7 @@ func TestCache_DeploymentStats(t *testing.T) {
 	_, err := db.InsertWorkspaceAgentStat(context.Background(), database.InsertWorkspaceAgentStatParams{
 		ID:                 uuid.New(),
 		AgentID:            uuid.New(),
-		CreatedAt:          database.Now(),
+		CreatedAt:          dbtime.Now(),
 		ConnectionCount:    1,
 		RxBytes:            1,
 		TxBytes:            1,

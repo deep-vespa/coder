@@ -10,100 +10,32 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
-	"github.com/coder/coder/coderd/audit"
-	"github.com/coder/coder/coderd/coderdtest"
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/coderd/rbac"
-	"github.com/coder/coder/codersdk"
-	"github.com/coder/coder/cryptorand"
-	"github.com/coder/coder/enterprise/coderd/coderdenttest"
-	"github.com/coder/coder/enterprise/coderd/license"
-	"github.com/coder/coder/provisioner/echo"
-	"github.com/coder/coder/testutil"
+	"github.com/coder/coder/v2/coderd/audit"
+	"github.com/coder/coder/v2/coderd/coderdtest"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/rbac"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/cryptorand"
+	"github.com/coder/coder/v2/enterprise/coderd/coderdenttest"
+	"github.com/coder/coder/v2/enterprise/coderd/license"
+	"github.com/coder/coder/v2/provisioner/echo"
+	"github.com/coder/coder/v2/testutil"
 )
 
 func TestTemplates(t *testing.T) {
 	t.Parallel()
 
-	t.Run("SetMaxTTL", func(t *testing.T) {
-		t.Parallel()
-
-		client := coderdenttest.New(t, &coderdenttest.Options{
-			Options: &coderdtest.Options{
-				IncludeProvisionerDaemon: true,
-			},
-		})
-		user := coderdtest.CreateFirstUser(t, client)
-		_ = coderdenttest.AddLicense(t, client, coderdenttest.LicenseOptions{
-			Features: license.Features{
-				codersdk.FeatureAdvancedTemplateScheduling: 1,
-			},
-		})
-
-		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, nil)
-		coderdtest.AwaitTemplateVersionJob(t, client, version.ID)
-		template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
-		require.EqualValues(t, 0, template.MaxTTLMillis)
-
-		// Create some workspaces to test propagation to user-defined TTLs.
-		workspace1 := coderdtest.CreateWorkspace(t, client, user.OrganizationID, template.ID, func(cwr *codersdk.CreateWorkspaceRequest) {
-			ttl := (24 * time.Hour).Milliseconds()
-			cwr.TTLMillis = &ttl
-		})
-		workspace2TTL := (1 * time.Hour).Milliseconds()
-		workspace2 := coderdtest.CreateWorkspace(t, client, user.OrganizationID, template.ID, func(cwr *codersdk.CreateWorkspaceRequest) {
-			cwr.TTLMillis = &workspace2TTL
-		})
-		workspace3 := coderdtest.CreateWorkspace(t, client, user.OrganizationID, template.ID)
-		// To unset TTL you have to update, as setting a nil TTL on create
-		// copies the template default TTL.
-		ctx := testutil.Context(t, testutil.WaitLong)
-		err := client.UpdateWorkspaceTTL(ctx, workspace3.ID, codersdk.UpdateWorkspaceTTLRequest{
-			TTLMillis: nil,
-		})
-		require.NoError(t, err)
-
-		updated, err := client.UpdateTemplateMeta(ctx, template.ID, codersdk.UpdateTemplateMeta{
-			Name:                         template.Name,
-			DisplayName:                  template.DisplayName,
-			Description:                  template.Description,
-			Icon:                         template.Icon,
-			AllowUserCancelWorkspaceJobs: template.AllowUserCancelWorkspaceJobs,
-			DefaultTTLMillis:             time.Hour.Milliseconds(),
-			MaxTTLMillis:                 (2 * time.Hour).Milliseconds(),
-		})
-		require.NoError(t, err)
-		require.Equal(t, 2*time.Hour, time.Duration(updated.MaxTTLMillis)*time.Millisecond)
-
-		template, err = client.Template(ctx, template.ID)
-		require.NoError(t, err)
-		require.Equal(t, 2*time.Hour, time.Duration(template.MaxTTLMillis)*time.Millisecond)
-
-		// Verify that only the first workspace has been updated.
-		workspace1, err = client.Workspace(ctx, workspace1.ID)
-		require.NoError(t, err)
-		require.Equal(t, &template.MaxTTLMillis, workspace1.TTLMillis)
-
-		workspace2, err = client.Workspace(ctx, workspace2.ID)
-		require.NoError(t, err)
-		require.Equal(t, &workspace2TTL, workspace2.TTLMillis)
-
-		workspace3, err = client.Workspace(ctx, workspace3.ID)
-		require.NoError(t, err)
-		require.Nil(t, workspace3.TTLMillis)
-	})
-
+	// TODO(@dean): remove legacy max_ttl tests
 	t.Run("CreateUpdateWorkspaceMaxTTL", func(t *testing.T) {
 		t.Parallel()
-		client := coderdenttest.New(t, &coderdenttest.Options{
+		client, user := coderdenttest.New(t, &coderdenttest.Options{
 			Options: &coderdtest.Options{
 				IncludeProvisionerDaemon: true,
 			},
-		})
-		user := coderdtest.CreateFirstUser(t, client)
-		_ = coderdenttest.AddLicense(t, client, coderdenttest.LicenseOptions{
-			Features: license.Features{
-				codersdk.FeatureAdvancedTemplateScheduling: 1,
+			LicenseOptions: &coderdenttest.LicenseOptions{
+				Features: license.Features{
+					codersdk.FeatureAdvancedTemplateScheduling: 1,
+				},
 			},
 		})
 
@@ -125,6 +57,7 @@ func TestTemplates(t *testing.T) {
 		}
 		ws, err := client.CreateWorkspace(ctx, template.OrganizationID, codersdk.Me, req)
 		require.NoError(t, err)
+		require.NotNil(t, ws.TTLMillis)
 		require.EqualValues(t, exp, *ws.TTLMillis)
 
 		// Editing a workspace to have a higher TTL than the template's max
@@ -156,15 +89,14 @@ func TestTemplates(t *testing.T) {
 
 	t.Run("BlockDisablingAutoOffWithMaxTTL", func(t *testing.T) {
 		t.Parallel()
-		client := coderdenttest.New(t, &coderdenttest.Options{
+		client, user := coderdenttest.New(t, &coderdenttest.Options{
 			Options: &coderdtest.Options{
 				IncludeProvisionerDaemon: true,
 			},
-		})
-		user := coderdtest.CreateFirstUser(t, client)
-		_ = coderdenttest.AddLicense(t, client, coderdenttest.LicenseOptions{
-			Features: license.Features{
-				codersdk.FeatureAdvancedTemplateScheduling: 1,
+			LicenseOptions: &coderdenttest.LicenseOptions{
+				Features: license.Features{
+					codersdk.FeatureAdvancedTemplateScheduling: 1,
+				},
 			},
 		})
 
@@ -185,6 +117,7 @@ func TestTemplates(t *testing.T) {
 		}
 		ws, err := client.CreateWorkspace(ctx, template.OrganizationID, codersdk.Me, req)
 		require.NoError(t, err)
+		require.NotNil(t, ws.TTLMillis)
 		require.EqualValues(t, exp, *ws.TTLMillis)
 
 		// Editing a workspace to disable the TTL should do nothing
@@ -206,6 +139,288 @@ func TestTemplates(t *testing.T) {
 		require.NoError(t, err)
 		require.EqualValues(t, exp, *ws.TTLMillis)
 	})
+
+	t.Run("SetAutostopRequirement", func(t *testing.T) {
+		t.Parallel()
+
+		client, user := coderdenttest.New(t, &coderdenttest.Options{
+			Options: &coderdtest.Options{
+				IncludeProvisionerDaemon: true,
+			},
+			LicenseOptions: &coderdenttest.LicenseOptions{
+				Features: license.Features{
+					codersdk.FeatureAdvancedTemplateScheduling: 1,
+				},
+			},
+		})
+
+		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, nil)
+		coderdtest.AwaitTemplateVersionJob(t, client, version.ID)
+		template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
+		require.Empty(t, 0, template.AutostopRequirement.DaysOfWeek)
+		require.EqualValues(t, 1, template.AutostopRequirement.Weeks)
+
+		// ctx := testutil.Context(t, testutil.WaitLong)
+		ctx := context.Background()
+		updated, err := client.UpdateTemplateMeta(ctx, template.ID, codersdk.UpdateTemplateMeta{
+			Name:                         template.Name,
+			DisplayName:                  template.DisplayName,
+			Description:                  template.Description,
+			Icon:                         template.Icon,
+			AllowUserCancelWorkspaceJobs: template.AllowUserCancelWorkspaceJobs,
+			DefaultTTLMillis:             time.Hour.Milliseconds(),
+			AutostopRequirement: &codersdk.TemplateAutostopRequirement{
+				DaysOfWeek: []string{"monday", "saturday"},
+				Weeks:      3,
+			},
+		})
+		require.NoError(t, err)
+		require.Equal(t, []string{"monday", "saturday"}, updated.AutostopRequirement.DaysOfWeek)
+		require.EqualValues(t, 3, updated.AutostopRequirement.Weeks)
+
+		template, err = client.Template(ctx, template.ID)
+		require.NoError(t, err)
+		require.Equal(t, []string{"monday", "saturday"}, template.AutostopRequirement.DaysOfWeek)
+		require.EqualValues(t, 3, template.AutostopRequirement.Weeks)
+	})
+
+	t.Run("CleanupTTLs", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := testutil.Context(t, testutil.WaitMedium)
+		client, user := coderdenttest.New(t, &coderdenttest.Options{
+			Options: &coderdtest.Options{
+				IncludeProvisionerDaemon: true,
+			},
+			LicenseOptions: &coderdenttest.LicenseOptions{
+				Features: license.Features{
+					codersdk.FeatureAdvancedTemplateScheduling: 1,
+				},
+			},
+		})
+
+		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, nil)
+		coderdtest.AwaitTemplateVersionJob(t, client, version.ID)
+		template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
+		require.EqualValues(t, 0, template.TimeTilDormantMillis)
+		require.EqualValues(t, 0, template.FailureTTLMillis)
+		require.EqualValues(t, 0, template.TimeTilDormantAutoDeleteMillis)
+
+		var (
+			failureTTL    int64 = 1
+			inactivityTTL int64 = 2
+			dormantTTL    int64 = 3
+		)
+
+		updated, err := client.UpdateTemplateMeta(ctx, template.ID, codersdk.UpdateTemplateMeta{
+			Name:                           template.Name,
+			DisplayName:                    template.DisplayName,
+			Description:                    template.Description,
+			Icon:                           template.Icon,
+			AllowUserCancelWorkspaceJobs:   template.AllowUserCancelWorkspaceJobs,
+			TimeTilDormantMillis:           inactivityTTL,
+			FailureTTLMillis:               failureTTL,
+			TimeTilDormantAutoDeleteMillis: dormantTTL,
+		})
+		require.NoError(t, err)
+		require.Equal(t, failureTTL, updated.FailureTTLMillis)
+		require.Equal(t, inactivityTTL, updated.TimeTilDormantMillis)
+		require.Equal(t, dormantTTL, updated.TimeTilDormantAutoDeleteMillis)
+
+		// Validate fetching the template returns the same values as updating
+		// the template.
+		template, err = client.Template(ctx, template.ID)
+		require.NoError(t, err)
+		require.Equal(t, failureTTL, updated.FailureTTLMillis)
+		require.Equal(t, inactivityTTL, updated.TimeTilDormantMillis)
+		require.Equal(t, dormantTTL, updated.TimeTilDormantAutoDeleteMillis)
+	})
+
+	t.Run("UpdateTimeTilDormantAutoDelete", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := testutil.Context(t, testutil.WaitMedium)
+		client, user := coderdenttest.New(t, &coderdenttest.Options{
+			Options: &coderdtest.Options{
+				IncludeProvisionerDaemon: true,
+			},
+			LicenseOptions: &coderdenttest.LicenseOptions{
+				Features: license.Features{
+					codersdk.FeatureAdvancedTemplateScheduling: 1,
+				},
+			},
+		})
+		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, nil)
+		coderdtest.AwaitTemplateVersionJob(t, client, version.ID)
+		template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
+
+		activeWS := coderdtest.CreateWorkspace(t, client, user.OrganizationID, template.ID)
+		dormantWS := coderdtest.CreateWorkspace(t, client, user.OrganizationID, template.ID)
+		require.Nil(t, activeWS.DeletingAt)
+		require.Nil(t, dormantWS.DeletingAt)
+
+		_ = coderdtest.AwaitWorkspaceBuildJob(t, client, activeWS.LatestBuild.ID)
+		_ = coderdtest.AwaitWorkspaceBuildJob(t, client, dormantWS.LatestBuild.ID)
+
+		err := client.UpdateWorkspaceDormancy(ctx, dormantWS.ID, codersdk.UpdateWorkspaceDormancy{
+			Dormant: true,
+		})
+		require.NoError(t, err)
+
+		dormantWS = coderdtest.MustWorkspace(t, client, dormantWS.ID)
+		require.NotNil(t, dormantWS.DormantAt)
+		// The deleting_at field should be nil since there is no template time_til_dormant_autodelete set.
+		require.Nil(t, dormantWS.DeletingAt)
+
+		dormantTTL := time.Minute
+		updated, err := client.UpdateTemplateMeta(ctx, template.ID, codersdk.UpdateTemplateMeta{
+			TimeTilDormantAutoDeleteMillis: dormantTTL.Milliseconds(),
+		})
+		require.NoError(t, err)
+		require.Equal(t, dormantTTL.Milliseconds(), updated.TimeTilDormantAutoDeleteMillis)
+
+		activeWS = coderdtest.MustWorkspace(t, client, activeWS.ID)
+		require.Nil(t, activeWS.DormantAt)
+		require.Nil(t, activeWS.DeletingAt)
+
+		updatedDormantWorkspace := coderdtest.MustWorkspace(t, client, dormantWS.ID)
+		require.NotNil(t, updatedDormantWorkspace.DormantAt)
+		require.NotNil(t, updatedDormantWorkspace.DeletingAt)
+		require.Equal(t, updatedDormantWorkspace.DormantAt.Add(dormantTTL), *updatedDormantWorkspace.DeletingAt)
+		require.Equal(t, updatedDormantWorkspace.DormantAt, dormantWS.DormantAt)
+
+		// Disable the time_til_dormant_auto_delete on the template, then we can assert that the workspaces
+		// no longer have a deleting_at field.
+		updated, err = client.UpdateTemplateMeta(ctx, template.ID, codersdk.UpdateTemplateMeta{
+			TimeTilDormantAutoDeleteMillis: 0,
+		})
+		require.NoError(t, err)
+		require.EqualValues(t, 0, updated.TimeTilDormantAutoDeleteMillis)
+
+		// The active workspace should remain unchanged.
+		activeWS = coderdtest.MustWorkspace(t, client, activeWS.ID)
+		require.Nil(t, activeWS.DormantAt)
+		require.Nil(t, activeWS.DeletingAt)
+
+		// Fetch the dormant workspace. It should still be dormant, but it should no
+		// longer be scheduled for deletion.
+		dormantWS = coderdtest.MustWorkspace(t, client, dormantWS.ID)
+		require.NotNil(t, dormantWS.DormantAt)
+		require.Nil(t, dormantWS.DeletingAt)
+	})
+
+	t.Run("UpdateDormantAt", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := testutil.Context(t, testutil.WaitMedium)
+		client, user := coderdenttest.New(t, &coderdenttest.Options{
+			Options: &coderdtest.Options{
+				IncludeProvisionerDaemon: true,
+			},
+			LicenseOptions: &coderdenttest.LicenseOptions{
+				Features: license.Features{
+					codersdk.FeatureAdvancedTemplateScheduling: 1,
+				},
+			},
+		})
+		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, nil)
+		coderdtest.AwaitTemplateVersionJob(t, client, version.ID)
+		template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
+
+		activeWS := coderdtest.CreateWorkspace(t, client, user.OrganizationID, template.ID)
+		dormantWS := coderdtest.CreateWorkspace(t, client, user.OrganizationID, template.ID)
+		require.Nil(t, activeWS.DeletingAt)
+		require.Nil(t, dormantWS.DeletingAt)
+
+		_ = coderdtest.AwaitWorkspaceBuildJob(t, client, activeWS.LatestBuild.ID)
+		_ = coderdtest.AwaitWorkspaceBuildJob(t, client, dormantWS.LatestBuild.ID)
+
+		err := client.UpdateWorkspaceDormancy(ctx, dormantWS.ID, codersdk.UpdateWorkspaceDormancy{
+			Dormant: true,
+		})
+		require.NoError(t, err)
+
+		dormantWS = coderdtest.MustWorkspace(t, client, dormantWS.ID)
+		require.NotNil(t, dormantWS.DormantAt)
+		// The deleting_at field should be nil since there is no template time_til_dormant_autodelete set.
+		require.Nil(t, dormantWS.DeletingAt)
+
+		dormantTTL := time.Minute
+		updated, err := client.UpdateTemplateMeta(ctx, template.ID, codersdk.UpdateTemplateMeta{
+			TimeTilDormantAutoDeleteMillis: dormantTTL.Milliseconds(),
+			UpdateWorkspaceDormantAt:       true,
+		})
+		require.NoError(t, err)
+		require.Equal(t, dormantTTL.Milliseconds(), updated.TimeTilDormantAutoDeleteMillis)
+
+		activeWS = coderdtest.MustWorkspace(t, client, activeWS.ID)
+		require.Nil(t, activeWS.DormantAt)
+		require.Nil(t, activeWS.DeletingAt)
+
+		updatedDormantWorkspace := coderdtest.MustWorkspace(t, client, dormantWS.ID)
+		require.NotNil(t, updatedDormantWorkspace.DormantAt)
+		require.NotNil(t, updatedDormantWorkspace.DeletingAt)
+		// Validate that the workspace dormant_at value is updated.
+		require.True(t, updatedDormantWorkspace.DormantAt.After(*dormantWS.DormantAt))
+		require.Equal(t, updatedDormantWorkspace.DormantAt.Add(dormantTTL), *updatedDormantWorkspace.DeletingAt)
+	})
+
+	t.Run("UpdateLastUsedAt", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := testutil.Context(t, testutil.WaitMedium)
+		client, user := coderdenttest.New(t, &coderdenttest.Options{
+			Options: &coderdtest.Options{
+				IncludeProvisionerDaemon: true,
+			},
+			LicenseOptions: &coderdenttest.LicenseOptions{
+				Features: license.Features{
+					codersdk.FeatureAdvancedTemplateScheduling: 1,
+				},
+			},
+		})
+		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, nil)
+		coderdtest.AwaitTemplateVersionJob(t, client, version.ID)
+		template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
+
+		activeWorkspace := coderdtest.CreateWorkspace(t, client, user.OrganizationID, template.ID)
+		dormantWorkspace := coderdtest.CreateWorkspace(t, client, user.OrganizationID, template.ID)
+		require.Nil(t, activeWorkspace.DeletingAt)
+		require.Nil(t, dormantWorkspace.DeletingAt)
+
+		_ = coderdtest.AwaitWorkspaceBuildJob(t, client, activeWorkspace.LatestBuild.ID)
+		_ = coderdtest.AwaitWorkspaceBuildJob(t, client, dormantWorkspace.LatestBuild.ID)
+
+		err := client.UpdateWorkspaceDormancy(ctx, dormantWorkspace.ID, codersdk.UpdateWorkspaceDormancy{
+			Dormant: true,
+		})
+		require.NoError(t, err)
+
+		dormantWorkspace = coderdtest.MustWorkspace(t, client, dormantWorkspace.ID)
+		require.NotNil(t, dormantWorkspace.DormantAt)
+		// The deleting_at field should be nil since there is no template time_til_dormant_autodelete set.
+		require.Nil(t, dormantWorkspace.DeletingAt)
+
+		inactivityTTL := time.Minute
+		updated, err := client.UpdateTemplateMeta(ctx, template.ID, codersdk.UpdateTemplateMeta{
+			TimeTilDormantMillis:      inactivityTTL.Milliseconds(),
+			UpdateWorkspaceLastUsedAt: true,
+		})
+		require.NoError(t, err)
+		require.Equal(t, inactivityTTL.Milliseconds(), updated.TimeTilDormantMillis)
+
+		updatedActiveWS := coderdtest.MustWorkspace(t, client, activeWorkspace.ID)
+		require.Nil(t, updatedActiveWS.DormantAt)
+		require.Nil(t, updatedActiveWS.DeletingAt)
+		require.True(t, updatedActiveWS.LastUsedAt.After(activeWorkspace.LastUsedAt))
+
+		updatedDormantWS := coderdtest.MustWorkspace(t, client, dormantWorkspace.ID)
+		require.NotNil(t, updatedDormantWS.DormantAt)
+		require.Nil(t, updatedDormantWS.DeletingAt)
+		// Validate that the workspace dormant_at value is updated.
+		require.Equal(t, updatedDormantWS.DormantAt, dormantWorkspace.DormantAt)
+		require.True(t, updatedDormantWS.LastUsedAt.After(dormantWorkspace.LastUsedAt))
+	})
 }
 
 func TestTemplateACL(t *testing.T) {
@@ -213,13 +428,11 @@ func TestTemplateACL(t *testing.T) {
 
 	t.Run("UserRoles", func(t *testing.T) {
 		t.Parallel()
-		client := coderdenttest.New(t, nil)
-		user := coderdtest.CreateFirstUser(t, client)
-		_ = coderdenttest.AddLicense(t, client, coderdenttest.LicenseOptions{
+		client, user := coderdenttest.New(t, &coderdenttest.Options{LicenseOptions: &coderdenttest.LicenseOptions{
 			Features: license.Features{
 				codersdk.FeatureTemplateRBAC: 1,
 			},
-		})
+		}})
 
 		_, user2 := coderdtest.CreateAnotherUser(t, client, user.OrganizationID)
 		_, user3 := coderdtest.CreateAnotherUser(t, client, user.OrganizationID)
@@ -256,13 +469,11 @@ func TestTemplateACL(t *testing.T) {
 
 	t.Run("everyoneGroup", func(t *testing.T) {
 		t.Parallel()
-		client := coderdenttest.New(t, nil)
-		user := coderdtest.CreateFirstUser(t, client)
-		_ = coderdenttest.AddLicense(t, client, coderdenttest.LicenseOptions{
+		client, user := coderdenttest.New(t, &coderdenttest.Options{LicenseOptions: &coderdenttest.LicenseOptions{
 			Features: license.Features{
 				codersdk.FeatureTemplateRBAC: 1,
 			},
-		})
+		}})
 
 		// Create a user to assert they aren't returned in the response.
 		_, _ = coderdtest.CreateAnotherUser(t, client, user.OrganizationID)
@@ -276,20 +487,17 @@ func TestTemplateACL(t *testing.T) {
 		require.NoError(t, err)
 
 		require.Len(t, acl.Groups, 1)
-		// We don't return members for the 'Everyone' group.
-		require.Len(t, acl.Groups[0].Members, 0)
+		require.Len(t, acl.Groups[0].Members, 2)
 		require.Len(t, acl.Users, 0)
 	})
 
 	t.Run("NoGroups", func(t *testing.T) {
 		t.Parallel()
-		client := coderdenttest.New(t, nil)
-		user := coderdtest.CreateFirstUser(t, client)
-		_ = coderdenttest.AddLicense(t, client, coderdenttest.LicenseOptions{
+		client, user := coderdenttest.New(t, &coderdenttest.Options{LicenseOptions: &coderdenttest.LicenseOptions{
 			Features: license.Features{
 				codersdk.FeatureTemplateRBAC: 1,
 			},
-		})
+		}})
 
 		client1, _ := coderdtest.CreateAnotherUser(t, client, user.OrganizationID)
 		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, nil)
@@ -335,13 +543,11 @@ func TestTemplateACL(t *testing.T) {
 	t.Run("FilterDeletedUsers", func(t *testing.T) {
 		t.Parallel()
 
-		client := coderdenttest.New(t, nil)
-		user := coderdtest.CreateFirstUser(t, client)
-		_ = coderdenttest.AddLicense(t, client, coderdenttest.LicenseOptions{
+		client, user := coderdenttest.New(t, &coderdenttest.Options{LicenseOptions: &coderdenttest.LicenseOptions{
 			Features: license.Features{
 				codersdk.FeatureTemplateRBAC: 1,
 			},
-		})
+		}})
 
 		_, user1 := coderdtest.CreateAnotherUser(t, client, user.OrganizationID)
 		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, nil)
@@ -375,13 +581,11 @@ func TestTemplateACL(t *testing.T) {
 	t.Run("FilterSuspendedUsers", func(t *testing.T) {
 		t.Parallel()
 
-		client := coderdenttest.New(t, nil)
-		user := coderdtest.CreateFirstUser(t, client)
-		_ = coderdenttest.AddLicense(t, client, coderdenttest.LicenseOptions{
+		client, user := coderdenttest.New(t, &coderdenttest.Options{LicenseOptions: &coderdenttest.LicenseOptions{
 			Features: license.Features{
 				codersdk.FeatureTemplateRBAC: 1,
 			},
-		})
+		}})
 
 		_, user1 := coderdtest.CreateAnotherUser(t, client, user.OrganizationID)
 		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, nil)
@@ -415,13 +619,11 @@ func TestTemplateACL(t *testing.T) {
 	t.Run("FilterDeletedGroups", func(t *testing.T) {
 		t.Parallel()
 
-		client := coderdenttest.New(t, nil)
-		user := coderdtest.CreateFirstUser(t, client)
-		_ = coderdenttest.AddLicense(t, client, coderdenttest.LicenseOptions{
+		client, user := coderdenttest.New(t, &coderdenttest.Options{LicenseOptions: &coderdenttest.LicenseOptions{
 			Features: license.Features{
 				codersdk.FeatureTemplateRBAC: 1,
 			},
-		})
+		}})
 
 		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, nil)
 		template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
@@ -465,13 +667,11 @@ func TestTemplateACL(t *testing.T) {
 
 	t.Run("AdminCanPushVersions", func(t *testing.T) {
 		t.Parallel()
-		client := coderdenttest.New(t, nil)
-		user := coderdtest.CreateFirstUser(t, client)
-		_ = coderdenttest.AddLicense(t, client, coderdenttest.LicenseOptions{
+		client, user := coderdenttest.New(t, &coderdenttest.Options{LicenseOptions: &coderdenttest.LicenseOptions{
 			Features: license.Features{
 				codersdk.FeatureTemplateRBAC: 1,
 			},
-		})
+		}})
 
 		client1, user1 := coderdtest.CreateAnotherUser(t, client, user.OrganizationID)
 		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, nil)
@@ -523,13 +723,11 @@ func TestUpdateTemplateACL(t *testing.T) {
 
 	t.Run("UserPerms", func(t *testing.T) {
 		t.Parallel()
-		client := coderdenttest.New(t, nil)
-		user := coderdtest.CreateFirstUser(t, client)
-		_ = coderdenttest.AddLicense(t, client, coderdenttest.LicenseOptions{
+		client, user := coderdenttest.New(t, &coderdenttest.Options{LicenseOptions: &coderdenttest.LicenseOptions{
 			Features: license.Features{
 				codersdk.FeatureTemplateRBAC: 1,
 			},
-		})
+		}})
 
 		_, user2 := coderdtest.CreateAnotherUser(t, client, user.OrganizationID)
 		_, user3 := coderdtest.CreateAnotherUser(t, client, user.OrganizationID)
@@ -569,20 +767,17 @@ func TestUpdateTemplateACL(t *testing.T) {
 		t.Parallel()
 
 		auditor := audit.NewMock()
-		client := coderdenttest.New(t, &coderdenttest.Options{
+		client, user := coderdenttest.New(t, &coderdenttest.Options{
 			AuditLogging: true,
 			Options: &coderdtest.Options{
 				IncludeProvisionerDaemon: true,
 				Auditor:                  auditor,
 			},
-		})
-
-		user := coderdtest.CreateFirstUser(t, client)
-
-		_ = coderdenttest.AddLicense(t, client, coderdenttest.LicenseOptions{
-			Features: license.Features{
-				codersdk.FeatureTemplateRBAC: 1,
-				codersdk.FeatureAuditLog:     1,
+			LicenseOptions: &coderdenttest.LicenseOptions{
+				Features: license.Features{
+					codersdk.FeatureTemplateRBAC: 1,
+					codersdk.FeatureAuditLog:     1,
+				},
 			},
 		})
 
@@ -610,13 +805,11 @@ func TestUpdateTemplateACL(t *testing.T) {
 	t.Run("DeleteUser", func(t *testing.T) {
 		t.Parallel()
 
-		client := coderdenttest.New(t, nil)
-		user := coderdtest.CreateFirstUser(t, client)
-		_ = coderdenttest.AddLicense(t, client, coderdenttest.LicenseOptions{
+		client, user := coderdenttest.New(t, &coderdenttest.Options{LicenseOptions: &coderdenttest.LicenseOptions{
 			Features: license.Features{
 				codersdk.FeatureTemplateRBAC: 1,
 			},
-		})
+		}})
 
 		_, user2 := coderdtest.CreateAnotherUser(t, client, user.OrganizationID)
 		_, user3 := coderdtest.CreateAnotherUser(t, client, user.OrganizationID)
@@ -673,13 +866,11 @@ func TestUpdateTemplateACL(t *testing.T) {
 	t.Run("InvalidUUID", func(t *testing.T) {
 		t.Parallel()
 
-		client := coderdenttest.New(t, nil)
-		user := coderdtest.CreateFirstUser(t, client)
-		_ = coderdenttest.AddLicense(t, client, coderdenttest.LicenseOptions{
+		client, user := coderdenttest.New(t, &coderdenttest.Options{LicenseOptions: &coderdenttest.LicenseOptions{
 			Features: license.Features{
 				codersdk.FeatureTemplateRBAC: 1,
 			},
-		})
+		}})
 
 		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, nil)
 		template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
@@ -700,13 +891,11 @@ func TestUpdateTemplateACL(t *testing.T) {
 	t.Run("InvalidUser", func(t *testing.T) {
 		t.Parallel()
 
-		client := coderdenttest.New(t, nil)
-		user := coderdtest.CreateFirstUser(t, client)
-		_ = coderdenttest.AddLicense(t, client, coderdenttest.LicenseOptions{
+		client, user := coderdenttest.New(t, &coderdenttest.Options{LicenseOptions: &coderdenttest.LicenseOptions{
 			Features: license.Features{
 				codersdk.FeatureTemplateRBAC: 1,
 			},
-		})
+		}})
 
 		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, nil)
 		template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
@@ -727,13 +916,11 @@ func TestUpdateTemplateACL(t *testing.T) {
 	t.Run("InvalidRole", func(t *testing.T) {
 		t.Parallel()
 
-		client := coderdenttest.New(t, nil)
-		user := coderdtest.CreateFirstUser(t, client)
-		_ = coderdenttest.AddLicense(t, client, coderdenttest.LicenseOptions{
+		client, user := coderdenttest.New(t, &coderdenttest.Options{LicenseOptions: &coderdenttest.LicenseOptions{
 			Features: license.Features{
 				codersdk.FeatureTemplateRBAC: 1,
 			},
-		})
+		}})
 
 		_, user2 := coderdtest.CreateAnotherUser(t, client, user.OrganizationID)
 		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, nil)
@@ -755,13 +942,11 @@ func TestUpdateTemplateACL(t *testing.T) {
 	t.Run("RegularUserCannotUpdatePerms", func(t *testing.T) {
 		t.Parallel()
 
-		client := coderdenttest.New(t, nil)
-		user := coderdtest.CreateFirstUser(t, client)
-		_ = coderdenttest.AddLicense(t, client, coderdenttest.LicenseOptions{
+		client, user := coderdenttest.New(t, &coderdenttest.Options{LicenseOptions: &coderdenttest.LicenseOptions{
 			Features: license.Features{
 				codersdk.FeatureTemplateRBAC: 1,
 			},
-		})
+		}})
 
 		client2, user2 := coderdtest.CreateAnotherUser(t, client, user.OrganizationID)
 		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, nil)
@@ -792,13 +977,11 @@ func TestUpdateTemplateACL(t *testing.T) {
 	t.Run("RegularUserWithAdminCanUpdate", func(t *testing.T) {
 		t.Parallel()
 
-		client := coderdenttest.New(t, nil)
-		user := coderdtest.CreateFirstUser(t, client)
-		_ = coderdenttest.AddLicense(t, client, coderdenttest.LicenseOptions{
+		client, user := coderdenttest.New(t, &coderdenttest.Options{LicenseOptions: &coderdenttest.LicenseOptions{
 			Features: license.Features{
 				codersdk.FeatureTemplateRBAC: 1,
 			},
-		})
+		}})
 
 		client2, user2 := coderdtest.CreateAnotherUser(t, client, user.OrganizationID)
 		_, user3 := coderdtest.CreateAnotherUser(t, client, user.OrganizationID)
@@ -815,6 +998,17 @@ func TestUpdateTemplateACL(t *testing.T) {
 		err := client.UpdateTemplateACL(ctx, template.ID, req)
 		require.NoError(t, err)
 
+		// Should be able to see user 3
+		available, err := client2.TemplateACLAvailable(ctx, template.ID)
+		require.NoError(t, err)
+		userFound := false
+		for _, avail := range available.Users {
+			if avail.ID == user3.ID {
+				userFound = true
+			}
+		}
+		require.True(t, userFound, "user not found in acl available")
+
 		req = codersdk.UpdateTemplateACL{
 			UserPerms: map[string]codersdk.TemplateRole{
 				user3.ID.String(): codersdk.TemplateRoleUse,
@@ -827,22 +1021,23 @@ func TestUpdateTemplateACL(t *testing.T) {
 		acl, err := client2.TemplateACL(ctx, template.ID)
 		require.NoError(t, err)
 
-		require.Contains(t, acl.Users, codersdk.TemplateUser{
-			User: user3,
-			Role: codersdk.TemplateRoleUse,
-		})
+		found := false
+		for _, u := range acl.Users {
+			if u.ID == user3.ID {
+				found = true
+			}
+		}
+		require.True(t, found, "user not found in acl")
 	})
 
 	t.Run("allUsersGroup", func(t *testing.T) {
 		t.Parallel()
 
-		client := coderdenttest.New(t, nil)
-		user := coderdtest.CreateFirstUser(t, client)
-		_ = coderdenttest.AddLicense(t, client, coderdenttest.LicenseOptions{
+		client, user := coderdenttest.New(t, &coderdenttest.Options{LicenseOptions: &coderdenttest.LicenseOptions{
 			Features: license.Features{
 				codersdk.FeatureTemplateRBAC: 1,
 			},
-		})
+		}})
 
 		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, nil)
 		template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
@@ -860,13 +1055,11 @@ func TestUpdateTemplateACL(t *testing.T) {
 	t.Run("CustomGroupHasAccess", func(t *testing.T) {
 		t.Parallel()
 
-		client := coderdenttest.New(t, nil)
-		user := coderdtest.CreateFirstUser(t, client)
-		_ = coderdenttest.AddLicense(t, client, coderdenttest.LicenseOptions{
+		client, user := coderdenttest.New(t, &coderdenttest.Options{LicenseOptions: &coderdenttest.LicenseOptions{
 			Features: license.Features{
 				codersdk.FeatureTemplateRBAC: 1,
 			},
-		})
+		}})
 
 		client1, user1 := coderdtest.CreateAnotherUser(t, client, user.OrganizationID)
 		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, nil)
@@ -927,13 +1120,11 @@ func TestUpdateTemplateACL(t *testing.T) {
 
 	t.Run("NoAccess", func(t *testing.T) {
 		t.Parallel()
-		client := coderdenttest.New(t, nil)
-		user := coderdtest.CreateFirstUser(t, client)
-		_ = coderdenttest.AddLicense(t, client, coderdenttest.LicenseOptions{
+		client, user := coderdenttest.New(t, &coderdenttest.Options{LicenseOptions: &coderdenttest.LicenseOptions{
 			Features: license.Features{
 				codersdk.FeatureTemplateRBAC: 1,
 			},
-		})
+		}})
 
 		client1, _ := coderdtest.CreateAnotherUser(t, client, user.OrganizationID)
 		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, nil)
@@ -982,13 +1173,11 @@ func TestReadFileWithTemplateUpdate(t *testing.T) {
 		t.Parallel()
 
 		// Upload a file
-		client := coderdenttest.New(t, nil)
-		first := coderdtest.CreateFirstUser(t, client)
-		_ = coderdenttest.AddLicense(t, client, coderdenttest.LicenseOptions{
+		client, first := coderdenttest.New(t, &coderdenttest.Options{LicenseOptions: &coderdenttest.LicenseOptions{
 			Features: license.Features{
 				codersdk.FeatureTemplateRBAC: 1,
 			},
-		})
+		}})
 
 		ctx := testutil.Context(t, testutil.WaitLong)
 
@@ -1037,13 +1226,11 @@ func TestTemplateAccess(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong*3)
 	t.Cleanup(cancel)
 
-	ownerClient := coderdenttest.New(t, nil)
-	owner := coderdtest.CreateFirstUser(t, ownerClient)
-	_ = coderdenttest.AddLicense(t, ownerClient, coderdenttest.LicenseOptions{
+	ownerClient, owner := coderdenttest.New(t, &coderdenttest.Options{LicenseOptions: &coderdenttest.LicenseOptions{
 		Features: license.Features{
 			codersdk.FeatureTemplateRBAC: 1,
 		},
-	})
+	}})
 
 	type coderUser struct {
 		*codersdk.Client

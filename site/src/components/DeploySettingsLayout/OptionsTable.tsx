@@ -12,7 +12,6 @@ import {
   OptionValue,
 } from "components/DeploySettingsLayout/Option"
 import { FC } from "react"
-import { DisabledBadge } from "./Badges"
 import { intervalToDuration, formatDuration } from "date-fns"
 
 const OptionsTable: FC<{
@@ -21,7 +20,7 @@ const OptionsTable: FC<{
   const styles = useStyles()
 
   if (options.length === 0) {
-    return <DisabledBadge></DisabledBadge>
+    return <p>No options to configure</p>
   }
 
   return (
@@ -62,9 +61,7 @@ const OptionsTable: FC<{
 }
 
 // optionValue is a helper function to format the value of a specific deployment options
-export function optionValue(
-  option: DeploymentOption,
-): string[] | string | unknown {
+export function optionValue(option: DeploymentOption) {
   switch (option.name) {
     case "Max Token Lifetime":
     case "Session Duration":

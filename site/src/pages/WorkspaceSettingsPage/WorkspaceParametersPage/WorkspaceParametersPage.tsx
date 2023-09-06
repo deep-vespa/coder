@@ -1,9 +1,4 @@
-import {
-  getTemplateVersionRichParameters,
-  getWorkspaceBuildParameters,
-  postWorkspaceBuild,
-} from "api/api"
-import { Workspace } from "api/typesGenerated"
+import { getWorkspaceParameters, postWorkspaceBuild } from "api/api"
 import { Helmet } from "react-helmet-async"
 import { pageTitle } from "utils/page"
 import { useWorkspaceSettingsContext } from "../WorkspaceSettingsLayout"
@@ -16,39 +11,26 @@ import {
 import { useNavigate } from "react-router-dom"
 import { makeStyles } from "@mui/styles"
 import { PageHeader, PageHeaderTitle } from "components/PageHeader/PageHeader"
-import { displaySuccess } from "components/GlobalSnackbar/utils"
 import { FC } from "react"
-
-const getWorkspaceParameters = async (workspace: Workspace) => {
-  const latestBuild = workspace.latest_build
-  const [templateVersionRichParameters, buildParameters] = await Promise.all([
-    getTemplateVersionRichParameters(latestBuild.template_version_id),
-    getWorkspaceBuildParameters(latestBuild.id),
-  ])
-  return {
-    templateVersionRichParameters,
-    buildParameters,
-  }
-}
+import { isApiValidationError } from "api/errors"
+import { ErrorAlert } from "components/Alert/ErrorAlert"
+import { WorkspaceBuildParameter } from "api/typesGenerated"
 
 const WorkspaceParametersPage = () => {
   const { workspace } = useWorkspaceSettingsContext()
-  const query = useQuery({
-    queryKey: ["workspaceSettings", workspace.id],
+  const parameters = useQuery({
+    queryKey: ["workspace", workspace.id, "parameters"],
     queryFn: () => getWorkspaceParameters(workspace),
   })
   const navigate = useNavigate()
-  const mutation = useMutation({
-    mutationFn: (formValues: WorkspaceParametersFormValues) =>
+  const updateParameters = useMutation({
+    mutationFn: (buildParameters: WorkspaceBuildParameter[]) =>
       postWorkspaceBuild(workspace.id, {
         transition: "start",
-        rich_parameter_values: formValues.rich_parameter_values,
+        rich_parameter_values: buildParameters,
       }),
     onSuccess: () => {
-      displaySuccess(
-        "Parameters updated successfully",
-        "A new build was started to apply the new parameters",
-      )
+      navigate(`/${workspace.owner_name}/${workspace.name}`)
     },
   })
 
@@ -59,10 +41,20 @@ const WorkspaceParametersPage = () => {
       </Helmet>
 
       <WorkspaceParametersPageView
-        data={query.data}
-        submitError={mutation.error}
-        isSubmitting={mutation.isLoading}
-        onSubmit={mutation.mutate}
+        data={parameters.data}
+        submitError={updateParameters.error}
+        isSubmitting={updateParameters.isLoading}
+        onSubmit={(values) => {
+          // When updating the parameters, the API does not accept immutable
+          // values so we need to filter them
+          const onlyMultableValues = parameters
+            .data!.templateVersionRichParameters.filter((p) => p.mutable)
+            .map(
+              (p) =>
+                values.rich_parameter_values.find((v) => v.name === p.name)!,
+            )
+          updateParameters.mutate(onlyMultableValues)
+        }}
         onCancel={() => {
           navigate("../..")
         }}
@@ -89,6 +81,10 @@ export const WorkspaceParametersPageView: FC<
       <PageHeader className={styles.pageHeader}>
         <PageHeaderTitle>Workspace parameters</PageHeaderTitle>
       </PageHeader>
+
+      {submitError && !isApiValidationError(submitError) && (
+        <ErrorAlert error={submitError} sx={{ mb: 6 }} />
+      )}
 
       {data ? (
         <WorkspaceParametersForm

@@ -7,12 +7,12 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"github.com/coder/coder/coderd/httpapi"
-	"github.com/coder/coder/codersdk"
+	"github.com/coder/coder/v2/coderd/httpapi"
+	"github.com/coder/coder/v2/codersdk"
 )
 
-// parseUUID consumes a url parameter and parses it as a UUID.
-func parseUUID(rw http.ResponseWriter, r *http.Request, param string) (uuid.UUID, bool) {
+// ParseUUIDParam consumes a url parameter and parses it as a UUID.
+func ParseUUIDParam(rw http.ResponseWriter, r *http.Request, param string) (uuid.UUID, bool) {
 	rawID := chi.URLParam(r, param)
 	if rawID == "" {
 		httpapi.Write(r.Context(), rw, http.StatusBadRequest, codersdk.Response{

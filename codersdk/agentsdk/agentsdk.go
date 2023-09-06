@@ -13,17 +13,14 @@ import (
 	"time"
 
 	"cloud.google.com/go/compute/metadata"
+	"github.com/google/uuid"
 	"golang.org/x/xerrors"
 	"nhooyr.io/websocket"
 	"tailscale.com/tailcfg"
 
-	"github.com/coder/retry"
-
 	"cdr.dev/slog"
-
-	"github.com/google/uuid"
-
-	"github.com/coder/coder/codersdk"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/retry"
 )
 
 // New returns a client that is used to interact with the
@@ -84,21 +81,24 @@ func (c *Client) PostMetadata(ctx context.Context, key string, req PostMetadataR
 }
 
 type Manifest struct {
+	AgentID uuid.UUID `json:"agent_id"`
 	// GitAuthConfigs stores the number of Git configurations
 	// the Coder deployment has. If this number is >0, we
 	// set up special configuration in the workspace.
-	GitAuthConfigs        int                                          `json:"git_auth_configs"`
-	VSCodePortProxyURI    string                                       `json:"vscode_port_proxy_uri"`
-	Apps                  []codersdk.WorkspaceApp                      `json:"apps"`
-	DERPMap               *tailcfg.DERPMap                             `json:"derpmap"`
-	EnvironmentVariables  map[string]string                            `json:"environment_variables"`
-	StartupScript         string                                       `json:"startup_script"`
-	StartupScriptTimeout  time.Duration                                `json:"startup_script_timeout"`
-	Directory             string                                       `json:"directory"`
-	MOTDFile              string                                       `json:"motd_file"`
-	ShutdownScript        string                                       `json:"shutdown_script"`
-	ShutdownScriptTimeout time.Duration                                `json:"shutdown_script_timeout"`
-	Metadata              []codersdk.WorkspaceAgentMetadataDescription `json:"metadata"`
+	GitAuthConfigs           int                                          `json:"git_auth_configs"`
+	VSCodePortProxyURI       string                                       `json:"vscode_port_proxy_uri"`
+	Apps                     []codersdk.WorkspaceApp                      `json:"apps"`
+	DERPMap                  *tailcfg.DERPMap                             `json:"derpmap"`
+	DERPForceWebSockets      bool                                         `json:"derp_force_websockets"`
+	EnvironmentVariables     map[string]string                            `json:"environment_variables"`
+	StartupScript            string                                       `json:"startup_script"`
+	StartupScriptTimeout     time.Duration                                `json:"startup_script_timeout"`
+	Directory                string                                       `json:"directory"`
+	MOTDFile                 string                                       `json:"motd_file"`
+	ShutdownScript           string                                       `json:"shutdown_script"`
+	ShutdownScriptTimeout    time.Duration                                `json:"shutdown_script_timeout"`
+	DisableDirectConnections bool                                         `json:"disable_direct_connections"`
+	Metadata                 []codersdk.WorkspaceAgentMetadataDescription `json:"metadata"`
 }
 
 // Manifest fetches manifest for the currently authenticated workspace agent.
@@ -116,6 +116,20 @@ func (c *Client) Manifest(ctx context.Context) (Manifest, error) {
 	if err != nil {
 		return Manifest{}, err
 	}
+	err = c.rewriteDerpMap(agentMeta.DERPMap)
+	if err != nil {
+		return Manifest{}, err
+	}
+	return agentMeta, nil
+}
+
+// rewriteDerpMap rewrites the DERP map to use the access URL of the SDK as the
+// "embedded relay" access URL. The passed derp map is modified in place.
+//
+// Agents can provide an arbitrary access URL that may be different that the
+// globally configured one. This breaks the built-in DERP, which would continue
+// to reference the global access URL.
+func (c *Client) rewriteDerpMap(derpMap *tailcfg.DERPMap) error {
 	accessingPort := c.SDK.URL.Port()
 	if accessingPort == "" {
 		accessingPort = "80"
@@ -125,15 +139,9 @@ func (c *Client) Manifest(ctx context.Context) (Manifest, error) {
 	}
 	accessPort, err := strconv.Atoi(accessingPort)
 	if err != nil {
-		return Manifest{}, xerrors.Errorf("convert accessing port %q: %w", accessingPort, err)
+		return xerrors.Errorf("convert accessing port %q: %w", accessingPort, err)
 	}
-	// Agents can provide an arbitrary access URL that may be different
-	// that the globally configured one. This breaks the built-in DERP,
-	// which would continue to reference the global access URL.
-	//
-	// This converts all built-in DERPs to use the access URL that the
-	// manifest request was performed with.
-	for _, region := range agentMeta.DERPMap.Regions {
+	for _, region := range derpMap.Regions {
 		if !region.EmbeddedRelay {
 			continue
 		}
@@ -147,7 +155,97 @@ func (c *Client) Manifest(ctx context.Context) (Manifest, error) {
 			node.ForceHTTP = c.SDK.URL.Scheme == "http"
 		}
 	}
-	return agentMeta, nil
+	return nil
+}
+
+type DERPMapUpdate struct {
+	Err     error
+	DERPMap *tailcfg.DERPMap
+}
+
+// DERPMapUpdates connects to the DERP map updates WebSocket.
+func (c *Client) DERPMapUpdates(ctx context.Context) (<-chan DERPMapUpdate, io.Closer, error) {
+	derpMapURL, err := c.SDK.URL.Parse("/api/v2/derp-map")
+	if err != nil {
+		return nil, nil, xerrors.Errorf("parse url: %w", err)
+	}
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return nil, nil, xerrors.Errorf("create cookie jar: %w", err)
+	}
+	jar.SetCookies(derpMapURL, []*http.Cookie{{
+		Name:  codersdk.SessionTokenCookie,
+		Value: c.SDK.SessionToken(),
+	}})
+	httpClient := &http.Client{
+		Jar:       jar,
+		Transport: c.SDK.HTTPClient.Transport,
+	}
+	// nolint:bodyclose
+	conn, res, err := websocket.Dial(ctx, derpMapURL.String(), &websocket.DialOptions{
+		HTTPClient: httpClient,
+	})
+	if err != nil {
+		if res == nil {
+			return nil, nil, err
+		}
+		return nil, nil, codersdk.ReadBodyAsError(res)
+	}
+
+	ctx, cancelFunc := context.WithCancel(ctx)
+	ctx, wsNetConn := websocketNetConn(ctx, conn, websocket.MessageBinary)
+	pingClosed := pingWebSocket(ctx, c.SDK.Logger(), conn, "derp map")
+
+	var (
+		updates       = make(chan DERPMapUpdate)
+		updatesClosed = make(chan struct{})
+		dec           = json.NewDecoder(wsNetConn)
+	)
+	go func() {
+		defer close(updates)
+		defer close(updatesClosed)
+		defer cancelFunc()
+		defer conn.Close(websocket.StatusGoingAway, "DERPMapUpdates closed")
+		for {
+			var update DERPMapUpdate
+			err := dec.Decode(&update.DERPMap)
+			if err != nil {
+				update.Err = err
+				update.DERPMap = nil
+			}
+			if update.DERPMap != nil {
+				err = c.rewriteDerpMap(update.DERPMap)
+				if err != nil {
+					update.Err = err
+					update.DERPMap = nil
+				}
+			}
+
+			select {
+			case updates <- update:
+			case <-ctx.Done():
+				// Unblock the caller if they're waiting for an update.
+				select {
+				case updates <- DERPMapUpdate{Err: ctx.Err()}:
+				default:
+				}
+				return
+			}
+			if update.Err != nil {
+				return
+			}
+		}
+	}()
+
+	return updates, &closer{
+		closeFunc: func() error {
+			cancelFunc()
+			<-pingClosed
+			_ = conn.Close(websocket.StatusGoingAway, "DERPMapUpdates closed")
+			<-updatesClosed
+			return nil
+		},
+	}, nil
 }
 
 // Listen connects to the workspace agent coordinate WebSocket
@@ -182,50 +280,14 @@ func (c *Client) Listen(ctx context.Context) (net.Conn, error) {
 
 	ctx, cancelFunc := context.WithCancel(ctx)
 	ctx, wsNetConn := websocketNetConn(ctx, conn, websocket.MessageBinary)
-
-	// Ping once every 30 seconds to ensure that the websocket is alive. If we
-	// don't get a response within 30s we kill the websocket and reconnect.
-	// See: https://github.com/coder/coder/pull/5824
-	closed := make(chan struct{})
-	go func() {
-		defer close(closed)
-		tick := 30 * time.Second
-		ticker := time.NewTicker(tick)
-		defer ticker.Stop()
-		defer func() {
-			c.SDK.Logger.Debug(ctx, "coordinate pinger exited")
-		}()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case start := <-ticker.C:
-				ctx, cancel := context.WithTimeout(ctx, tick)
-
-				err := conn.Ping(ctx)
-				if err != nil {
-					c.SDK.Logger.Error(ctx, "workspace agent coordinate ping", slog.Error(err))
-
-					err := conn.Close(websocket.StatusGoingAway, "Ping failed")
-					if err != nil {
-						c.SDK.Logger.Error(ctx, "close workspace agent coordinate websocket", slog.Error(err))
-					}
-
-					cancel()
-					return
-				}
-
-				c.SDK.Logger.Debug(ctx, "got coordinate pong", slog.F("took", time.Since(start)))
-				cancel()
-			}
-		}
-	}()
+	pingClosed := pingWebSocket(ctx, c.SDK.Logger(), conn, "coordinate")
 
 	return &closeNetConn{
 		Conn: wsNetConn,
 		closeFunc: func() {
 			cancelFunc()
-			<-closed
+			_ = conn.Close(websocket.StatusGoingAway, "Listen closed")
+			<-pingClosed
 		},
 	}, nil
 }
@@ -533,7 +595,8 @@ func (c *Client) PostStats(ctx context.Context, stats *Stats) (StatsResponse, er
 }
 
 type PostLifecycleRequest struct {
-	State codersdk.WorkspaceAgentLifecycle `json:"state"`
+	State     codersdk.WorkspaceAgentLifecycle `json:"state"`
+	ChangedAt time.Time                        `json:"changed_at"`
 }
 
 func (c *Client) PostLifecycle(ctx context.Context, req PostLifecycleRequest) error {
@@ -550,9 +613,9 @@ func (c *Client) PostLifecycle(ctx context.Context, req PostLifecycleRequest) er
 }
 
 type PostStartupRequest struct {
-	Version           string                  `json:"version"`
-	ExpandedDirectory string                  `json:"expanded_directory"`
-	Subsystem         codersdk.AgentSubsystem `json:"subsystem"`
+	Version           string                    `json:"version"`
+	ExpandedDirectory string                    `json:"expanded_directory"`
+	Subsystems        []codersdk.AgentSubsystem `json:"subsystems"`
 }
 
 func (c *Client) PostStartup(ctx context.Context, req PostStartupRequest) error {
@@ -567,20 +630,21 @@ func (c *Client) PostStartup(ctx context.Context, req PostStartupRequest) error 
 	return nil
 }
 
-type StartupLog struct {
-	CreatedAt time.Time         `json:"created_at"`
-	Output    string            `json:"output"`
-	Level     codersdk.LogLevel `json:"level"`
+type Log struct {
+	CreatedAt time.Time                        `json:"created_at"`
+	Output    string                           `json:"output"`
+	Level     codersdk.LogLevel                `json:"level"`
+	Source    codersdk.WorkspaceAgentLogSource `json:"source"`
 }
 
-type PatchStartupLogs struct {
-	Logs []StartupLog `json:"logs"`
+type PatchLogs struct {
+	Logs []Log `json:"logs"`
 }
 
-// PatchStartupLogs writes log messages to the agent startup script.
+// PatchLogs writes log messages to the agent startup script.
 // Log messages are limited to 1MB in total.
-func (c *Client) PatchStartupLogs(ctx context.Context, req PatchStartupLogs) error {
-	res, err := c.SDK.Request(ctx, http.MethodPatch, "/api/v2/workspaceagents/me/startup-logs", req)
+func (c *Client) PatchLogs(ctx context.Context, req PatchLogs) error {
+	res, err := c.SDK.Request(ctx, http.MethodPatch, "/api/v2/workspaceagents/me/logs", req)
 	if err != nil {
 		return err
 	}
@@ -589,6 +653,24 @@ func (c *Client) PatchStartupLogs(ctx context.Context, req PatchStartupLogs) err
 		return codersdk.ReadBodyAsError(res)
 	}
 	return nil
+}
+
+// GetServiceBanner relays the service banner config.
+func (c *Client) GetServiceBanner(ctx context.Context) (codersdk.ServiceBannerConfig, error) {
+	res, err := c.SDK.Request(ctx, http.MethodGet, "/api/v2/appearance", nil)
+	if err != nil {
+		return codersdk.ServiceBannerConfig{}, err
+	}
+	defer res.Body.Close()
+	// If the route does not exist then Enterprise code is not enabled.
+	if res.StatusCode == http.StatusNotFound {
+		return codersdk.ServiceBannerConfig{}, nil
+	}
+	if res.StatusCode != http.StatusOK {
+		return codersdk.ServiceBannerConfig{}, codersdk.ReadBodyAsError(res)
+	}
+	var cfg codersdk.AppearanceConfig
+	return cfg.ServiceBanner, json.NewDecoder(res.Body).Decode(&cfg)
 }
 
 type GitAuthResponse struct {
@@ -665,15 +747,14 @@ func websocketNetConn(ctx context.Context, conn *websocket.Conn, msgType websock
 	}
 }
 
-// StartupLogsNotifyChannel returns the channel name responsible for notifying
-// of new startup logs.
-func StartupLogsNotifyChannel(agentID uuid.UUID) string {
-	return fmt.Sprintf("startup-logs:%s", agentID)
+// LogsNotifyChannel returns the channel name responsible for notifying
+// of new logs.
+func LogsNotifyChannel(agentID uuid.UUID) string {
+	return fmt.Sprintf("agent-logs:%s", agentID)
 }
 
-type StartupLogsNotifyMessage struct {
+type LogsNotifyMessage struct {
 	CreatedAfter int64 `json:"created_after"`
-	EndOfLogs    bool  `json:"end_of_logs"`
 }
 
 type closeNetConn struct {
@@ -684,4 +765,54 @@ type closeNetConn struct {
 func (c *closeNetConn) Close() error {
 	c.closeFunc()
 	return c.Conn.Close()
+}
+
+func pingWebSocket(ctx context.Context, logger slog.Logger, conn *websocket.Conn, name string) <-chan struct{} {
+	// Ping once every 30 seconds to ensure that the websocket is alive. If we
+	// don't get a response within 30s we kill the websocket and reconnect.
+	// See: https://github.com/coder/coder/pull/5824
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		tick := 30 * time.Second
+		ticker := time.NewTicker(tick)
+		defer ticker.Stop()
+		defer func() {
+			logger.Debug(ctx, fmt.Sprintf("%s pinger exited", name))
+		}()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case start := <-ticker.C:
+				ctx, cancel := context.WithTimeout(ctx, tick)
+
+				err := conn.Ping(ctx)
+				if err != nil {
+					logger.Error(ctx, fmt.Sprintf("workspace agent %s ping", name), slog.Error(err))
+
+					err := conn.Close(websocket.StatusGoingAway, "Ping failed")
+					if err != nil {
+						logger.Error(ctx, fmt.Sprintf("close workspace agent %s websocket", name), slog.Error(err))
+					}
+
+					cancel()
+					return
+				}
+
+				logger.Debug(ctx, fmt.Sprintf("got %s ping", name), slog.F("took", time.Since(start)))
+				cancel()
+			}
+		}
+	}()
+
+	return closed
+}
+
+type closer struct {
+	closeFunc func() error
+}
+
+func (c *closer) Close() error {
+	return c.closeFunc()
 }

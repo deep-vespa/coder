@@ -1,6 +1,5 @@
 import { makeStyles, useTheme } from "@mui/styles"
 import { useMachine } from "@xstate/react"
-import { portForwardURL } from "components/PortForwardButton/PortForwardButton"
 import { Stack } from "components/Stack/Stack"
 import { FC, useCallback, useEffect, useRef, useState } from "react"
 import { Helmet } from "react-helmet-async"
@@ -8,8 +7,10 @@ import { useNavigate, useParams, useSearchParams } from "react-router-dom"
 import { colors } from "theme/colors"
 import { v4 as uuidv4 } from "uuid"
 import * as XTerm from "xterm"
+import { WebglAddon } from "xterm-addon-webgl"
 import { FitAddon } from "xterm-addon-fit"
 import { WebLinksAddon } from "xterm-addon-web-links"
+import { Unicode11Addon } from "xterm-addon-unicode11"
 import "xterm/css/xterm.css"
 import { MONOSPACE_FONT_FAMILY } from "../../theme/constants"
 import { pageTitle } from "../../utils/page"
@@ -17,11 +18,12 @@ import { terminalMachine } from "../../xServices/terminal/terminalXService"
 import { useProxy } from "contexts/ProxyContext"
 import Box from "@mui/material/Box"
 import { useDashboard } from "components/Dashboard/DashboardProvider"
-import { Region } from "api/typesGenerated"
+import { Region, WorkspaceAgent } from "api/typesGenerated"
 import { getLatencyColor } from "utils/latency"
 import Popover from "@mui/material/Popover"
 import { ProxyStatusLatency } from "components/ProxyStatusLatency/ProxyStatusLatency"
 import TerminalPageAlert, { TerminalPageAlertType } from "./TerminalPageAlert"
+import { portForwardURL } from "utils/portForward"
 
 export const Language = {
   workspaceErrorMessagePrefix: "Unable to fetch workspace: ",
@@ -29,11 +31,43 @@ export const Language = {
   websocketErrorMessagePrefix: "WebSocket failed: ",
 }
 
-const TerminalPage: FC = () => {
+const useTerminalWarning = ({ agent }: { agent?: WorkspaceAgent }) => {
+  const lifecycleState = agent?.lifecycle_state
+  const [startupWarning, setStartupWarning] = useState<
+    TerminalPageAlertType | undefined
+  >(undefined)
+
+  useEffect(() => {
+    if (lifecycleState === "start_error") {
+      setStartupWarning("error")
+    } else if (lifecycleState === "starting") {
+      setStartupWarning("starting")
+    } else {
+      setStartupWarning((prev) => {
+        if (prev === "starting") {
+          return "success"
+        }
+        return undefined
+      })
+    }
+  }, [lifecycleState])
+
+  return {
+    startupWarning,
+  }
+}
+
+type TerminalPageProps = React.PropsWithChildren<{
+  renderer: "webgl" | "dom"
+}>
+
+const TerminalPage: FC<TerminalPageProps> = ({ renderer }) => {
   const navigate = useNavigate()
   const styles = useStyles()
   const { proxy } = useProxy()
-  const { username, workspace: workspaceName } = useParams()
+  const params = useParams() as { username: string; workspace: string }
+  const username = params.username.replace("@", "")
+  const workspaceName = params.workspace
   const xtermRef = useRef<HTMLDivElement>(null)
   const [terminal, setTerminal] = useState<XTerm.Terminal | null>(null)
   const [fitAddon, setFitAddon] = useState<FitAddon | null>(null)
@@ -77,32 +111,15 @@ const TerminalPage: FC = () => {
     websocketError,
   } = terminalState.context
   const reloading = useReloading(isDisconnected)
-  const lifecycleState = workspaceAgent?.lifecycle_state
-  const [startupWarning, setStartupWarning] = useState<
-    TerminalPageAlertType | undefined
-  >(undefined)
-
-  useEffect(() => {
-    if (lifecycleState === "start_error") {
-      setStartupWarning("error")
-    } else if (lifecycleState === "starting") {
-      setStartupWarning("starting")
-    } else {
-      setStartupWarning((prev) => {
-        if (prev === "starting") {
-          return "success"
-        }
-        return undefined
-      })
-    }
-  }, [lifecycleState])
-
   const dashboard = useDashboard()
   const proxyContext = useProxy()
   const selectedProxy = proxyContext.proxy.proxy
   const latency = selectedProxy
     ? proxyContext.proxyLatencies[selectedProxy.id]
     : undefined
+  const { startupWarning } = useTerminalWarning({
+    agent: workspaceAgent,
+  })
 
   // handleWebLink handles opening of URLs in the terminal!
   const handleWebLink = useCallback(
@@ -160,6 +177,7 @@ const TerminalPage: FC = () => {
       return
     }
     const terminal = new XTerm.Terminal({
+      allowProposedApi: true,
       allowTransparency: true,
       disableStdin: false,
       fontFamily: MONOSPACE_FONT_FAMILY,
@@ -168,9 +186,15 @@ const TerminalPage: FC = () => {
         background: colors.gray[16],
       },
     })
+    // DOM is the default renderer.
+    if (renderer === "webgl") {
+      terminal.loadAddon(new WebglAddon())
+    }
     const fitAddon = new FitAddon()
     setFitAddon(fitAddon)
     terminal.loadAddon(fitAddon)
+    terminal.loadAddon(new Unicode11Addon())
+    terminal.unicode.activeVersion = "11"
     terminal.loadAddon(
       new WebLinksAddon((_, uri) => {
         handleWebLink(uri)
@@ -204,7 +228,7 @@ const TerminalPage: FC = () => {
       window.removeEventListener("resize", listener)
       terminal.dispose()
     }
-  }, [sendEvent, xtermRef, handleWebLink])
+  }, [renderer, sendEvent, xtermRef, handleWebLink])
 
   // Triggers the initial terminal connection using
   // the reconnection token and workspace name found
@@ -317,7 +341,14 @@ const TerminalPage: FC = () => {
         )}
       </div>
       <Box display="flex" flexDirection="column" height="100vh">
-        {startupWarning && <TerminalPageAlert alertType={startupWarning} />}
+        {startupWarning && (
+          <TerminalPageAlert
+            alertType={startupWarning}
+            onDismiss={() => {
+              fitAddon?.fit()
+            }}
+          />
+        )}
         <div
           className={styles.terminal}
           ref={xtermRef}

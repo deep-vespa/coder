@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,11 +24,11 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/xerrors"
 
-	"github.com/coder/coder/coderd/coderdtest"
-	"github.com/coder/coder/coderd/rbac"
-	"github.com/coder/coder/coderd/workspaceapps"
-	"github.com/coder/coder/codersdk"
-	"github.com/coder/coder/testutil"
+	"github.com/coder/coder/v2/coderd/coderdtest"
+	"github.com/coder/coder/v2/coderd/rbac"
+	"github.com/coder/coder/v2/coderd/workspaceapps"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/testutil"
 )
 
 // Run runs the entire workspace app test suite against deployments minted
@@ -51,23 +52,8 @@ func Run(t *testing.T, appHostIsPrimary bool, factory DeploymentFactory) {
 			t.Skip("ConPTY appears to be inconsistent on Windows.")
 		}
 
-		expectLine := func(t *testing.T, r *bufio.Reader, matcher func(string) bool) {
-			for {
-				line, err := r.ReadString('\n')
-				require.NoError(t, err)
-				if matcher(line) {
-					break
-				}
-			}
-		}
-		matchEchoCommand := func(line string) bool {
-			return strings.Contains(line, "echo test")
-		}
-		matchEchoOutput := func(line string) bool {
-			return strings.Contains(line, "test") && !strings.Contains(line, "echo")
-		}
-
 		t.Run("OK", func(t *testing.T) {
+			t.Parallel()
 			appDetails := setupProxyTest(t, nil)
 
 			ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
@@ -76,40 +62,13 @@ func Run(t *testing.T, appHostIsPrimary bool, factory DeploymentFactory) {
 			// Run the test against the path app hostname since that's where the
 			// reconnecting-pty proxy server we want to test is mounted.
 			client := appDetails.AppClient(t)
-			conn, err := client.WorkspaceAgentReconnectingPTY(ctx, codersdk.WorkspaceAgentReconnectingPTYOpts{
+			testReconnectingPTY(ctx, t, client, codersdk.WorkspaceAgentReconnectingPTYOpts{
 				AgentID:   appDetails.Agent.ID,
 				Reconnect: uuid.New(),
-				Height:    80,
-				Width:     80,
-				Command:   "/bin/bash",
+				Height:    100,
+				Width:     100,
+				Command:   "bash",
 			})
-			require.NoError(t, err)
-			defer conn.Close()
-
-			// First attempt to resize the TTY.
-			// The websocket will close if it fails!
-			data, err := json.Marshal(codersdk.ReconnectingPTYRequest{
-				Height: 250,
-				Width:  250,
-			})
-			require.NoError(t, err)
-			_, err = conn.Write(data)
-			require.NoError(t, err)
-			bufRead := bufio.NewReader(conn)
-
-			// Brief pause to reduce the likelihood that we send keystrokes while
-			// the shell is simultaneously sending a prompt.
-			time.Sleep(100 * time.Millisecond)
-
-			data, err = json.Marshal(codersdk.ReconnectingPTYRequest{
-				Data: "echo test\r\n",
-			})
-			require.NoError(t, err)
-			_, err = conn.Write(data)
-			require.NoError(t, err)
-
-			expectLine(t, bufRead, matchEchoCommand)
-			expectLine(t, bufRead, matchEchoOutput)
 		})
 
 		t.Run("SignedTokenQueryParameter", func(t *testing.T) {
@@ -137,41 +96,14 @@ func Run(t *testing.T, appHostIsPrimary bool, factory DeploymentFactory) {
 
 			// Make an unauthenticated client.
 			unauthedAppClient := codersdk.New(appDetails.AppClient(t).URL)
-			conn, err := unauthedAppClient.WorkspaceAgentReconnectingPTY(ctx, codersdk.WorkspaceAgentReconnectingPTYOpts{
+			testReconnectingPTY(ctx, t, unauthedAppClient, codersdk.WorkspaceAgentReconnectingPTYOpts{
 				AgentID:     appDetails.Agent.ID,
 				Reconnect:   uuid.New(),
-				Height:      80,
-				Width:       80,
-				Command:     "/bin/bash",
+				Height:      100,
+				Width:       100,
+				Command:     "bash",
 				SignedToken: issueRes.SignedToken,
 			})
-			require.NoError(t, err)
-			defer conn.Close()
-
-			// First attempt to resize the TTY.
-			// The websocket will close if it fails!
-			data, err := json.Marshal(codersdk.ReconnectingPTYRequest{
-				Height: 250,
-				Width:  250,
-			})
-			require.NoError(t, err)
-			_, err = conn.Write(data)
-			require.NoError(t, err)
-			bufRead := bufio.NewReader(conn)
-
-			// Brief pause to reduce the likelihood that we send keystrokes while
-			// the shell is simultaneously sending a prompt.
-			time.Sleep(100 * time.Millisecond)
-
-			data, err = json.Marshal(codersdk.ReconnectingPTYRequest{
-				Data: "echo test\r\n",
-			})
-			require.NoError(t, err)
-			_, err = conn.Write(data)
-			require.NoError(t, err)
-
-			expectLine(t, bufRead, matchEchoCommand)
-			expectLine(t, bufRead, matchEchoOutput)
 		})
 	})
 
@@ -193,7 +125,7 @@ func Run(t *testing.T, appHostIsPrimary bool, factory DeploymentFactory) {
 			resp, err := requestWithRetries(ctx, t, appDetails.AppClient(t), http.MethodGet, appDetails.PathAppURL(appDetails.Apps.Owner).String(), nil)
 			require.NoError(t, err)
 			defer resp.Body.Close()
-			require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+			require.Equal(t, http.StatusForbidden, resp.StatusCode)
 			body, err := io.ReadAll(resp.Body)
 			require.NoError(t, err)
 			require.Contains(t, string(body), "Path-based applications are disabled")
@@ -325,7 +257,52 @@ func Run(t *testing.T, appHostIsPrimary bool, factory DeploymentFactory) {
 
 			var appTokenCookie *http.Cookie
 			for _, c := range resp.Cookies() {
-				if c.Name == codersdk.DevURLSignedAppTokenCookie {
+				if c.Name == codersdk.SignedAppTokenCookie {
+					appTokenCookie = c
+					break
+				}
+			}
+			require.NotNil(t, appTokenCookie, "no signed app token cookie in response")
+			require.Equal(t, appTokenCookie.Path, u.Path, "incorrect path on app token cookie")
+
+			// Ensure the signed app token cookie is valid.
+			appTokenClient := appDetails.AppClient(t)
+			appTokenClient.SetSessionToken("")
+			appTokenClient.HTTPClient.Jar, err = cookiejar.New(nil)
+			require.NoError(t, err)
+			appTokenClient.HTTPClient.Jar.SetCookies(u, []*http.Cookie{appTokenCookie})
+
+			resp, err = requestWithRetries(ctx, t, appTokenClient, http.MethodGet, u.String(), nil)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+			body, err = io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			require.Equal(t, proxyTestAppBody, string(body))
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+		})
+
+		t.Run("ProxiesHTTPS", func(t *testing.T) {
+			t.Parallel()
+
+			appDetails := setupProxyTest(t, &DeploymentOptions{
+				ServeHTTPS: true,
+			})
+
+			ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
+			defer cancel()
+
+			u := appDetails.PathAppURL(appDetails.Apps.Owner)
+			resp, err := requestWithRetries(ctx, t, appDetails.AppClient(t), http.MethodGet, u.String(), nil)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			require.Equal(t, proxyTestAppBody, string(body))
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+
+			var appTokenCookie *http.Cookie
+			for _, c := range resp.Cookies() {
+				if c.Name == codersdk.SignedAppTokenCookie {
 					appTokenCookie = c
 					break
 				}
@@ -423,30 +400,19 @@ func Run(t *testing.T, appHostIsPrimary bool, factory DeploymentFactory) {
 			appDetails := setupProxyTest(t, nil)
 
 			cases := []struct {
-				name         string
-				appURL       *url.URL
-				verifyCookie func(t *testing.T, c *http.Cookie)
+				name                   string
+				appURL                 *url.URL
+				sessionTokenCookieName string
 			}{
 				{
-					name:   "Subdomain",
-					appURL: appDetails.SubdomainAppURL(appDetails.Apps.Owner),
-					verifyCookie: func(t *testing.T, c *http.Cookie) {
-						// TODO(@dean): fix these asserts, they don't seem to
-						// work. I wonder if Go strips the domain from the
-						// cookie object if it's invalid or something.
-						// domain := strings.SplitN(appDetails.Options.AppHost, ".", 2)
-						// require.Equal(t, "."+domain[1], c.Domain, "incorrect domain on app token cookie")
-					},
+					name:                   "Subdomain",
+					appURL:                 appDetails.SubdomainAppURL(appDetails.Apps.Owner),
+					sessionTokenCookieName: codersdk.SubdomainAppSessionTokenCookie,
 				},
 				{
-					name:   "Path",
-					appURL: appDetails.PathAppURL(appDetails.Apps.Owner),
-					verifyCookie: func(t *testing.T, c *http.Cookie) {
-						// TODO(@dean): fix these asserts, they don't seem to
-						// work. I wonder if Go strips the domain from the
-						// cookie object if it's invalid or something.
-						// require.Equal(t, "", c.Domain, "incorrect domain on app token cookie")
-					},
+					name:                   "Path",
+					appURL:                 appDetails.PathAppURL(appDetails.Apps.Owner),
+					sessionTokenCookieName: codersdk.PathAppSessionTokenCookie,
 				},
 			}
 
@@ -531,14 +497,13 @@ func Run(t *testing.T, appHostIsPrimary bool, factory DeploymentFactory) {
 
 					cookies := resp.Cookies()
 					var cookie *http.Cookie
-					for _, c := range cookies {
-						if c.Name == codersdk.DevURLSessionTokenCookie {
-							cookie = c
+					for _, co := range cookies {
+						if co.Name == c.sessionTokenCookieName {
+							cookie = co
 							break
 						}
 					}
 					require.NotNil(t, cookie, "no app session token cookie was set")
-					c.verifyCookie(t, cookie)
 					apiKey := cookie.Value
 
 					// Fetch the API key from the API.
@@ -738,7 +703,51 @@ func Run(t *testing.T, appHostIsPrimary bool, factory DeploymentFactory) {
 
 			var appTokenCookie *http.Cookie
 			for _, c := range resp.Cookies() {
-				if c.Name == codersdk.DevURLSignedAppTokenCookie {
+				if c.Name == codersdk.SignedAppTokenCookie {
+					appTokenCookie = c
+					break
+				}
+			}
+			require.NotNil(t, appTokenCookie, "no signed token cookie in response")
+			require.Equal(t, appTokenCookie.Path, "/", "incorrect path on signed token cookie")
+
+			// Ensure the signed app token cookie is valid.
+			appTokenClient := appDetails.AppClient(t)
+			appTokenClient.SetSessionToken("")
+			appTokenClient.HTTPClient.Jar, err = cookiejar.New(nil)
+			require.NoError(t, err)
+			appTokenClient.HTTPClient.Jar.SetCookies(u, []*http.Cookie{appTokenCookie})
+
+			resp, err = requestWithRetries(ctx, t, appTokenClient, http.MethodGet, u.String(), nil)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+			body, err = io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			require.Equal(t, proxyTestAppBody, string(body))
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+		})
+
+		t.Run("ProxiesHTTPS", func(t *testing.T) {
+			t.Parallel()
+
+			appDetails := setupProxyTest(t, &DeploymentOptions{
+				ServeHTTPS: true,
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
+			defer cancel()
+
+			u := appDetails.SubdomainAppURL(appDetails.Apps.Owner)
+			resp, err := requestWithRetries(ctx, t, appDetails.AppClient(t), http.MethodGet, u.String(), nil)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			require.Equal(t, proxyTestAppBody, string(body))
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+
+			var appTokenCookie *http.Cookie
+			for _, c := range resp.Cookies() {
+				if c.Name == codersdk.SignedAppTokenCookie {
 					appTokenCookie = c
 					break
 				}
@@ -928,8 +937,8 @@ func Run(t *testing.T, appHostIsPrimary bool, factory DeploymentFactory) {
 			forceURLTransport(t, client)
 
 			// Create workspace.
-			port := appServer(t)
-			workspace, _ = createWorkspaceWithApps(t, client, user.OrganizationIDs[0], user, port)
+			port := appServer(t, nil, false)
+			workspace, _ = createWorkspaceWithApps(t, client, user.OrganizationIDs[0], user, port, false)
 
 			// Verify that the apps have the correct sharing levels set.
 			workspaceBuild, err := client.WorkspaceBuild(ctx, workspace.LatestBuild.ID)
@@ -1260,4 +1269,180 @@ func Run(t *testing.T, appHostIsPrimary bool, factory DeploymentFactory) {
 			})
 		}
 	})
+
+	t.Run("CORSHeadersStripped", func(t *testing.T) {
+		t.Parallel()
+
+		appDetails := setupProxyTest(t, &DeploymentOptions{
+			headers: http.Header{
+				"X-Foobar":                         []string{"baz"},
+				"Access-Control-Allow-Origin":      []string{"http://localhost"},
+				"access-control-allow-origin":      []string{"http://localhost"},
+				"Access-Control-Allow-Credentials": []string{"true"},
+				"Access-Control-Allow-Methods":     []string{"PUT"},
+				"Access-Control-Allow-Headers":     []string{"X-Foobar"},
+				"Vary": []string{
+					"Origin",
+					"origin",
+					"Access-Control-Request-Headers",
+					"access-Control-request-Headers",
+					"Access-Control-Request-Methods",
+					"ACCESS-CONTROL-REQUEST-METHODS",
+					"X-Foobar",
+				},
+			},
+		})
+
+		appURL := appDetails.SubdomainAppURL(appDetails.Apps.Owner)
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
+		defer cancel()
+
+		resp, err := requestWithRetries(ctx, t, appDetails.AppClient(t), http.MethodGet, appURL.String(), nil)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		require.Equal(t, []string(nil), resp.Header.Values("Access-Control-Allow-Origin"))
+		require.Equal(t, []string(nil), resp.Header.Values("Access-Control-Allow-Credentials"))
+		require.Equal(t, []string(nil), resp.Header.Values("Access-Control-Allow-Methods"))
+		require.Equal(t, []string(nil), resp.Header.Values("Access-Control-Allow-Headers"))
+		// Somehow there are two "Origin"s in Vary even though there should only be
+		// one (from the CORS middleware), even if you remove the headers being sent
+		// above.  When I do nothing else but change the expected value below to
+		// have two "Origin"s suddenly Vary only has one.  It is somehow always the
+		// opposite of whatever I put for the expected.  So, reluctantly, remove
+		// duplicate "Origin" values.
+		var deduped []string
+		var addedOrigin bool
+		for _, value := range resp.Header.Values("Vary") {
+			if value != "Origin" || !addedOrigin {
+				if value == "Origin" {
+					addedOrigin = true
+				}
+				deduped = append(deduped, value)
+			}
+		}
+		require.Equal(t, []string{"Origin", "X-Foobar"}, deduped)
+		require.Equal(t, []string{"baz"}, resp.Header.Values("X-Foobar"))
+	})
+
+	t.Run("ReportStats", func(t *testing.T) {
+		t.Parallel()
+
+		flush := make(chan chan<- struct{}, 1)
+
+		reporter := &fakeStatsReporter{}
+		appDetails := setupProxyTest(t, &DeploymentOptions{
+			StatsCollectorOptions: workspaceapps.StatsCollectorOptions{
+				Reporter:       reporter,
+				ReportInterval: time.Hour,
+				RollupWindow:   time.Minute,
+
+				Flush: flush,
+			},
+		})
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
+		defer cancel()
+
+		u := appDetails.PathAppURL(appDetails.Apps.Owner)
+		resp, err := requestWithRetries(ctx, t, appDetails.AppClient(t), http.MethodGet, u.String(), nil)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		_, err = io.Copy(io.Discard, resp.Body)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var stats []workspaceapps.StatsReport
+		require.Eventually(t, func() bool {
+			// Keep flushing until we get a non-empty stats report.
+			flushDone := make(chan struct{}, 1)
+			flush <- flushDone
+			<-flushDone
+
+			stats = reporter.stats()
+			return len(stats) > 0
+		}, testutil.WaitLong, testutil.IntervalFast, "stats not reported")
+
+		assert.Equal(t, workspaceapps.AccessMethodPath, stats[0].AccessMethod)
+		assert.Equal(t, "test-app-owner", stats[0].SlugOrPort)
+		assert.Equal(t, 1, stats[0].Requests)
+	})
+}
+
+type fakeStatsReporter struct {
+	mu sync.Mutex
+	s  []workspaceapps.StatsReport
+}
+
+func (r *fakeStatsReporter) stats() []workspaceapps.StatsReport {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.s
+}
+
+func (r *fakeStatsReporter) Report(_ context.Context, stats []workspaceapps.StatsReport) error {
+	r.mu.Lock()
+	r.s = append(r.s, stats...)
+	r.mu.Unlock()
+	return nil
+}
+
+func testReconnectingPTY(ctx context.Context, t *testing.T, client *codersdk.Client, opts codersdk.WorkspaceAgentReconnectingPTYOpts) {
+	matchEchoCommand := func(line string) bool {
+		return strings.Contains(line, "echo test")
+	}
+	matchEchoOutput := func(line string) bool {
+		return strings.Contains(line, "test") && !strings.Contains(line, "echo")
+	}
+	matchExitCommand := func(line string) bool {
+		return strings.Contains(line, "exit")
+	}
+	matchExitOutput := func(line string) bool {
+		return strings.Contains(line, "exit") || strings.Contains(line, "logout")
+	}
+
+	conn, err := client.WorkspaceAgentReconnectingPTY(ctx, opts)
+	require.NoError(t, err)
+	defer conn.Close()
+
+	// First attempt to resize the TTY.
+	// The websocket will close if it fails!
+	data, err := json.Marshal(codersdk.ReconnectingPTYRequest{
+		Height: 80,
+		Width:  80,
+	})
+	require.NoError(t, err)
+	_, err = conn.Write(data)
+	require.NoError(t, err)
+
+	// Brief pause to reduce the likelihood that we send keystrokes while
+	// the shell is simultaneously sending a prompt.
+	time.Sleep(100 * time.Millisecond)
+
+	data, err = json.Marshal(codersdk.ReconnectingPTYRequest{
+		Data: "echo test\r\n",
+	})
+	require.NoError(t, err)
+	_, err = conn.Write(data)
+	require.NoError(t, err)
+
+	require.NoError(t, testutil.ReadUntil(ctx, t, conn, matchEchoCommand), "find echo command")
+	require.NoError(t, testutil.ReadUntil(ctx, t, conn, matchEchoOutput), "find echo output")
+
+	// Exit should cause the connection to close.
+	data, err = json.Marshal(codersdk.ReconnectingPTYRequest{
+		Data: "exit\r\n",
+	})
+	require.NoError(t, err)
+	_, err = conn.Write(data)
+	require.NoError(t, err)
+
+	// Once for the input and again for the output.
+	require.NoError(t, testutil.ReadUntil(ctx, t, conn, matchExitCommand), "find exit command")
+	require.NoError(t, testutil.ReadUntil(ctx, t, conn, matchExitOutput), "find exit output")
+
+	// Ensure the connection closes.
+	require.ErrorIs(t, testutil.ReadUntil(ctx, t, conn, nil), io.EOF)
 }

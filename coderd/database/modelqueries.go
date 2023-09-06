@@ -9,8 +9,8 @@ import (
 	"github.com/lib/pq"
 	"golang.org/x/xerrors"
 
-	"github.com/coder/coder/coderd/rbac"
-	"github.com/coder/coder/coderd/rbac/regosql"
+	"github.com/coder/coder/v2/coderd/rbac"
+	"github.com/coder/coder/v2/coderd/rbac/regosql"
 )
 
 const (
@@ -81,7 +81,12 @@ func (q *sqlQuerier) GetAuthorizedTemplates(ctx context.Context, arg GetTemplate
 			&i.AllowUserAutostart,
 			&i.AllowUserAutostop,
 			&i.FailureTTL,
-			&i.InactivityTTL,
+			&i.TimeTilDormant,
+			&i.TimeTilDormantAutoDelete,
+			&i.AutostopRequirementDaysOfWeek,
+			&i.AutostopRequirementWeeks,
+			&i.CreatedByAvatarURL,
+			&i.CreatedByUsername,
 		); err != nil {
 			return nil, err
 		}
@@ -208,15 +213,18 @@ func (q *sqlQuerier) GetAuthorizedWorkspaces(ctx context.Context, arg GetWorkspa
 		arg.OwnerID,
 		arg.OwnerUsername,
 		arg.TemplateName,
-		pq.Array(arg.TemplateIds),
+		pq.Array(arg.TemplateIDs),
 		arg.Name,
 		arg.HasAgent,
 		arg.AgentInactiveDisconnectTimeoutSeconds,
+		arg.DormantAt,
+		arg.LastUsedBefore,
+		arg.LastUsedAfter,
 		arg.Offset,
 		arg.Limit,
 	)
 	if err != nil {
-		return nil, xerrors.Errorf("get authorized workspaces: %w", err)
+		return nil, err
 	}
 	defer rows.Close()
 	var items []GetWorkspacesRow
@@ -234,6 +242,11 @@ func (q *sqlQuerier) GetAuthorizedWorkspaces(ctx context.Context, arg GetWorkspa
 			&i.AutostartSchedule,
 			&i.Ttl,
 			&i.LastUsedAt,
+			&i.DormantAt,
+			&i.DeletingAt,
+			&i.TemplateName,
+			&i.TemplateVersionID,
+			&i.TemplateVersionName,
 			&i.Count,
 		); err != nil {
 			return nil, err
@@ -250,29 +263,67 @@ func (q *sqlQuerier) GetAuthorizedWorkspaces(ctx context.Context, arg GetWorkspa
 }
 
 type userQuerier interface {
-	GetAuthorizedUserCount(ctx context.Context, arg GetFilteredUserCountParams, prepared rbac.PreparedAuthorized) (int64, error)
+	GetAuthorizedUsers(ctx context.Context, arg GetUsersParams, prepared rbac.PreparedAuthorized) ([]GetUsersRow, error)
 }
 
-func (q *sqlQuerier) GetAuthorizedUserCount(ctx context.Context, arg GetFilteredUserCountParams, prepared rbac.PreparedAuthorized) (int64, error) {
-	authorizedFilter, err := prepared.CompileToSQL(ctx, rbac.ConfigWithoutACL())
+func (q *sqlQuerier) GetAuthorizedUsers(ctx context.Context, arg GetUsersParams, prepared rbac.PreparedAuthorized) ([]GetUsersRow, error) {
+	authorizedFilter, err := prepared.CompileToSQL(ctx, regosql.ConvertConfig{
+		VariableConverter: regosql.UserConverter(),
+	})
 	if err != nil {
-		return -1, xerrors.Errorf("compile authorized filter: %w", err)
+		return nil, xerrors.Errorf("compile authorized filter: %w", err)
 	}
 
-	filtered, err := insertAuthorizedFilter(getFilteredUserCount, fmt.Sprintf(" AND %s", authorizedFilter))
+	filtered, err := insertAuthorizedFilter(getUsers, fmt.Sprintf(" AND %s", authorizedFilter))
 	if err != nil {
-		return -1, xerrors.Errorf("insert authorized filter: %w", err)
+		return nil, xerrors.Errorf("insert authorized filter: %w", err)
 	}
 
-	query := fmt.Sprintf("-- name: GetAuthorizedUserCount :one\n%s", filtered)
-	row := q.db.QueryRowContext(ctx, query,
+	query := fmt.Sprintf("-- name: GetAuthorizedUsers :many\n%s", filtered)
+	rows, err := q.db.QueryContext(ctx, query,
+		arg.AfterID,
 		arg.Search,
 		pq.Array(arg.Status),
 		pq.Array(arg.RbacRole),
+		arg.LastSeenBefore,
+		arg.LastSeenAfter,
+		arg.OffsetOpt,
+		arg.LimitOpt,
 	)
-	var count int64
-	err = row.Scan(&count)
-	return count, err
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetUsersRow
+	for rows.Next() {
+		var i GetUsersRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Email,
+			&i.Username,
+			&i.HashedPassword,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Status,
+			&i.RBACRoles,
+			&i.LoginType,
+			&i.AvatarURL,
+			&i.Deleted,
+			&i.LastSeenAt,
+			&i.QuietHoursSchedule,
+			&i.Count,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 func insertAuthorizedFilter(query string, replaceWith string) (string, error) {

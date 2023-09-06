@@ -9,7 +9,7 @@ import (
 
 	"golang.org/x/xerrors"
 
-	"github.com/coder/coder/coderd/util/xio"
+	"github.com/coder/coder/v2/coderd/util/xio"
 )
 
 const (
@@ -32,6 +32,10 @@ func dirHasExt(dir string, exts ...string) (bool, error) {
 	}
 
 	return false, nil
+}
+
+func DirHasLockfile(dir string) (bool, error) {
+	return dirHasExt(dir, ".terraform.lock.hcl")
 }
 
 // Tar archives a Terraform directory.

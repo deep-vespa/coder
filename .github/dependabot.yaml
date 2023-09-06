@@ -8,7 +8,7 @@ updates:
       timezone: "America/Chicago"
     labels: []
     commit-message:
-      prefix: "chore"
+      prefix: "ci"
     ignore:
       # These actions deliver the latest versions by updating the major
       # release tag, so ignore minor and patch versions
@@ -24,6 +24,10 @@ updates:
         update-types:
           - version-update:semver-minor
           - version-update:semver-patch
+    groups:
+      github-actions:
+        patterns:
+          - "*"
 
   - package-ecosystem: "gomod"
     directory: "/"
@@ -39,6 +43,14 @@ updates:
       - dependency-name: "*"
         update-types:
           - version-update:semver-patch
+    groups:
+      otel:
+        patterns:
+          - "go.nhat.io/otelsql"
+          - "go.opentelemetry.io/otel*"
+      golang-x:
+        patterns:
+          - "golang.org/x/*"
 
   # Update our Dockerfile.
   - package-ecosystem: "docker"
@@ -54,6 +66,10 @@ updates:
       # We need to coordinate terraform updates with the version hardcoded in
       # our Go code.
       - dependency-name: "terraform"
+    groups:
+      scripts-docker:
+        patterns:
+          - "*"
 
   - package-ecosystem: "npm"
     directory: "/site/"
@@ -76,11 +92,59 @@ updates:
       - dependency-name: "@types/node"
         update-types:
           - version-update:semver-major
+    groups:
+      react:
+        patterns:
+          - "react*"
+          - "@types/react*"
+      xterm:
+        patterns:
+          - "xterm*"
+      xstate:
+        patterns:
+          - "xstate"
+          - "@xstate*"
+      mui:
+        patterns:
+          - "@mui*"
+      storybook:
+        patterns:
+          - "@storybook*"
+          - "storybook*"
+      eslint:
+        patterns:
+          - "eslint*"
+          - "@eslint*"
+          - "@typescript-eslint/eslint-plugin"
+          - "@typescript-eslint/parser"
 
-  - package-ecosystem: "terraform"
-    directory: "/examples/templates"
+  - package-ecosystem: "npm"
+    directory: "/offlinedocs/"
     schedule:
       interval: "monthly"
+      time: "06:00"
+      timezone: "America/Chicago"
+    reviewers:
+      - "coder/ts"
+    commit-message:
+      prefix: "chore"
+    labels: []
+    ignore:
+      # Ignore patch updates for all dependencies
+      - dependency-name: "*"
+        update-types:
+          - version-update:semver-patch
+      # Ignore major updates to Node.js types, because they need to
+      # correspond to the Node.js engine version
+      - dependency-name: "@types/node"
+        update-types:
+          - version-update:semver-major
+
+  # Update dogfood.
+  - package-ecosystem: "terraform"
+    directory: "/dogfood/"
+    schedule:
+      interval: "weekly"
       time: "06:00"
       timezone: "America/Chicago"
     commit-message:
@@ -88,27 +152,4 @@ updates:
     labels: []
     ignore:
       # We likely want to update this ourselves.
-      - dependency-name: "coder/coder"
-
-  # Update dogfood.
-  - package-ecosystem: "docker"
-    directory: "/dogfood/"
-    schedule:
-      interval: "weekly"
-      time: "06:00"
-      timezone: "America/Chicago"
-    commit-message:
-      prefix: "chore"
-    labels: []
-
-  - package-ecosystem: "terraform"
-    directory: "/dogfood/"
-    schedule:
-      interval: "weekly"
-      time: "06:00"
-      timezone: "America/Chicago"
-    commit-message:
-      prefix: "chore"
-    labels: []
-    ignore:
       - dependency-name: "coder/coder"

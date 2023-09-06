@@ -11,6 +11,7 @@ import {
 import {
   ProvisionerJob,
   ProvisionerJobLog,
+  ProvisionerType,
   Template,
   TemplateExample,
   TemplateVersion,
@@ -19,6 +20,10 @@ import {
   VariableValue,
 } from "api/typesGenerated"
 import { displayError } from "components/GlobalSnackbar/utils"
+import {
+  TemplateAutostopRequirementDaysValue,
+  calculateAutostopRequirementDaysValue,
+} from "pages/TemplateSettingsPage/TemplateSchedulePage/TemplateScheduleForm/AutostopRequirementHelperText"
 import { delay } from "utils/delay"
 import { assign, createMachine } from "xstate"
 
@@ -33,6 +38,10 @@ import { assign, createMachine } from "xstate"
 // 5.create template with the successful template version ID
 // https://github.com/coder/coder/blob/b6703b11c6578b2f91a310d28b6a7e57f0069be6/cli/templatecreate.go#L169-L170
 
+const provisioner: ProvisionerType =
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Playwright needs to use a different provisioner type!
+  typeof (window as any).playwright !== "undefined" ? "echo" : "terraform"
+
 export interface CreateTemplateData {
   name: string
   display_name: string
@@ -40,11 +49,14 @@ export interface CreateTemplateData {
   icon: string
   default_ttl_hours: number
   max_ttl_hours: number
+  autostop_requirement_days_of_week: TemplateAutostopRequirementDaysValue
+  autostop_requirement_weeks: number
   allow_user_autostart: boolean
   allow_user_autostop: boolean
   allow_user_cancel_workspace_jobs: boolean
   parameter_values_by_name?: Record<string, string>
   user_variable_values?: VariableValue[]
+  allow_everyone_group_access: boolean
 }
 interface CreateTemplateContext {
   organizationId: string
@@ -355,7 +367,7 @@ export const createTemplateMachine =
             return createTemplateVersion(organizationId, {
               storage_method: "file",
               example_id: exampleId,
-              provisioner: "terraform",
+              provisioner: provisioner,
               tags: {},
             })
           }
@@ -370,7 +382,7 @@ export const createTemplateMachine =
             return createTemplateVersion(organizationId, {
               storage_method: "file",
               file_id: version.job.file_id,
-              provisioner: "terraform",
+              provisioner: provisioner,
               tags: {},
             })
           }
@@ -379,7 +391,7 @@ export const createTemplateMachine =
             return createTemplateVersion(organizationId, {
               storage_method: "file",
               file_id: uploadResponse.hash,
-              provisioner: "terraform",
+              provisioner: provisioner,
               tags: {},
             })
           }
@@ -401,7 +413,7 @@ export const createTemplateMachine =
           return createTemplateVersion(organizationId, {
             storage_method: "file",
             file_id: version.job.file_id,
-            provisioner: "terraform",
+            provisioner: provisioner,
             user_variable_values: templateData.user_variable_values,
             tags: {},
           })
@@ -457,14 +469,25 @@ export const createTemplateMachine =
             default_ttl_hours,
             max_ttl_hours,
             parameter_values_by_name,
+            allow_everyone_group_access,
+            autostop_requirement_days_of_week,
+            autostop_requirement_weeks,
             ...safeTemplateData
           } = templateData
 
           return createTemplate(organizationId, {
             ...safeTemplateData,
+            disable_everyone_group_access:
+              !templateData.allow_everyone_group_access,
             default_ttl_ms: templateData.default_ttl_hours * 60 * 60 * 1000, // Convert hours to ms
             max_ttl_ms: templateData.max_ttl_hours * 60 * 60 * 1000, // Convert hours to ms
             template_version_id: version.id,
+            autostop_requirement: {
+              days_of_week: calculateAutostopRequirementDaysValue(
+                templateData.autostop_requirement_days_of_week,
+              ),
+              weeks: templateData.autostop_requirement_weeks,
+            },
           })
         },
         loadVersionLogs: ({ version }) => {
@@ -509,11 +532,7 @@ export const createTemplateMachine =
         isNotUsingExample: ({ exampleId }) => !exampleId,
         hasFile: ({ file }) => Boolean(file),
         hasFailed: (_, { data }) =>
-          Boolean(
-            data.job.status === "failed" &&
-              !isMissingParameter(data) &&
-              !isMissingVariables(data),
-          ),
+          Boolean(data.job.status === "failed" && !isMissingVariables(data)),
         hasNoParametersOrVariables: (_, { data }) =>
           data.variables === undefined,
         hasParametersOrVariables: (_, { data }) => {
@@ -522,13 +541,6 @@ export const createTemplateMachine =
       },
     },
   )
-
-const isMissingParameter = (version: TemplateVersion) => {
-  return Boolean(
-    version.job.error_code &&
-      version.job.error_code === "MISSING_TEMPLATE_PARAMETER",
-  )
-}
 
 const isMissingVariables = (version: TemplateVersion) => {
   return Boolean(

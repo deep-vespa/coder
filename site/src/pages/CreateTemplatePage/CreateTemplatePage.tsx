@@ -36,9 +36,16 @@ const CreateTemplatePage: FC = () => {
   const { starterTemplate, error, file, jobError, jobLogs, variables } =
     state.context
   const shouldDisplayForm = !state.hasTag("loading")
-  const { entitlements } = useDashboard()
+  const { entitlements, experiments } = useDashboard()
   const allowAdvancedScheduling =
     entitlements.features["advanced_template_scheduling"].enabled
+  // Requires the template RBAC feature, otherwise disabling everyone access
+  // means no one can access.
+  const allowDisableEveryoneAccess =
+    entitlements.features["template_rbac"].enabled
+  const allowAutostopRequirement = experiments.includes(
+    "template_autostop_requirement",
+  )
 
   const onCancel = () => {
     navigate(-1)
@@ -64,6 +71,8 @@ const CreateTemplatePage: FC = () => {
             <CreateTemplateForm
               copiedTemplate={state.context.copiedTemplate}
               allowAdvancedScheduling={allowAdvancedScheduling}
+              allowDisableEveryoneAccess={allowDisableEveryoneAccess}
+              allowAutostopRequirement={allowAutostopRequirement}
               error={error}
               starterTemplate={starterTemplate}
               isSubmitting={state.hasTag("submitting")}

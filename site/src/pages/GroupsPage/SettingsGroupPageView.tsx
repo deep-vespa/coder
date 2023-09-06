@@ -12,9 +12,11 @@ import { useTranslation } from "react-i18next"
 import { getFormHelpers, nameValidator, onChangeTrimmed } from "utils/formUtils"
 import * as Yup from "yup"
 import { Stack } from "components/Stack/Stack"
+import { isEveryoneGroup } from "utils/groups"
 
 type FormData = {
   name: string
+  display_name: string
   avatar_url: string
   quota_allowance: number
 }
@@ -34,6 +36,7 @@ const UpdateGroupForm: FC<{
   const form = useFormik<FormData>({
     initialValues: {
       name: group.name,
+      display_name: group.display_name,
       avatar_url: group.avatar_url,
       quota_allowance: group.quota_allowance,
     },
@@ -54,16 +57,33 @@ const UpdateGroupForm: FC<{
             autoFocus
             fullWidth
             label="Name"
+            disabled={isEveryoneGroup(group)}
           />
-
-          <LazyIconField
-            {...getFieldHelpers("avatar_url")}
-            onChange={onChangeTrimmed(form)}
-            fullWidth
-            label={t("form.fields.icon")}
-            onPickEmoji={(value) => form.setFieldValue("avatar_url", value)}
-          />
-
+          {isEveryoneGroup(group) ? (
+            <></>
+          ) : (
+            <>
+              <TextField
+                {...getFieldHelpers(
+                  "display_name",
+                  "Optional: keep empty to default to the name.",
+                )}
+                onChange={onChangeTrimmed(form)}
+                autoComplete="display_name"
+                autoFocus
+                fullWidth
+                label="Display Name"
+                disabled={isEveryoneGroup(group)}
+              />
+              <LazyIconField
+                {...getFieldHelpers("avatar_url")}
+                onChange={onChangeTrimmed(form)}
+                fullWidth
+                label={t("form.fields.icon")}
+                onPickEmoji={(value) => form.setFieldValue("avatar_url", value)}
+              />
+            </>
+          )}
           <TextField
             {...getFieldHelpers(
               "quota_allowance",

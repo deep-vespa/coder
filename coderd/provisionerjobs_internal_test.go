@@ -18,17 +18,19 @@ import (
 
 	"cdr.dev/slog/sloggers/slogtest"
 
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/coderd/database/dbmock"
-	"github.com/coder/coder/codersdk"
-	"github.com/coder/coder/provisionersdk"
-	"github.com/coder/coder/testutil"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/database/dbmock"
+	"github.com/coder/coder/v2/coderd/database/dbtime"
+	"github.com/coder/coder/v2/coderd/database/pubsub"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/provisionersdk"
+	"github.com/coder/coder/v2/testutil"
 )
 
 func TestConvertProvisionerJob_Unit(t *testing.T) {
 	t.Parallel()
 	validNullTimeMock := sql.NullTime{
-		Time:  database.Now(),
+		Time:  dbtime.Now(),
 		Valid: true,
 	}
 	invalidNullTimeMock := sql.NullTime{}
@@ -125,7 +127,9 @@ func TestConvertProvisionerJob_Unit(t *testing.T) {
 		testCase := testCase
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
-			actual := convertProvisionerJob(testCase.input)
+			actual := convertProvisionerJob(database.GetProvisionerJobsByIDsWithQueuePositionRow{
+				ProvisionerJob: testCase.input,
+			})
 			assert.Equal(t, testCase.expected, actual)
 		})
 	}
@@ -138,8 +142,8 @@ func Test_logFollower_completeBeforeFollow(t *testing.T) {
 	logger := slogtest.Make(t, nil)
 	ctrl := gomock.NewController(t)
 	mDB := dbmock.NewMockStore(ctrl)
-	pubsub := database.NewPubsubInMemory()
-	now := database.Now()
+	ps := pubsub.NewInMemory()
+	now := dbtime.Now()
 	job := database.ProvisionerJob{
 		ID:        uuid.New(),
 		CreatedAt: now.Add(-10 * time.Second),
@@ -157,7 +161,7 @@ func Test_logFollower_completeBeforeFollow(t *testing.T) {
 
 	// we need an HTTP server to get a websocket
 	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		uut := newLogFollower(ctx, logger, mDB, pubsub, rw, r, job, 10)
+		uut := newLogFollower(ctx, logger, mDB, ps, rw, r, job, 10)
 		uut.follow()
 	}))
 	defer srv.Close()
@@ -200,8 +204,8 @@ func Test_logFollower_completeBeforeSubscribe(t *testing.T) {
 	logger := slogtest.Make(t, nil)
 	ctrl := gomock.NewController(t)
 	mDB := dbmock.NewMockStore(ctrl)
-	pubsub := database.NewPubsubInMemory()
-	now := database.Now()
+	ps := pubsub.NewInMemory()
+	now := dbtime.Now()
 	job := database.ProvisionerJob{
 		ID:        uuid.New(),
 		CreatedAt: now.Add(-10 * time.Second),
@@ -217,7 +221,7 @@ func Test_logFollower_completeBeforeSubscribe(t *testing.T) {
 
 	// we need an HTTP server to get a websocket
 	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		uut := newLogFollower(ctx, logger, mDB, pubsub, rw, r, job, 0)
+		uut := newLogFollower(ctx, logger, mDB, ps, rw, r, job, 0)
 		uut.follow()
 	}))
 	defer srv.Close()
@@ -276,8 +280,8 @@ func Test_logFollower_EndOfLogs(t *testing.T) {
 	logger := slogtest.Make(t, nil)
 	ctrl := gomock.NewController(t)
 	mDB := dbmock.NewMockStore(ctrl)
-	pubsub := database.NewPubsubInMemory()
-	now := database.Now()
+	ps := pubsub.NewInMemory()
+	now := dbtime.Now()
 	job := database.ProvisionerJob{
 		ID:        uuid.New(),
 		CreatedAt: now.Add(-10 * time.Second),
@@ -293,7 +297,7 @@ func Test_logFollower_EndOfLogs(t *testing.T) {
 
 	// we need an HTTP server to get a websocket
 	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		uut := newLogFollower(ctx, logger, mDB, pubsub, rw, r, job, 0)
+		uut := newLogFollower(ctx, logger, mDB, ps, rw, r, job, 0)
 		uut.follow()
 	}))
 	defer srv.Close()
@@ -342,7 +346,7 @@ func Test_logFollower_EndOfLogs(t *testing.T) {
 	}
 	msg, err = json.Marshal(&n)
 	require.NoError(t, err)
-	err = pubsub.Publish(provisionersdk.ProvisionerJobLogsNotifyChannel(job.ID), msg)
+	err = ps.Publish(provisionersdk.ProvisionerJobLogsNotifyChannel(job.ID), msg)
 	require.NoError(t, err)
 
 	mt, msg, err = client.Read(ctx)
@@ -360,7 +364,7 @@ func Test_logFollower_EndOfLogs(t *testing.T) {
 	n.CreatedAfter = 0
 	msg, err = json.Marshal(&n)
 	require.NoError(t, err)
-	err = pubsub.Publish(provisionersdk.ProvisionerJobLogsNotifyChannel(job.ID), msg)
+	err = ps.Publish(provisionersdk.ProvisionerJobLogsNotifyChannel(job.ID), msg)
 	require.NoError(t, err)
 
 	// server should now close

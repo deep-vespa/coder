@@ -12,9 +12,11 @@ import { updateCheckMachine } from "xServices/updateCheck/updateCheckXService"
 import { Navbar } from "../Navbar/Navbar"
 import Snackbar from "@mui/material/Snackbar"
 import Link from "@mui/material/Link"
-import Box from "@mui/material/Box"
+import Box, { BoxProps } from "@mui/material/Box"
 import InfoOutlined from "@mui/icons-material/InfoOutlined"
 import Button from "@mui/material/Button"
+import { docs } from "utils/docs"
+import { HealthBanner } from "./HealthBanner"
 
 export const DashboardLayout: FC = () => {
   const styles = useStyles()
@@ -29,6 +31,7 @@ export const DashboardLayout: FC = () => {
 
   return (
     <>
+      <HealthBanner />
       <ServiceBanner />
       {canViewDeployment && <LicenseBanner />}
 
@@ -79,9 +82,7 @@ export const DashboardLayout: FC = () => {
               <Box>
                 Coder {updateCheck?.version} is now available. View the{" "}
                 <Link href={updateCheck?.url}>release notes</Link> and{" "}
-                <Link href="https://coder.com/docs/coder-oss/latest/admin/upgrade">
-                  upgrade instructions
-                </Link>{" "}
+                <Link href={docs("/admin/upgrade")}>upgrade instructions</Link>{" "}
                 for more information.
               </Box>
             </Box>
@@ -101,14 +102,33 @@ export const DashboardLayout: FC = () => {
   )
 }
 
+export const DashboardFullPage = (props: BoxProps) => {
+  return (
+    <Box
+      {...props}
+      sx={{
+        ...props.sx,
+        marginBottom: `-${dashboardContentBottomPadding}px`,
+        flex: 1,
+        display: "flex",
+        flexDirection: "column",
+        flexBasis: 0,
+        minHeight: "100%",
+      }}
+    />
+  )
+}
+
 const useStyles = makeStyles({
   site: {
     display: "flex",
-    minHeight: "100vh",
+    minHeight: "100%",
     flexDirection: "column",
   },
   siteContent: {
     flex: 1,
     paddingBottom: dashboardContentBottomPadding, // Add bottom space since we don't use a footer
+    display: "flex",
+    flexDirection: "column",
   },
 })

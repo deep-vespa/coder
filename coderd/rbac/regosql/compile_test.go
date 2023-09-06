@@ -7,8 +7,8 @@ import (
 	"github.com/open-policy-agent/opa/rego"
 	"github.com/stretchr/testify/require"
 
-	"github.com/coder/coder/coderd/rbac/regosql"
-	"github.com/coder/coder/coderd/rbac/regosql/sqltypes"
+	"github.com/coder/coder/v2/coderd/rbac/regosql"
+	"github.com/coder/coder/v2/coderd/rbac/regosql/sqltypes"
 )
 
 // TestRegoQueriesNoVariables handles cases without variables. These should be
@@ -241,6 +241,26 @@ neq(input.object.owner, "");
 				p("false") + " AND " +
 				p("false")),
 			VariableConverter: regosql.TemplateConverter(),
+		},
+		{
+			Name: "UserNoOrgOwner",
+			Queries: []string{
+				`input.object.org_owner != ""`,
+			},
+			ExpectedSQL:       p("'' != ''"),
+			VariableConverter: regosql.UserConverter(),
+		},
+		{
+			Name: "UserOwnsSelf",
+			Queries: []string{
+				`"10d03e62-7703-4df5-a358-4f76577d4e2f" = input.object.owner;
+				input.object.owner != "";
+				input.object.org_owner = ""`,
+			},
+			VariableConverter: regosql.UserConverter(),
+			ExpectedSQL: p(
+				p("'10d03e62-7703-4df5-a358-4f76577d4e2f' = id :: text") + " AND " + p("id :: text != ''") + " AND " + p("'' = ''"),
+			),
 		},
 	}
 

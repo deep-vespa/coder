@@ -6,6 +6,9 @@ networking:
   # "*.example.com".
   # (default: <unset>, type: url)
   wildcardAccessURL:
+  # Specifies the custom docs URL.
+  # (default: <unset>, type: url)
+  docsURL:
   # Specifies whether to redirect requests that do not match the access URL host.
   # (default: <unset>, type: bool)
   redirectToAccessURL: false
@@ -108,15 +111,37 @@ networking:
     # Region name that for the embedded DERP server.
     # (default: Coder Embedded Relay, type: string)
     regionName: Coder Embedded Relay
-    # Addresses for STUN servers to establish P2P connections. Use special value
-    # 'disable' to turn off STUN.
-    # (default: stun.l.google.com:19302, type: string-array)
+    # Addresses for STUN servers to establish P2P connections. It's recommended to
+    # have at least two STUN servers to give users the best chance of connecting P2P
+    # to workspaces. Each STUN server will get it's own DERP region, with region IDs
+    # starting at `--derp-server-region-id + 1`. Use special value 'disable' to turn
+    # off STUN completely.
+    # (default:
+    # stun.l.google.com:19302,stun1.l.google.com:19302,stun2.l.google.com:19302,stun3.l.google.com:19302,stun4.l.google.com:19302,
+    # type: string-array)
     stunAddresses:
       - stun.l.google.com:19302
+      - stun1.l.google.com:19302
+      - stun2.l.google.com:19302
+      - stun3.l.google.com:19302
+      - stun4.l.google.com:19302
     # An HTTP URL that is accessible by other replicas to relay DERP traffic. Required
     # for high availability.
     # (default: <unset>, type: url)
     relayURL:
+    # Block peer-to-peer (aka. direct) workspace connections. All workspace
+    # connections from the CLI will be proxied through Coder (or custom configured
+    # DERP servers) and will never be peer-to-peer when enabled. Workspaces may still
+    # reach out to STUN servers to get their address until they are restarted after
+    # this change has been made, but new connections will still be proxied regardless.
+    # (default: <unset>, type: bool)
+    blockDirect: false
+    # Force clients and agents to always use WebSocket to connect to DERP relay
+    # servers. By default, DERP uses `Upgrade: derp`, which may cause issues with some
+    # reverse proxies. Clients may automatically fallback to WebSocket if they detect
+    # an issue with `Upgrade: derp`, but this does not work in all situations.
+    # (default: <unset>, type: bool)
+    forceWebSockets: false
     # URL to fetch a DERP mapping on startup. See:
     # https://tailscale.com/kb/1118/custom-derp-servers/.
     # (default: <unset>, type: string)
@@ -141,6 +166,9 @@ networking:
 # Interval to poll for scheduled workspace builds.
 # (default: 1m0s, type: duration)
 autobuildPollInterval: 1m0s
+# Interval to poll for hung jobs and automatically terminate them.
+# (default: 1m0s, type: duration)
+jobHangDetectorInterval: 1m0s
 introspection:
   prometheus:
     # Serve prometheus metrics on the address defined by prometheus address.
@@ -152,6 +180,9 @@ introspection:
     # Collect agent stats (may increase charges for metrics storage).
     # (default: <unset>, type: bool)
     collect_agent_stats: false
+    # Collect database metrics (may increase charges for metrics storage).
+    # (default: false, type: bool)
+    collect_db_metrics: false
   pprof:
     # Serve pprof metrics on the address defined by pprof address.
     # (default: <unset>, type: bool)
@@ -167,14 +198,20 @@ introspection:
     enable: false
     # Enables capturing of logs as events in traces. This is useful for debugging, but
     # may result in a very large amount of events being sent to the tracing backend
-    # which may incur significant costs. If the verbose flag was supplied, debug-level
-    # logs will be included.
+    # which may incur significant costs.
     # (default: <unset>, type: bool)
     captureLogs: false
+    # Enables sending Go runtime traces to the local DataDog agent.
+    # (default: false, type: bool)
+    dataDog: false
   logging:
     # Output debug-level logs.
     # (default: <unset>, type: bool)
     verbose: false
+    # Filter debug logs by matching against a given regex. Use .* to match all debug
+    # logs.
+    # (default: <unset>, type: string-array)
+    filter: []
     # Output human-readable logs to a given file.
     # (default: /dev/stderr, type: string)
     humanPath: /dev/stderr
@@ -184,6 +221,9 @@ introspection:
     # Output Stackdriver compatible logs to a given file.
     # (default: <unset>, type: string)
     stackdriverPath: ""
+    # Allow administrators to enable Terraform debug output.
+    # (default: false, type: bool)
+    enableTerraformDebugMode: false
 oauth2:
   github:
     # Client ID for Login with GitHub.
@@ -213,6 +253,15 @@ oidc:
   # Client ID to use for Login with OIDC.
   # (default: <unset>, type: string)
   clientID: ""
+  # Pem encoded RSA private key to use for oauth2 PKI/JWT authorization. This can be
+  # used instead of oidc-client-secret if your IDP supports it.
+  # (default: <unset>, type: string)
+  oidcClientKeyFile: ""
+  # Pem encoded certificate file to use for oauth2 PKI/JWT authorization. The public
+  # certificate that accompanies oidc-client-key-file. A standard x509 certificate
+  # is expected.
+  # (default: <unset>, type: string)
+  oidcClientCertFile: ""
   # Email domains that clients logging in with OIDC must match.
   # (default: <unset>, type: string-array)
   emailDomain: []
@@ -249,10 +298,32 @@ oidc:
   # for when OIDC providers only return group IDs.
   # (default: {}, type: struct[map[string]string])
   groupMapping: {}
+  # Automatically creates missing groups from a user's groups claim.
+  # (default: false, type: bool)
+  enableGroupAutoCreate: false
+  # If provided any group name not matching the regex is ignored. This allows for
+  # filtering out groups that are not needed. This filter is applied after the group
+  # mapping.
+  # (default: .*, type: regexp)
+  groupRegexFilter: .*
+  # This field must be set if using the user roles sync feature. Set this to the
+  # name of the claim used to store the user's role. The roles should be sent as an
+  # array of strings.
+  # (default: <unset>, type: string)
+  userRoleField: ""
+  # A map of the OIDC passed in user roles and the groups in Coder it should map to.
+  # This is useful if the group names do not match. If mapped to the empty string,
+  # the role will ignored.
+  # (default: {}, type: struct[map[string][]string])
+  userRoleMapping: {}
+  # If user role sync is enabled, these roles are always included for all
+  # authenticated users. The 'member' role is always assigned.
+  # (default: <unset>, type: string-array)
+  userRoleDefault: []
   # The text to show on the OpenID Connect sign in button.
   # (default: OpenID Connect, type: string)
   signInText: OpenID Connect
-  # URL pointing to the icon to use on the OepnID Connect login button.
+  # URL pointing to the icon to use on the OpenID Connect login button.
   # (default: <unset>, type: url)
   iconURL:
 # Telemetry is critical to our ability to improve Coder. We strip all personal
@@ -278,6 +349,10 @@ provisioning:
   # state for a long time, consider increasing this.
   # (default: 3, type: int)
   daemons: 3
+  # Whether to use echo provisioner daemons instead of Terraform. This is for E2E
+  # tests.
+  # (default: false, type: bool)
+  daemonsEcho: false
   # Time to wait before polling for a new job.
   # (default: 1s, type: duration)
   daemonPollInterval: 1s
@@ -287,6 +362,9 @@ provisioning:
   # Time to force cancel provisioning tasks that are stuck.
   # (default: 10m0s, type: duration)
   forceCancelInterval: 10m0s
+  # Pre-shared key to authenticate external provisioner daemons to Coder server.
+  # (default: <unset>, type: string)
+  daemonPSK: ""
 # Enable one or more experiments. These are not ready for production. Separate
 # multiple experiments with commas, or enter '*' to opt-in to all available
 # experiments.
@@ -346,3 +424,15 @@ supportLinks: []
 # "tunnel.example.com".
 # (default: <unset>, type: string)
 wgtunnelHost: ""
+# Allow users to set quiet hours schedules each day for workspaces to avoid
+# workspaces stopping during the day due to template max TTL.
+userQuietHoursSchedule:
+  # The default daily cron schedule applied to users that haven't set a custom quiet
+  # hours schedule themselves. The quiet hours schedule determines when workspaces
+  # will be force stopped due to the template's max TTL, and will round the max TTL
+  # up to be within the user's quiet hours window (or default). The format is the
+  # same as the standard cron format, but the day-of-month, month and day-of-week
+  # must be *. Only one hour and minute can be specified (ranges or comma separated
+  # values are not supported).
+  # (default: <unset>, type: string)
+  defaultQuietHoursSchedule: ""

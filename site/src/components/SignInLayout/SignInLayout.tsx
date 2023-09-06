@@ -3,7 +3,8 @@ import { FC, ReactNode } from "react"
 
 export const useStyles = makeStyles((theme) => ({
   root: {
-    height: "100vh",
+    flex: 1,
+    height: "-webkit-fill-available",
     display: "flex",
     justifyContent: "center",
     alignItems: "center",
@@ -14,8 +15,10 @@ export const useStyles = makeStyles((theme) => ({
     alignItems: "center",
   },
   container: {
-    marginTop: theme.spacing(-8),
     maxWidth: 385,
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
   },
   footer: {
     fontSize: 12,

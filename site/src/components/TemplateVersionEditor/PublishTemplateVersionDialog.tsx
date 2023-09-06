@@ -11,6 +11,12 @@ import Checkbox from "@mui/material/Checkbox"
 import FormControlLabel from "@mui/material/FormControlLabel"
 import { Stack } from "components/Stack/Stack"
 
+export const Language = {
+  versionNameLabel: "Version name",
+  messagePlaceholder: "Write a short message about the changes you made...",
+  defaultCheckboxLabel: "Promote to default version",
+}
+
 export type PublishTemplateVersionDialogProps = DialogProps & {
   defaultName: string
   isPublishing: boolean
@@ -32,10 +38,12 @@ export const PublishTemplateVersionDialog: FC<
   const form = useFormik({
     initialValues: {
       name: defaultName,
-      isActiveVersion: false,
+      message: "",
+      isActiveVersion: true,
     },
     validationSchema: Yup.object({
       name: Yup.string().required(),
+      message: Yup.string(),
       isActiveVersion: Yup.boolean(),
     }),
     onSubmit: onConfirm,
@@ -65,13 +73,23 @@ export const PublishTemplateVersionDialog: FC<
           <FormFields>
             <TextField
               {...getFieldHelpers("name")}
-              label="Version name"
+              label={Language.versionNameLabel}
               autoFocus
               disabled={isPublishing}
             />
 
+            <TextField
+              {...getFieldHelpers("message")}
+              label="Message"
+              placeholder={Language.messagePlaceholder}
+              autoFocus
+              disabled={isPublishing}
+              multiline
+              rows={5}
+            />
+
             <FormControlLabel
-              label="Promote to default version"
+              label={Language.defaultCheckboxLabel}
               control={
                 <Checkbox
                   size="small"

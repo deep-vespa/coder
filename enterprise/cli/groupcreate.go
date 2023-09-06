@@ -5,14 +5,18 @@ import (
 
 	"golang.org/x/xerrors"
 
-	agpl "github.com/coder/coder/cli"
-	"github.com/coder/coder/cli/clibase"
-	"github.com/coder/coder/cli/cliui"
-	"github.com/coder/coder/codersdk"
+	agpl "github.com/coder/coder/v2/cli"
+	"github.com/coder/coder/v2/cli/clibase"
+	"github.com/coder/coder/v2/cli/cliui"
+	"github.com/coder/coder/v2/codersdk"
 )
 
 func (r *RootCmd) groupCreate() *clibase.Cmd {
-	var avatarURL string
+	var (
+		avatarURL   string
+		displayName string
+	)
+
 	client := new(codersdk.Client)
 	cmd := &clibase.Cmd{
 		Use:   "create <name>",
@@ -30,8 +34,9 @@ func (r *RootCmd) groupCreate() *clibase.Cmd {
 			}
 
 			group, err := client.CreateGroup(ctx, org.ID, codersdk.CreateGroupRequest{
-				Name:      inv.Args[0],
-				AvatarURL: avatarURL,
+				Name:        inv.Args[0],
+				DisplayName: displayName,
+				AvatarURL:   avatarURL,
 			})
 			if err != nil {
 				return xerrors.Errorf("create group: %w", err)
@@ -49,6 +54,12 @@ func (r *RootCmd) groupCreate() *clibase.Cmd {
 			FlagShorthand: "u",
 			Env:           "CODER_AVATAR_URL",
 			Value:         clibase.StringOf(&avatarURL),
+		},
+		{
+			Flag:        "display-name",
+			Description: `Optional human friendly name for the group.`,
+			Env:         "CODER_DISPLAY_NAME",
+			Value:       clibase.StringOf(&displayName),
 		},
 	}
 

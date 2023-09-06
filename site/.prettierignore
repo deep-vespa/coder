@@ -30,6 +30,7 @@ storybook-static/
 test-results/*
 e2e/test-results/*
 e2e/states/*.json
+e2e/.auth.json
 playwright-report/*
 .swc
 dist/
@@ -63,10 +64,13 @@ stats/
 .././scaletest/terraform/.terraform.lock.hcl
 ../scaletest/terraform/secrets.tfvars
 .terraform.tfstate.*
+
+# Nix
+result
 # .prettierignore.include:
 # Helm templates contain variables that are invalid YAML and can't be formatted
 # by Prettier.
-../helm/templates/*.yaml
+../helm/**/templates/*.yaml
 
 # Terraform state files used in tests, these are automatically generated.
 # Example: provisioner/terraform/testdata/instance-id/instance-id.tfstate.json
@@ -74,3 +78,11 @@ stats/
 
 # Testdata shouldn't be formatted.
 ../scripts/apitypings/testdata/**/*.ts
+
+# Generated files shouldn't be formatted.
+e2e/provisionerGenerated.ts
+
+**/pnpm-lock.yaml
+
+# Ignore generated JSON (e.g. examples/examples.gen.json).
+**/*.gen.json

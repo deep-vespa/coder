@@ -21,15 +21,15 @@ import (
 
 	"cdr.dev/slog/sloggers/slogtest"
 
-	"github.com/coder/coder/agent"
-	"github.com/coder/coder/cli/clitest"
-	"github.com/coder/coder/coderd/coderdtest"
-	"github.com/coder/coder/codersdk"
-	"github.com/coder/coder/codersdk/agentsdk"
-	"github.com/coder/coder/provisioner/echo"
-	"github.com/coder/coder/provisionersdk/proto"
-	"github.com/coder/coder/pty/ptytest"
-	"github.com/coder/coder/testutil"
+	"github.com/coder/coder/v2/agent"
+	"github.com/coder/coder/v2/cli/clitest"
+	"github.com/coder/coder/v2/coderd/coderdtest"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/codersdk/agentsdk"
+	"github.com/coder/coder/v2/provisioner/echo"
+	"github.com/coder/coder/v2/provisionersdk/proto"
+	"github.com/coder/coder/v2/pty/ptytest"
+	"github.com/coder/coder/v2/testutil"
 )
 
 func sshConfigFileName(t *testing.T) (sshConfig string) {
@@ -82,9 +82,9 @@ func TestConfigSSH(t *testing.T) {
 	authToken := uuid.NewString()
 	version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
 		Parse: echo.ParseComplete,
-		ProvisionPlan: []*proto.Provision_Response{{
-			Type: &proto.Provision_Response_Complete{
-				Complete: &proto.Provision_Complete{
+		ProvisionPlan: []*proto.Response{{
+			Type: &proto.Response_Plan{
+				Plan: &proto.PlanComplete{
 					Resources: []*proto.Resource{{
 						Name: "example",
 						Type: "aws_instance",
@@ -216,18 +216,20 @@ func TestConfigSSH_FileWriteAndOptionsFlow(t *testing.T) {
 		ssh string
 	}
 	type wantConfig struct {
-		ssh string
+		ssh        string
+		regexMatch string
 	}
 	type match struct {
 		match, write string
 	}
 	tests := []struct {
-		name        string
-		args        []string
-		matches     []match
-		writeConfig writeConfig
-		wantConfig  wantConfig
-		wantErr     bool
+		name         string
+		args         []string
+		matches      []match
+		writeConfig  writeConfig
+		wantConfig   wantConfig
+		wantErr      bool
+		echoResponse *echo.Responses
 	}{
 		{
 			name: "Config file is created",
@@ -579,6 +581,20 @@ func TestConfigSSH_FileWriteAndOptionsFlow(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "Custom CLI Path",
+			args: []string{
+				"-y", "--coder-binary-path", "/foo/bar/coder",
+			},
+			wantErr: false,
+			echoResponse: &echo.Responses{
+				Parse:          echo.ParseComplete,
+				ProvisionApply: echo.ProvisionApplyWithAgent(""),
+			},
+			wantConfig: wantConfig{
+				regexMatch: "ProxyCommand /foo/bar/coder",
+			},
+		},
 	}
 	for _, tt := range tests {
 		tt := tt
@@ -588,7 +604,7 @@ func TestConfigSSH_FileWriteAndOptionsFlow(t *testing.T) {
 			var (
 				client    = coderdtest.New(t, &coderdtest.Options{IncludeProvisionerDaemon: true})
 				user      = coderdtest.CreateFirstUser(t, client)
-				version   = coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, nil)
+				version   = coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, tt.echoResponse)
 				_         = coderdtest.AwaitTemplateVersionJob(t, client, version.ID)
 				project   = coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
 				workspace = coderdtest.CreateWorkspace(t, client, user.OrganizationID, project.ID)
@@ -627,9 +643,14 @@ func TestConfigSSH_FileWriteAndOptionsFlow(t *testing.T) {
 
 			<-done
 
-			if tt.wantConfig.ssh != "" {
+			if tt.wantConfig.ssh != "" || tt.wantConfig.regexMatch != "" {
 				got := sshConfigFileRead(t, sshConfigName)
-				assert.Equal(t, tt.wantConfig.ssh, got)
+				if tt.wantConfig.ssh != "" {
+					assert.Equal(t, tt.wantConfig.ssh, got)
+				}
+				if tt.wantConfig.regexMatch != "" {
+					assert.Regexp(t, tt.wantConfig.regexMatch, got, "regex match")
+				}
 			}
 		})
 	}
@@ -699,22 +720,11 @@ func TestConfigSSH_Hostnames(t *testing.T) {
 				resources = append(resources, resource)
 			}
 
-			provisionResponse := []*proto.Provision_Response{{
-				Type: &proto.Provision_Response_Complete{
-					Complete: &proto.Provision_Complete{
-						Resources: resources,
-					},
-				},
-			}}
-
 			client := coderdtest.New(t, &coderdtest.Options{IncludeProvisionerDaemon: true})
 			user := coderdtest.CreateFirstUser(t, client)
 			// authToken := uuid.NewString()
-			version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
-				Parse:          echo.ParseComplete,
-				ProvisionPlan:  provisionResponse,
-				ProvisionApply: provisionResponse,
-			})
+			version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID,
+				echo.WithResources(resources))
 			coderdtest.AwaitTemplateVersionJob(t, client, version.ID)
 			template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
 			workspace := coderdtest.CreateWorkspace(t, client, user.OrganizationID, template.ID)

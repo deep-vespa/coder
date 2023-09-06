@@ -68,8 +68,8 @@ const TemplateFC = (
         clearProxy: () => {
           return
         },
-        refetchProxyLatencies: () => {
-          return
+        refetchProxyLatencies: (): Date => {
+          return new Date()
         },
       }}
     >
@@ -215,7 +215,7 @@ Started.args = {
   ...Example.args,
   agent: {
     ...MockWorkspaceAgentReady,
-    startup_logs_length: 1,
+    logs_length: 1,
   },
 }
 

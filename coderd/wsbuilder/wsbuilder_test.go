@@ -13,11 +13,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/coderd/database/dbmock"
-	"github.com/coder/coder/coderd/provisionerdserver"
-	"github.com/coder/coder/coderd/wsbuilder"
-	"github.com/coder/coder/codersdk"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/database/dbmock"
+	"github.com/coder/coder/v2/coderd/database/dbtime"
+	"github.com/coder/coder/v2/coderd/provisionerdserver"
+	"github.com/coder/coder/v2/coderd/wsbuilder"
+	"github.com/coder/coder/v2/codersdk"
 )
 
 var (
@@ -65,6 +66,8 @@ func TestBuilder_NoOptions(t *testing.T) {
 			// store build ID for later
 			buildID = input.WorkspaceBuildID
 		}),
+
+		withInTx,
 		expectBuild(func(bld database.InsertWorkspaceBuildParams) {
 			asrt.Equal(inactiveVersionID, bld.TemplateVersionID)
 			asrt.Equal(workspaceID, bld.WorkspaceID)
@@ -75,6 +78,7 @@ func TestBuilder_NoOptions(t *testing.T) {
 			asrt.Equal(database.BuildReasonInitiator, bld.Reason)
 			asrt.Equal(buildID, bld.ID)
 		}),
+		withBuild,
 		expectBuildParameters(func(params database.InsertWorkspaceBuildParametersParams) {
 			asrt.Equal(buildID, params.WorkspaceBuildID)
 			asrt.Empty(params.Name)
@@ -108,11 +112,13 @@ func TestBuilder_Initiator(t *testing.T) {
 		expectProvisionerJob(func(job database.InsertProvisionerJobParams) {
 			asrt.Equal(otherUserID, job.InitiatorID)
 		}),
+		withInTx,
 		expectBuild(func(bld database.InsertWorkspaceBuildParams) {
 			asrt.Equal(otherUserID, bld.InitiatorID)
 		}),
 		expectBuildParameters(func(params database.InsertWorkspaceBuildParametersParams) {
 		}),
+		withBuild,
 	)
 
 	ws := database.Workspace{ID: workspaceID, TemplateID: templateID, OwnerID: userID}
@@ -140,11 +146,13 @@ func TestBuilder_Reason(t *testing.T) {
 		// Outputs
 		expectProvisionerJob(func(job database.InsertProvisionerJobParams) {
 		}),
+		withInTx,
 		expectBuild(func(bld database.InsertWorkspaceBuildParams) {
 			asrt.Equal(database.BuildReasonAutostart, bld.Reason)
 		}),
 		expectBuildParameters(func(params database.InsertWorkspaceBuildParametersParams) {
 		}),
+		withBuild,
 	)
 
 	ws := database.Workspace{ID: workspaceID, TemplateID: templateID, OwnerID: userID}
@@ -173,6 +181,8 @@ func TestBuilder_ActiveVersion(t *testing.T) {
 		expectProvisionerJob(func(job database.InsertProvisionerJobParams) {
 			asrt.Equal(activeFileID, job.FileID)
 		}),
+
+		withInTx,
 		expectBuild(func(bld database.InsertWorkspaceBuildParams) {
 			asrt.Equal(activeVersionID, bld.TemplateVersionID)
 			// no previous build...
@@ -181,6 +191,7 @@ func TestBuilder_ActiveVersion(t *testing.T) {
 		}),
 		expectBuildParameters(func(params database.InsertWorkspaceBuildParametersParams) {
 		}),
+		withBuild,
 	)
 
 	ws := database.Workspace{ID: workspaceID, TemplateID: templateID, OwnerID: userID}
@@ -248,6 +259,7 @@ func TestWorkspaceBuildWithRichParameters(t *testing.T) {
 
 			// Outputs
 			expectProvisionerJob(func(job database.InsertProvisionerJobParams) {}),
+			withInTx,
 			expectBuild(func(bld database.InsertWorkspaceBuildParams) {}),
 			expectBuildParameters(func(params database.InsertWorkspaceBuildParametersParams) {
 				asrt.Len(params.Name, len(expectedParams))
@@ -257,6 +269,7 @@ func TestWorkspaceBuildWithRichParameters(t *testing.T) {
 					asrt.Equal(value, params.Value[i])
 				}
 			}),
+			withBuild,
 		)
 
 		ws := database.Workspace{ID: workspaceID, TemplateID: templateID, OwnerID: userID}
@@ -289,6 +302,7 @@ func TestWorkspaceBuildWithRichParameters(t *testing.T) {
 
 			// Outputs
 			expectProvisionerJob(func(job database.InsertProvisionerJobParams) {}),
+			withInTx,
 			expectBuild(func(bld database.InsertWorkspaceBuildParams) {}),
 			expectBuildParameters(func(params database.InsertWorkspaceBuildParametersParams) {
 				asrt.Len(params.Name, len(expectedParams))
@@ -298,6 +312,7 @@ func TestWorkspaceBuildWithRichParameters(t *testing.T) {
 					asrt.Equal(value, params.Value[i])
 				}
 			}),
+			withBuild,
 		)
 
 		ws := database.Workspace{ID: workspaceID, TemplateID: templateID, OwnerID: userID}
@@ -336,6 +351,7 @@ func TestWorkspaceBuildWithRichParameters(t *testing.T) {
 
 			// Outputs
 			expectProvisionerJob(func(job database.InsertProvisionerJobParams) {}),
+			withInTx,
 			expectBuild(func(bld database.InsertWorkspaceBuildParams) {}),
 		)
 
@@ -370,6 +386,7 @@ func TestWorkspaceBuildWithRichParameters(t *testing.T) {
 
 			// Outputs
 			expectProvisionerJob(func(job database.InsertProvisionerJobParams) {}),
+			withInTx,
 			expectBuild(func(bld database.InsertWorkspaceBuildParams) {}),
 			// no build parameters, since we hit an error validating.
 			// expectBuildParameters(func(params database.InsertWorkspaceBuildParametersParams) {}),
@@ -422,6 +439,7 @@ func TestWorkspaceBuildWithRichParameters(t *testing.T) {
 
 			// Outputs
 			expectProvisionerJob(func(job database.InsertProvisionerJobParams) {}),
+			withInTx,
 			expectBuild(func(bld database.InsertWorkspaceBuildParams) {}),
 			expectBuildParameters(func(params database.InsertWorkspaceBuildParametersParams) {
 				asrt.Len(params.Name, len(expectedParams))
@@ -431,6 +449,7 @@ func TestWorkspaceBuildWithRichParameters(t *testing.T) {
 					asrt.Equal(value, params.Value[i])
 				}
 			}),
+			withBuild,
 		)
 
 		ws := database.Workspace{ID: workspaceID, TemplateID: templateID, OwnerID: userID}
@@ -480,6 +499,7 @@ func TestWorkspaceBuildWithRichParameters(t *testing.T) {
 
 			// Outputs
 			expectProvisionerJob(func(job database.InsertProvisionerJobParams) {}),
+			withInTx,
 			expectBuild(func(bld database.InsertWorkspaceBuildParams) {}),
 			expectBuildParameters(func(params database.InsertWorkspaceBuildParametersParams) {
 				asrt.Len(params.Name, len(expectedParams))
@@ -489,6 +509,7 @@ func TestWorkspaceBuildWithRichParameters(t *testing.T) {
 					asrt.Equal(value, params.Value[i])
 				}
 			}),
+			withBuild,
 		)
 
 		ws := database.Workspace{ID: workspaceID, TemplateID: templateID, OwnerID: userID}
@@ -536,6 +557,7 @@ func TestWorkspaceBuildWithRichParameters(t *testing.T) {
 
 			// Outputs
 			expectProvisionerJob(func(job database.InsertProvisionerJobParams) {}),
+			withInTx,
 			expectBuild(func(bld database.InsertWorkspaceBuildParams) {}),
 			expectBuildParameters(func(params database.InsertWorkspaceBuildParametersParams) {
 				asrt.Len(params.Name, len(expectedParams))
@@ -545,6 +567,7 @@ func TestWorkspaceBuildWithRichParameters(t *testing.T) {
 					asrt.Equal(value, params.Value[i])
 				}
 			}),
+			withBuild,
 		)
 
 		ws := database.Workspace{ID: workspaceID, TemplateID: templateID, OwnerID: userID}
@@ -592,6 +615,15 @@ func withTemplate(mTx *dbmock.MockStore) {
 		}, nil)
 }
 
+// withInTx runs the given functions on the same db mock.
+func withInTx(mTx *dbmock.MockStore) {
+	mTx.EXPECT().InTx(gomock.Any(), gomock.Any()).Times(1).DoAndReturn(
+		func(f func(store database.Store) error, _ *sql.TxOptions) error {
+			return f(mTx)
+		},
+	)
+}
+
 func withActiveVersion(params []database.TemplateVersionParameter) func(mTx *dbmock.MockStore) {
 	return func(mTx *dbmock.MockStore) {
 		mTx.EXPECT().GetTemplateVersionByID(gomock.Any(), activeVersionID).
@@ -618,9 +650,9 @@ func withActiveVersion(params []database.TemplateVersionParameter) func(mTx *dbm
 				provisionerdserver.TagScope: provisionerdserver.ScopeUser,
 			},
 			FileID:      activeFileID,
-			StartedAt:   sql.NullTime{Time: database.Now(), Valid: true},
+			StartedAt:   sql.NullTime{Time: dbtime.Now(), Valid: true},
 			UpdatedAt:   time.Now(),
-			CompletedAt: sql.NullTime{Time: database.Now(), Valid: true},
+			CompletedAt: sql.NullTime{Time: dbtime.Now(), Valid: true},
 		}, nil)
 		paramsCall := mTx.EXPECT().GetTemplateVersionParameters(gomock.Any(), activeVersionID).
 			Times(1)
@@ -658,9 +690,9 @@ func withInactiveVersion(params []database.TemplateVersionParameter) func(mTx *d
 				provisionerdserver.TagScope: provisionerdserver.ScopeUser,
 			},
 			FileID:      inactiveFileID,
-			StartedAt:   sql.NullTime{Time: database.Now(), Valid: true},
+			StartedAt:   sql.NullTime{Time: dbtime.Now(), Valid: true},
 			UpdatedAt:   time.Now(),
-			CompletedAt: sql.NullTime{Time: database.Now(), Valid: true},
+			CompletedAt: sql.NullTime{Time: dbtime.Now(), Valid: true},
 		}, nil)
 		paramsCall := mTx.EXPECT().GetTemplateVersionParameters(gomock.Any(), inactiveVersionID).
 			Times(1)
@@ -697,9 +729,9 @@ func withLastBuildFound(mTx *dbmock.MockStore) {
 			StorageMethod:  database.ProvisionerStorageMethodFile,
 			FileID:         inactiveFileID,
 			Type:           database.ProvisionerJobTypeWorkspaceBuild,
-			StartedAt:      sql.NullTime{Time: database.Now(), Valid: true},
+			StartedAt:      sql.NullTime{Time: dbtime.Now(), Valid: true},
 			UpdatedAt:      time.Now(),
-			CompletedAt:    sql.NullTime{Time: database.Now(), Valid: true},
+			CompletedAt:    sql.NullTime{Time: dbtime.Now(), Valid: true},
 		}, nil)
 }
 
@@ -758,6 +790,13 @@ func expectProvisionerJob(
 	}
 }
 
+func withBuild(mTx *dbmock.MockStore) {
+	mTx.EXPECT().GetWorkspaceBuildByID(gomock.Any(), gomock.Any()).Times(1).
+		DoAndReturn(func(ctx context.Context, id uuid.UUID) (database.WorkspaceBuild, error) {
+			return database.WorkspaceBuild{ID: id}, nil
+		})
+}
+
 // expectBuild captures a call to InsertWorkspaceBuild and runs the provided assertions
 // against it.
 func expectBuild(
@@ -767,11 +806,9 @@ func expectBuild(
 		mTx.EXPECT().InsertWorkspaceBuild(gomock.Any(), gomock.Any()).
 			Times(1).
 			DoAndReturn(
-				func(ctx context.Context, params database.InsertWorkspaceBuildParams) (database.WorkspaceBuild, error) {
+				func(ctx context.Context, params database.InsertWorkspaceBuildParams) error {
 					assertions(params)
-					// there is no point copying anything other than the ID, since this object is just
-					// returned to our test code, and we've already asserted what we care about.
-					return database.WorkspaceBuild{ID: params.ID}, nil
+					return nil
 				},
 			)
 	}

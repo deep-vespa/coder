@@ -2,15 +2,17 @@
 # formatting for prettier-supported files. See `.editorconfig` and
 # `site/.editorconfig`for whitespace formatting options.
 printWidth: 80
+proseWrap: always
 semi: false
 trailingComma: all
+useTabs: false
+tabWidth: 2
 overrides:
   - files:
       - README.md
+      - docs/api/**/*.md
+      - docs/cli/**/*.md
+      - .github/**/*.{yaml,yml,toml}
+      - scripts/**/*.{yaml,yml,toml}
     options:
       proseWrap: preserve
-  - files:
-      - "site/**/*.yaml"
-      - "site/**/*.yml"
-    options:
-      proseWrap: always

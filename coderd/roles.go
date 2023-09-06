@@ -3,11 +3,11 @@ package coderd
 import (
 	"net/http"
 
-	"github.com/coder/coder/coderd/httpmw"
-	"github.com/coder/coder/codersdk"
+	"github.com/coder/coder/v2/coderd/httpmw"
+	"github.com/coder/coder/v2/codersdk"
 
-	"github.com/coder/coder/coderd/httpapi"
-	"github.com/coder/coder/coderd/rbac"
+	"github.com/coder/coder/v2/coderd/httpapi"
+	"github.com/coder/coder/v2/coderd/rbac"
 )
 
 // assignableSiteRoles returns all site wide roles that can be assigned.
@@ -53,13 +53,6 @@ func (api *API) assignableOrgRoles(rw http.ResponseWriter, r *http.Request) {
 
 	roles := rbac.OrganizationRoles(organization.ID)
 	httpapi.Write(ctx, rw, http.StatusOK, assignableRoles(actorRoles.Actor.Roles, roles))
-}
-
-func convertRole(role rbac.Role) codersdk.Role {
-	return codersdk.Role{
-		DisplayName: role.DisplayName,
-		Name:        role.Name,
-	}
 }
 
 func assignableRoles(actorRoles rbac.ExpandableRoles, roles []rbac.Role) []codersdk.AssignableRoles {

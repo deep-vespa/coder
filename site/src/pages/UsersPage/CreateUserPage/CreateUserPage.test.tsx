@@ -4,7 +4,6 @@ import { rest } from "msw"
 import { Language as FormLanguage } from "../../../components/CreateUserForm/CreateUserForm"
 import { Language as FooterLanguage } from "../../../components/FormFooter/FormFooter"
 import {
-  history,
   renderWithAuth,
   waitForLoaderToBeRemoved,
 } from "../../../testHelpers/renderHelpers"
@@ -22,7 +21,7 @@ const renderCreateUserPage = async () => {
 const fillForm = async ({
   username = "someuser",
   email = "someone@coder.com",
-  password = "password",
+  password = "SomeSecurePassword!",
 }: {
   username?: string
   email?: string
@@ -30,10 +29,15 @@ const fillForm = async ({
 }) => {
   const usernameField = screen.getByLabelText(FormLanguage.usernameLabel)
   const emailField = screen.getByLabelText(FormLanguage.emailLabel)
-  const passwordField = screen.getByLabelText(FormLanguage.passwordLabel)
+  const passwordField = screen
+    .getByTestId("password-input")
+    .querySelector("input")
+
+  const loginTypeField = screen.getByTestId("login-type-input")
   await userEvent.type(usernameField, username)
   await userEvent.type(emailField, email)
-  await userEvent.type(passwordField, password)
+  await userEvent.type(loginTypeField, "password")
+  await userEvent.type(passwordField as HTMLElement, password)
   const submitButton = await screen.findByText(
     FooterLanguage.defaultSubmitLabel,
   )
@@ -41,10 +45,6 @@ const fillForm = async ({
 }
 
 describe("Create User Page", () => {
-  beforeEach(() => {
-    history.replace("/users/create")
-  })
-
   it("shows validation error message", async () => {
     await renderCreateUserPage()
     await fillForm({ email: "test" })

@@ -13,19 +13,21 @@ import (
 
 	"cdr.dev/slog"
 	"cdr.dev/slog/sloggers/slogtest"
-	"github.com/coder/coder/agent"
-	"github.com/coder/coder/coderd/coderdtest"
-	"github.com/coder/coder/codersdk"
-	"github.com/coder/coder/codersdk/agentsdk"
-	"github.com/coder/coder/provisioner/echo"
-	"github.com/coder/coder/provisionersdk/proto"
-	"github.com/coder/coder/scaletest/workspacebuild"
-	"github.com/coder/coder/testutil"
+	"github.com/coder/coder/v2/agent"
+	"github.com/coder/coder/v2/coderd/coderdtest"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/codersdk/agentsdk"
+	"github.com/coder/coder/v2/provisioner/echo"
+	"github.com/coder/coder/v2/provisionersdk/proto"
+	"github.com/coder/coder/v2/scaletest/workspacebuild"
+	"github.com/coder/coder/v2/testutil"
 )
 
 func Test_Runner(t *testing.T) {
 	t.Parallel()
-	t.Skip("Flake seen here: https://github.com/coder/coder/actions/runs/3436164958/jobs/5729513320")
+	if testutil.RaceEnabled() {
+		t.Skip("Race detector enabled, skipping time-sensitive test.")
+	}
 
 	t.Run("OK", func(t *testing.T) {
 		t.Parallel()
@@ -43,10 +45,10 @@ func Test_Runner(t *testing.T) {
 		authToken3 := uuid.NewString()
 		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
 			Parse:         echo.ParseComplete,
-			ProvisionPlan: echo.ProvisionComplete,
-			ProvisionApply: []*proto.Provision_Response{
+			ProvisionPlan: echo.PlanComplete,
+			ProvisionApply: []*proto.Response{
 				{
-					Type: &proto.Provision_Response_Log{
+					Type: &proto.Response_Log{
 						Log: &proto.Log{
 							Level:  proto.LogLevel_INFO,
 							Output: "hello from logs",
@@ -54,8 +56,8 @@ func Test_Runner(t *testing.T) {
 					},
 				},
 				{
-					Type: &proto.Provision_Response_Complete{
-						Complete: &proto.Provision_Complete{
+					Type: &proto.Response_Apply{
+						Apply: &proto.ApplyComplete{
 							Resources: []*proto.Resource{
 								{
 									Name: "example1",
@@ -135,7 +137,7 @@ func Test_Runner(t *testing.T) {
 				agentClient.SetSessionToken(authToken)
 				agentCloser := agent.New(agent.Options{
 					Client: agentClient,
-					Logger: slogtest.Make(t, nil).
+					Logger: slogtest.Make(t, &slogtest.Options{IgnoreErrors: true}).
 						Named(fmt.Sprintf("agent%d", i)).
 						Leveled(slog.LevelWarn),
 				})
@@ -188,18 +190,20 @@ func Test_Runner(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
 		defer cancel()
 
+		logger := slogtest.Make(t, &slogtest.Options{IgnoreErrors: true})
 		client := coderdtest.New(t, &coderdtest.Options{
 			IncludeProvisionerDaemon: true,
+			Logger:                   &logger,
 		})
 		user := coderdtest.CreateFirstUser(t, client)
 
 		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
 			Parse:         echo.ParseComplete,
-			ProvisionPlan: echo.ProvisionComplete,
-			ProvisionApply: []*proto.Provision_Response{
+			ProvisionPlan: echo.PlanComplete,
+			ProvisionApply: []*proto.Response{
 				{
-					Type: &proto.Provision_Response_Complete{
-						Complete: &proto.Provision_Complete{
+					Type: &proto.Response_Apply{
+						Apply: &proto.ApplyComplete{
 							Error: "test error",
 						},
 					},

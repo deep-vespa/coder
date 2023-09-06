@@ -12,18 +12,20 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/xerrors"
 
-	"github.com/coder/coder/coderd/audit"
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/coderd/database/dbauthz"
-	"github.com/coder/coder/coderd/gitsshkey"
-	"github.com/coder/coder/coderd/httpapi"
-	"github.com/coder/coder/coderd/httpmw"
-	"github.com/coder/coder/coderd/rbac"
-	"github.com/coder/coder/coderd/searchquery"
-	"github.com/coder/coder/coderd/telemetry"
-	"github.com/coder/coder/coderd/userpassword"
-	"github.com/coder/coder/coderd/util/slice"
-	"github.com/coder/coder/codersdk"
+	"github.com/coder/coder/v2/coderd/audit"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/database/db2sdk"
+	"github.com/coder/coder/v2/coderd/database/dbauthz"
+	"github.com/coder/coder/v2/coderd/database/dbtime"
+	"github.com/coder/coder/v2/coderd/gitsshkey"
+	"github.com/coder/coder/v2/coderd/httpapi"
+	"github.com/coder/coder/v2/coderd/httpmw"
+	"github.com/coder/coder/v2/coderd/rbac"
+	"github.com/coder/coder/v2/coderd/searchquery"
+	"github.com/coder/coder/v2/coderd/telemetry"
+	"github.com/coder/coder/v2/coderd/userpassword"
+	"github.com/coder/coder/v2/coderd/util/slice"
+	"github.com/coder/coder/v2/codersdk"
 )
 
 // Returns whether the initial user has been created or not.
@@ -96,17 +98,6 @@ func (api *API) postFirstUser(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if createUser.Trial && api.TrialGenerator != nil {
-		err = api.TrialGenerator(ctx, createUser.Email)
-		if err != nil {
-			httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
-				Message: "Failed to generate trial",
-				Detail:  err.Error(),
-			})
-			return
-		}
-	}
-
 	err = userpassword.Validate(createUser.Password)
 	if err != nil {
 		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
@@ -117,6 +108,17 @@ func (api *API) postFirstUser(rw http.ResponseWriter, r *http.Request) {
 			}},
 		})
 		return
+	}
+
+	if createUser.Trial && api.TrialGenerator != nil {
+		err = api.TrialGenerator(ctx, createUser.Email)
+		if err != nil {
+			httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+				Message: "Failed to generate trial",
+				Detail:  err.Error(),
+			})
+			return
+		}
 	}
 
 	//nolint:gocritic // needed to create first user
@@ -182,52 +184,8 @@ func (api *API) postFirstUser(rw http.ResponseWriter, r *http.Request) {
 // @Router /users [get]
 func (api *API) users(rw http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	query := r.URL.Query().Get("q")
-	params, errs := searchquery.Users(query)
-	if len(errs) > 0 {
-		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
-			Message:     "Invalid user search query.",
-			Validations: errs,
-		})
-		return
-	}
-
-	paginationParams, ok := parsePagination(rw, r)
+	users, userCount, ok := api.GetUsers(rw, r)
 	if !ok {
-		return
-	}
-
-	userRows, err := api.Database.GetUsers(ctx, database.GetUsersParams{
-		AfterID:   paginationParams.AfterID,
-		OffsetOpt: int32(paginationParams.Offset),
-		LimitOpt:  int32(paginationParams.Limit),
-		Search:    params.Search,
-		Status:    params.Status,
-		RbacRole:  params.RbacRole,
-	})
-	if err != nil {
-		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
-			Message: "Internal error fetching users.",
-			Detail:  err.Error(),
-		})
-		return
-	}
-	// GetUsers does not return ErrNoRows because it uses a window function to get the count.
-	// So we need to check if the userRows is empty and return an empty array if so.
-	if len(userRows) == 0 {
-		httpapi.Write(ctx, rw, http.StatusOK, codersdk.GetUsersResponse{
-			Users: []codersdk.User{},
-			Count: 0,
-		})
-		return
-	}
-
-	users, err := AuthorizeFilter(api.HTTPAuth, r, rbac.ActionRead, database.ConvertUserRows(userRows))
-	if err != nil {
-		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
-			Message: "Internal error fetching users.",
-			Detail:  err.Error(),
-		})
 		return
 	}
 
@@ -254,8 +212,53 @@ func (api *API) users(rw http.ResponseWriter, r *http.Request) {
 	render.Status(r, http.StatusOK)
 	render.JSON(rw, r, codersdk.GetUsersResponse{
 		Users: convertUsers(users, organizationIDsByUserID),
-		Count: int(userRows[0].Count),
+		Count: int(userCount),
 	})
+}
+
+func (api *API) GetUsers(rw http.ResponseWriter, r *http.Request) ([]database.User, int64, bool) {
+	ctx := r.Context()
+	query := r.URL.Query().Get("q")
+	params, errs := searchquery.Users(query)
+	if len(errs) > 0 {
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message:     "Invalid user search query.",
+			Validations: errs,
+		})
+		return nil, -1, false
+	}
+
+	paginationParams, ok := parsePagination(rw, r)
+	if !ok {
+		return nil, -1, false
+	}
+
+	userRows, err := api.Database.GetUsers(ctx, database.GetUsersParams{
+		AfterID:        paginationParams.AfterID,
+		Search:         params.Search,
+		Status:         params.Status,
+		RbacRole:       params.RbacRole,
+		LastSeenBefore: params.LastSeenBefore,
+		LastSeenAfter:  params.LastSeenAfter,
+		OffsetOpt:      int32(paginationParams.Offset),
+		LimitOpt:       int32(paginationParams.Limit),
+	})
+	if err != nil {
+		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Internal error fetching users.",
+			Detail:  err.Error(),
+		})
+		return nil, -1, false
+	}
+
+	// GetUsers does not return ErrNoRows because it uses a window function to get the count.
+	// So we need to check if the userRows is empty and return an empty array if so.
+	if len(userRows) == 0 {
+		return []database.User{}, 0, true
+	}
+
+	users := database.ConvertUserRows(userRows)
+	return users, userRows[0].Count, true
 }
 
 // Creates a new user.
@@ -285,11 +288,27 @@ func (api *API) postUser(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.UserLoginType == "" && req.DisableLogin {
+		// Handle the deprecated field
+		req.UserLoginType = codersdk.LoginTypeNone
+	}
+	if req.UserLoginType == "" {
+		// Default to password auth
+		req.UserLoginType = codersdk.LoginTypePassword
+	}
+
+	if req.UserLoginType != codersdk.LoginTypePassword && req.Password != "" {
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: fmt.Sprintf("Password cannot be set for non-password (%q) authentication.", req.UserLoginType),
+		})
+		return
+	}
+
 	// If password auth is disabled, don't allow new users to be
 	// created with a password!
-	if api.DeploymentValues.DisablePasswordAuth {
+	if api.DeploymentValues.DisablePasswordAuth && req.UserLoginType == codersdk.LoginTypePassword {
 		httpapi.Write(ctx, rw, http.StatusForbidden, codersdk.Response{
-			Message: "You cannot manually provision new users with password authentication disabled!",
+			Message: "Password based authentication is disabled! Unable to provision new users with password authentication.",
 		})
 		return
 	}
@@ -351,21 +370,36 @@ func (api *API) postUser(rw http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	err = userpassword.Validate(req.Password)
-	if err != nil {
+	var loginType database.LoginType
+	switch req.UserLoginType {
+	case codersdk.LoginTypeNone:
+		loginType = database.LoginTypeNone
+	case codersdk.LoginTypePassword:
+		err = userpassword.Validate(req.Password)
+		if err != nil {
+			httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+				Message: "Password not strong enough!",
+				Validations: []codersdk.ValidationError{{
+					Field:  "password",
+					Detail: err.Error(),
+				}},
+			})
+			return
+		}
+		loginType = database.LoginTypePassword
+	case codersdk.LoginTypeOIDC:
+		loginType = database.LoginTypeOIDC
+	case codersdk.LoginTypeGithub:
+		loginType = database.LoginTypeGithub
+	default:
 		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
-			Message: "Password not strong enough!",
-			Validations: []codersdk.ValidationError{{
-				Field:  "password",
-				Detail: err.Error(),
-			}},
+			Message: fmt.Sprintf("Unsupported login type %q for manually creating new users.", req.UserLoginType),
 		})
-		return
 	}
 
 	user, _, err := api.CreateUser(ctx, api.Database, CreateUserRequest{
 		CreateUserRequest: req,
-		LoginType:         database.LoginTypePassword,
+		LoginType:         loginType,
 	})
 	if dbauthz.IsNotAuthorizedError(err) {
 		httpapi.Write(ctx, rw, http.StatusForbidden, codersdk.Response{
@@ -388,7 +422,7 @@ func (api *API) postUser(rw http.ResponseWriter, r *http.Request) {
 		Users: []telemetry.User{telemetry.ConvertUser(user)},
 	})
 
-	httpapi.Write(ctx, rw, http.StatusCreated, convertUser(user, []uuid.UUID{req.OrganizationID}))
+	httpapi.Write(ctx, rw, http.StatusCreated, db2sdk.User(user, []uuid.UUID{req.OrganizationID}))
 }
 
 // @Summary Delete user
@@ -482,7 +516,38 @@ func (api *API) userByName(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httpapi.Write(ctx, rw, http.StatusOK, convertUser(user, organizationIDs))
+	httpapi.Write(ctx, rw, http.StatusOK, db2sdk.User(user, organizationIDs))
+}
+
+// Returns the user's login type. This only works if the api key for authorization
+// and the requested user match. Eg: 'me'
+//
+// @Summary Get user login type
+// @ID get-user-login-type
+// @Security CoderSessionToken
+// @Produce json
+// @Tags Users
+// @Param user path string true "User ID, name, or me"
+// @Success 200 {object} codersdk.UserLoginType
+// @Router /users/{user}/login-type [get]
+func (*API) userLoginType(rw http.ResponseWriter, r *http.Request) {
+	var (
+		ctx  = r.Context()
+		user = httpmw.UserParam(r)
+		key  = httpmw.APIKey(r)
+	)
+
+	if key.UserID != user.ID {
+		// Currently this is only valid for querying yourself.
+		httpapi.Write(ctx, rw, http.StatusForbidden, codersdk.Response{
+			Message: "You are not authorized to view this user's login type.",
+		})
+		return
+	}
+
+	httpapi.Write(ctx, rw, http.StatusOK, codersdk.UserLoginType{
+		LoginType: codersdk.LoginType(user.LoginType),
+	})
 }
 
 // @Summary Update user profile
@@ -546,7 +611,7 @@ func (api *API) putUserProfile(rw http.ResponseWriter, r *http.Request) {
 		Email:     user.Email,
 		AvatarURL: user.AvatarURL,
 		Username:  params.Username,
-		UpdatedAt: database.Now(),
+		UpdatedAt: dbtime.Now(),
 	})
 	aReq.New = updatedUserProfile
 
@@ -567,7 +632,7 @@ func (api *API) putUserProfile(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httpapi.Write(ctx, rw, http.StatusOK, convertUser(updatedUserProfile, organizationIDs))
+	httpapi.Write(ctx, rw, http.StatusOK, db2sdk.User(updatedUserProfile, organizationIDs))
 }
 
 // @Summary Suspend user account
@@ -634,7 +699,7 @@ func (api *API) putUserStatus(status database.UserStatus) func(rw http.ResponseW
 		suspendedUser, err := api.Database.UpdateUserStatus(ctx, database.UpdateUserStatusParams{
 			ID:        user.ID,
 			Status:    status,
-			UpdatedAt: database.Now(),
+			UpdatedAt: dbtime.Now(),
 		})
 		if err != nil {
 			httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
@@ -654,7 +719,7 @@ func (api *API) putUserStatus(status database.UserStatus) func(rw http.ResponseW
 			return
 		}
 
-		httpapi.Write(ctx, rw, http.StatusOK, convertUser(suspendedUser, organizations))
+		httpapi.Write(ctx, rw, http.StatusOK, db2sdk.User(suspendedUser, organizations))
 	}
 }
 
@@ -684,6 +749,13 @@ func (api *API) putUserPassword(rw http.ResponseWriter, r *http.Request) {
 	aReq.Old = user
 
 	if !httpapi.Read(ctx, rw, r, &params) {
+		return
+	}
+
+	if user.LoginType != database.LoginTypePassword {
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: "Users without password login type cannot change their password.",
+		})
 		return
 	}
 
@@ -842,6 +914,14 @@ func (api *API) putUserRoles(rw http.ResponseWriter, r *http.Request) {
 	defer commitAudit()
 	aReq.Old = user
 
+	if user.LoginType == database.LoginTypeOIDC && api.OIDCConfig.RoleSyncEnabled() {
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: "Cannot modify roles for OIDC users when role sync is enabled.",
+			Detail:  "'User Role Field' is set in the OIDC configuration. All role changes must come from the oidc identity provider.",
+		})
+		return
+	}
+
 	if apiKey.UserID == user.ID {
 		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
 			Message: "You cannot change your own roles.",
@@ -854,7 +934,7 @@ func (api *API) putUserRoles(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updatedUser, err := api.updateSiteUserRoles(ctx, database.UpdateUserRolesParams{
+	updatedUser, err := UpdateSiteUserRoles(ctx, api.Database, database.UpdateUserRolesParams{
 		GrantedRoles: params.Roles,
 		ID:           user.ID,
 	})
@@ -879,12 +959,12 @@ func (api *API) putUserRoles(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httpapi.Write(ctx, rw, http.StatusOK, convertUser(updatedUser, organizationIDs))
+	httpapi.Write(ctx, rw, http.StatusOK, db2sdk.User(updatedUser, organizationIDs))
 }
 
-// updateSiteUserRoles will ensure only site wide roles are passed in as arguments.
+// UpdateSiteUserRoles will ensure only site wide roles are passed in as arguments.
 // If an organization role is included, an error is returned.
-func (api *API) updateSiteUserRoles(ctx context.Context, args database.UpdateUserRolesParams) (database.User, error) {
+func UpdateSiteUserRoles(ctx context.Context, db database.Store, args database.UpdateUserRolesParams) (database.User, error) {
 	// Enforce only site wide roles.
 	for _, r := range args.GrantedRoles {
 		if _, ok := rbac.IsOrgRole(r); ok {
@@ -896,7 +976,7 @@ func (api *API) updateSiteUserRoles(ctx context.Context, args database.UpdateUse
 		}
 	}
 
-	updatedUser, err := api.Database.UpdateUserRoles(ctx, args)
+	updatedUser, err := db.UpdateUserRoles(ctx, args)
 	if err != nil {
 		return database.User{}, xerrors.Errorf("update site roles: %w", err)
 	}
@@ -1001,8 +1081,8 @@ func (api *API) CreateUser(ctx context.Context, store database.Store, req Create
 			organization, err := tx.InsertOrganization(ctx, database.InsertOrganizationParams{
 				ID:        uuid.New(),
 				Name:      req.Username,
-				CreatedAt: database.Now(),
-				UpdatedAt: database.Now(),
+				CreatedAt: dbtime.Now(),
+				UpdatedAt: dbtime.Now(),
 			})
 			if err != nil {
 				return xerrors.Errorf("create organization: %w", err)
@@ -1016,7 +1096,7 @@ func (api *API) CreateUser(ctx context.Context, store database.Store, req Create
 
 			_, err = tx.InsertAllUsersGroup(ctx, organization.ID)
 			if err != nil {
-				return xerrors.Errorf("create %q group: %w", database.AllUsersGroup, err)
+				return xerrors.Errorf("create %q group: %w", database.EveryoneGroup, err)
 			}
 		}
 
@@ -1024,8 +1104,8 @@ func (api *API) CreateUser(ctx context.Context, store database.Store, req Create
 			ID:        uuid.New(),
 			Email:     req.Email,
 			Username:  req.Username,
-			CreatedAt: database.Now(),
-			UpdatedAt: database.Now(),
+			CreatedAt: dbtime.Now(),
+			UpdatedAt: dbtime.Now(),
 			// All new users are defaulted to members of the site.
 			RBACRoles: []string{},
 			LoginType: req.LoginType,
@@ -1051,8 +1131,8 @@ func (api *API) CreateUser(ctx context.Context, store database.Store, req Create
 		}
 		_, err = tx.InsertGitSSHKey(ctx, database.InsertGitSSHKeyParams{
 			UserID:     user.ID,
-			CreatedAt:  database.Now(),
-			UpdatedAt:  database.Now(),
+			CreatedAt:  dbtime.Now(),
+			UpdatedAt:  dbtime.Now(),
 			PrivateKey: privateKey,
 			PublicKey:  publicKey,
 		})
@@ -1062,8 +1142,8 @@ func (api *API) CreateUser(ctx context.Context, store database.Store, req Create
 		_, err = tx.InsertOrganizationMember(ctx, database.InsertOrganizationMemberParams{
 			OrganizationID: req.OrganizationID,
 			UserID:         user.ID,
-			CreatedAt:      database.Now(),
-			UpdatedAt:      database.Now(),
+			CreatedAt:      dbtime.Now(),
+			UpdatedAt:      dbtime.Now(),
 			// By default give them membership to the organization.
 			Roles: orgRoles,
 		})
@@ -1074,32 +1154,11 @@ func (api *API) CreateUser(ctx context.Context, store database.Store, req Create
 	}, nil)
 }
 
-func convertUser(user database.User, organizationIDs []uuid.UUID) codersdk.User {
-	convertedUser := codersdk.User{
-		ID:              user.ID,
-		Email:           user.Email,
-		CreatedAt:       user.CreatedAt,
-		LastSeenAt:      user.LastSeenAt,
-		Username:        user.Username,
-		Status:          codersdk.UserStatus(user.Status),
-		OrganizationIDs: organizationIDs,
-		Roles:           make([]codersdk.Role, 0, len(user.RBACRoles)),
-		AvatarURL:       user.AvatarURL.String,
-	}
-
-	for _, roleName := range user.RBACRoles {
-		rbacRole, _ := rbac.RoleByName(roleName)
-		convertedUser.Roles = append(convertedUser.Roles, convertRole(rbacRole))
-	}
-
-	return convertedUser
-}
-
 func convertUsers(users []database.User, organizationIDsByUserID map[uuid.UUID][]uuid.UUID) []codersdk.User {
 	converted := make([]codersdk.User, 0, len(users))
 	for _, u := range users {
 		userOrganizationIDs := organizationIDsByUserID[u.ID]
-		converted = append(converted, convertUser(u, userOrganizationIDs))
+		converted = append(converted, db2sdk.User(u, userOrganizationIDs))
 	}
 	return converted
 }

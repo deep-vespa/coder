@@ -15,11 +15,13 @@ import (
 	"go.uber.org/goleak"
 
 	"cdr.dev/slog/sloggers/slogtest"
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/coderd/database/dbfake"
-	"github.com/coder/coder/coderd/database/dbtestutil"
-	"github.com/coder/coder/enterprise/replicasync"
-	"github.com/coder/coder/testutil"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/database/dbfake"
+	"github.com/coder/coder/v2/coderd/database/dbtestutil"
+	"github.com/coder/coder/v2/coderd/database/dbtime"
+	"github.com/coder/coder/v2/coderd/database/pubsub"
+	"github.com/coder/coder/v2/enterprise/replicasync"
+	"github.com/coder/coder/v2/testutil"
 )
 
 func TestMain(m *testing.M) {
@@ -60,11 +62,12 @@ func TestReplica(t *testing.T) {
 		db, pubsub := dbtestutil.NewDB(t)
 		peer, err := db.InsertReplica(context.Background(), database.InsertReplicaParams{
 			ID:           uuid.New(),
-			CreatedAt:    database.Now(),
-			StartedAt:    database.Now(),
-			UpdatedAt:    database.Now(),
+			CreatedAt:    dbtime.Now(),
+			StartedAt:    dbtime.Now(),
+			UpdatedAt:    dbtime.Now(),
 			Hostname:     "something",
 			RelayAddress: srv.URL,
+			Primary:      true,
 		})
 		require.NoError(t, err)
 		ctx, cancelCtx := context.WithCancel(context.Background())
@@ -104,11 +107,12 @@ func TestReplica(t *testing.T) {
 		db, pubsub := dbtestutil.NewDB(t)
 		peer, err := db.InsertReplica(context.Background(), database.InsertReplicaParams{
 			ID:           uuid.New(),
-			CreatedAt:    database.Now(),
-			StartedAt:    database.Now(),
-			UpdatedAt:    database.Now(),
+			CreatedAt:    dbtime.Now(),
+			StartedAt:    dbtime.Now(),
+			UpdatedAt:    dbtime.Now(),
 			Hostname:     "something",
 			RelayAddress: srv.URL,
+			Primary:      true,
 		})
 		require.NoError(t, err)
 		ctx, cancelCtx := context.WithCancel(context.Background())
@@ -130,12 +134,13 @@ func TestReplica(t *testing.T) {
 		db, pubsub := dbtestutil.NewDB(t)
 		peer, err := db.InsertReplica(context.Background(), database.InsertReplicaParams{
 			ID:        uuid.New(),
-			CreatedAt: database.Now().Add(time.Minute),
-			StartedAt: database.Now().Add(time.Minute),
-			UpdatedAt: database.Now().Add(time.Minute),
+			CreatedAt: dbtime.Now().Add(time.Minute),
+			StartedAt: dbtime.Now().Add(time.Minute),
+			UpdatedAt: dbtime.Now().Add(time.Minute),
 			Hostname:  "something",
 			// Fake address to dial!
 			RelayAddress: "http://127.0.0.1:1",
+			Primary:      true,
 		})
 		require.NoError(t, err)
 		ctx, cancelCtx := context.WithCancel(context.Background())
@@ -169,7 +174,8 @@ func TestReplica(t *testing.T) {
 		peer, err := db.InsertReplica(ctx, database.InsertReplicaParams{
 			ID:           uuid.New(),
 			RelayAddress: srv.URL,
-			UpdatedAt:    database.Now(),
+			UpdatedAt:    dbtime.Now(),
+			Primary:      true,
 		})
 		require.NoError(t, err)
 		// Publish multiple times to ensure it can handle that case.
@@ -187,7 +193,8 @@ func TestReplica(t *testing.T) {
 		db, pubsub := dbtestutil.NewDB(t)
 		_, err := db.InsertReplica(context.Background(), database.InsertReplicaParams{
 			ID:        uuid.New(),
-			UpdatedAt: database.Now().Add(-time.Hour),
+			UpdatedAt: dbtime.Now().Add(-time.Hour),
+			Primary:   true,
 		})
 		require.NoError(t, err)
 		ctx, cancelCtx := context.WithCancel(context.Background())
@@ -212,7 +219,7 @@ func TestReplica(t *testing.T) {
 		// this many PostgreSQL connections takes some
 		// configuration tweaking.
 		db := dbfake.New()
-		pubsub := database.NewPubsubInMemory()
+		pubsub := pubsub.NewInMemory()
 		logger := slogtest.Make(t, nil)
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
@@ -235,8 +242,7 @@ func TestReplica(t *testing.T) {
 			server.SetCallback(func() {
 				m.Lock()
 				defer m.Unlock()
-
-				if len(server.All()) != count {
+				if len(server.AllPrimary()) != count {
 					return
 				}
 				if done {

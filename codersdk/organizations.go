@@ -42,7 +42,8 @@ type OrganizationMember struct {
 
 // CreateTemplateVersionRequest enables callers to create a new Template Version.
 type CreateTemplateVersionRequest struct {
-	Name string `json:"name,omitempty" validate:"omitempty,template_version_name"`
+	Name    string `json:"name,omitempty" validate:"omitempty,template_version_name"`
+	Message string `json:"message,omitempty" validate:"lt=1048577"`
 	// TemplateID optionally associates a version with a template.
 	TemplateID      uuid.UUID                `json:"template_id,omitempty" format:"uuid"`
 	StorageMethod   ProvisionerStorageMethod `json:"storage_method" validate:"oneof=file,required" enums:"file"`
@@ -83,9 +84,11 @@ type CreateTemplateRequest struct {
 	// DefaultTTLMillis allows optionally specifying the default TTL
 	// for all workspaces created from this template.
 	DefaultTTLMillis *int64 `json:"default_ttl_ms,omitempty"`
-	// MaxTTLMillis allows optionally specifying the max lifetime for
-	// workspaces created from this template.
+	// TODO(@dean): remove max_ttl once autostop_requirement is matured
 	MaxTTLMillis *int64 `json:"max_ttl_ms,omitempty"`
+	// AutostopRequirement allows optionally specifying the autostop requirement
+	// for workspaces created from this template. This is an enterprise feature.
+	AutostopRequirement *TemplateAutostopRequirement `json:"autostop_requirement,omitempty"`
 
 	// Allow users to cancel in-progress workspace jobs.
 	// *bool as the default value is "true".
@@ -105,18 +108,32 @@ type CreateTemplateRequest struct {
 	// FailureTTLMillis allows optionally specifying the max lifetime before Coder
 	// stops all resources for failed workspaces created from this template.
 	FailureTTLMillis *int64 `json:"failure_ttl_ms,omitempty"`
-	// InactivityTTLMillis allows optionally specifying the max lifetime before Coder
-	// deletes inactive workspaces created from this template.
-	InactivityTTLMillis *int64 `json:"inactivity_ttl_ms,omitempty"`
+	// TimeTilDormantMillis allows optionally specifying the max lifetime before Coder
+	// locks inactive workspaces created from this template.
+	TimeTilDormantMillis *int64 `json:"dormant_ttl_ms,omitempty"`
+	// TimeTilDormantAutoDeleteMillis allows optionally specifying the max lifetime before Coder
+	// permanently deletes dormant workspaces created from this template.
+	TimeTilDormantAutoDeleteMillis *int64 `json:"delete_ttl_ms,omitempty"`
+
+	// DisableEveryoneGroupAccess allows optionally disabling the default
+	// behavior of granting the 'everyone' group access to use the template.
+	// If this is set to true, the template will not be available to all users,
+	// and must be explicitly granted to users or groups in the permissions settings
+	// of the template.
+	DisableEveryoneGroupAccess bool `json:"disable_everyone_group_access"`
 }
 
 // CreateWorkspaceRequest provides options for creating a new workspace.
+// Either TemplateID or TemplateVersionID must be specified. They cannot both be present.
 type CreateWorkspaceRequest struct {
-	TemplateID        uuid.UUID `json:"template_id" validate:"required" format:"uuid"`
+	// TemplateID specifies which template should be used for creating the workspace.
+	TemplateID uuid.UUID `json:"template_id,omitempty" validate:"required_without=TemplateVersionID,excluded_with=TemplateVersionID" format:"uuid"`
+	// TemplateVersionID can be used to specify a specific version of a template for creating the workspace.
+	TemplateVersionID uuid.UUID `json:"template_version_id,omitempty" validate:"required_without=TemplateID,excluded_with=TemplateID" format:"uuid"`
 	Name              string    `json:"name" validate:"workspace_name,required"`
 	AutostartSchedule *string   `json:"autostart_schedule"`
 	TTLMillis         *int64    `json:"ttl_ms,omitempty"`
-	// ParameterValues allows for additional parameters to be provided
+	// RichParameterValues allows for additional parameters to be provided
 	// during the initial provision.
 	RichParameterValues []WorkspaceBuildParameter `json:"rich_parameter_values,omitempty"`
 }
@@ -136,10 +153,11 @@ func (c *Client) Organization(ctx context.Context, id uuid.UUID) (Organization, 
 	return organization, json.NewDecoder(res.Body).Decode(&organization)
 }
 
-// ProvisionerDaemonsByOrganization returns provisioner daemons available for an organization.
+// ProvisionerDaemons returns provisioner daemons available.
 func (c *Client) ProvisionerDaemons(ctx context.Context) ([]ProvisionerDaemon, error) {
 	res, err := c.Request(ctx, http.MethodGet,
-		"/api/v2/provisionerdaemons",
+		// TODO: the organization path parameter is currently ignored.
+		"/api/v2/organizations/default/provisionerdaemons",
 		nil,
 	)
 	if err != nil {

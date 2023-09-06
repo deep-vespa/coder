@@ -11,26 +11,31 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/coder/v2/coderd/batchstats"
+	"github.com/coder/coder/v2/coderd/database/dbtestutil"
+	"github.com/coder/coder/v2/coderd/database/dbtime"
+
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"tailscale.com/tailcfg"
 
 	"cdr.dev/slog"
 	"cdr.dev/slog/sloggers/slogtest"
 
-	"github.com/coder/coder/coderd/coderdtest"
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/coderd/database/dbfake"
-	"github.com/coder/coder/coderd/database/dbgen"
-	"github.com/coder/coder/coderd/prometheusmetrics"
-	"github.com/coder/coder/codersdk"
-	"github.com/coder/coder/codersdk/agentsdk"
-	"github.com/coder/coder/provisioner/echo"
-	"github.com/coder/coder/provisionersdk/proto"
-	"github.com/coder/coder/tailnet"
-	"github.com/coder/coder/tailnet/tailnettest"
-	"github.com/coder/coder/testutil"
+	"github.com/coder/coder/v2/coderd/coderdtest"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/database/dbfake"
+	"github.com/coder/coder/v2/coderd/database/dbgen"
+	"github.com/coder/coder/v2/coderd/prometheusmetrics"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/codersdk/agentsdk"
+	"github.com/coder/coder/v2/provisioner/echo"
+	"github.com/coder/coder/v2/provisionersdk/proto"
+	"github.com/coder/coder/v2/tailnet"
+	"github.com/coder/coder/v2/tailnet/tailnettest"
+	"github.com/coder/coder/v2/testutil"
 )
 
 func TestActiveUsers(t *testing.T) {
@@ -51,7 +56,7 @@ func TestActiveUsers(t *testing.T) {
 		Database: func(t *testing.T) database.Store {
 			db := dbfake.New()
 			dbgen.APIKey(t, db, database.APIKey{
-				LastUsed: database.Now(),
+				LastUsed: dbtime.Now(),
 			})
 			return db
 		},
@@ -62,13 +67,13 @@ func TestActiveUsers(t *testing.T) {
 			db := dbfake.New()
 
 			dbgen.APIKey(t, db, database.APIKey{
-				LastUsed: database.Now(),
+				LastUsed: dbtime.Now(),
 			})
 
 			// Because this API key hasn't been used in the past hour, this shouldn't
 			// add to the user count.
 			dbgen.APIKey(t, db, database.APIKey{
-				LastUsed: database.Now().Add(-2 * time.Hour),
+				LastUsed: dbtime.Now().Add(-2 * time.Hour),
 			})
 			return db
 		},
@@ -78,10 +83,10 @@ func TestActiveUsers(t *testing.T) {
 		Database: func(t *testing.T) database.Store {
 			db := dbfake.New()
 			dbgen.APIKey(t, db, database.APIKey{
-				LastUsed: database.Now(),
+				LastUsed: dbtime.Now(),
 			})
 			dbgen.APIKey(t, db, database.APIKey{
-				LastUsed: database.Now(),
+				LastUsed: dbtime.Now(),
 			})
 			return db
 		},
@@ -111,14 +116,14 @@ func TestWorkspaces(t *testing.T) {
 	insertRunning := func(db database.Store) database.ProvisionerJob {
 		job, err := db.InsertProvisionerJob(context.Background(), database.InsertProvisionerJobParams{
 			ID:            uuid.New(),
-			CreatedAt:     database.Now(),
-			UpdatedAt:     database.Now(),
+			CreatedAt:     dbtime.Now(),
+			UpdatedAt:     dbtime.Now(),
 			Provisioner:   database.ProvisionerTypeEcho,
 			StorageMethod: database.ProvisionerStorageMethodFile,
 			Type:          database.ProvisionerJobTypeWorkspaceBuild,
 		})
 		require.NoError(t, err)
-		_, err = db.InsertWorkspaceBuild(context.Background(), database.InsertWorkspaceBuildParams{
+		err = db.InsertWorkspaceBuild(context.Background(), database.InsertWorkspaceBuildParams{
 			ID:          uuid.New(),
 			WorkspaceID: uuid.New(),
 			JobID:       job.ID,
@@ -130,7 +135,7 @@ func TestWorkspaces(t *testing.T) {
 		// This marks the job as started.
 		_, err = db.AcquireProvisionerJob(context.Background(), database.AcquireProvisionerJobParams{
 			StartedAt: sql.NullTime{
-				Time:  database.Now(),
+				Time:  dbtime.Now(),
 				Valid: true,
 			},
 			Types: []database.ProvisionerType{database.ProvisionerTypeEcho},
@@ -144,7 +149,7 @@ func TestWorkspaces(t *testing.T) {
 		err := db.UpdateProvisionerJobWithCancelByID(context.Background(), database.UpdateProvisionerJobWithCancelByIDParams{
 			ID: job.ID,
 			CanceledAt: sql.NullTime{
-				Time:  database.Now(),
+				Time:  dbtime.Now(),
 				Valid: true,
 			},
 		})
@@ -152,7 +157,7 @@ func TestWorkspaces(t *testing.T) {
 		err = db.UpdateProvisionerJobWithCompleteByID(context.Background(), database.UpdateProvisionerJobWithCompleteByIDParams{
 			ID: job.ID,
 			CompletedAt: sql.NullTime{
-				Time:  database.Now(),
+				Time:  dbtime.Now(),
 				Valid: true,
 			},
 		})
@@ -164,7 +169,7 @@ func TestWorkspaces(t *testing.T) {
 		err := db.UpdateProvisionerJobWithCompleteByID(context.Background(), database.UpdateProvisionerJobWithCompleteByIDParams{
 			ID: job.ID,
 			CompletedAt: sql.NullTime{
-				Time:  database.Now(),
+				Time:  dbtime.Now(),
 				Valid: true,
 			},
 			Error: sql.NullString{
@@ -180,7 +185,7 @@ func TestWorkspaces(t *testing.T) {
 		err := db.UpdateProvisionerJobWithCompleteByID(context.Background(), database.UpdateProvisionerJobWithCompleteByIDParams{
 			ID: job.ID,
 			CompletedAt: sql.NullTime{
-				Time:  database.Now(),
+				Time:  dbtime.Now(),
 				Valid: true,
 			},
 		})
@@ -264,10 +269,10 @@ func TestAgents(t *testing.T) {
 	user := coderdtest.CreateFirstUser(t, client)
 	version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
 		Parse:         echo.ParseComplete,
-		ProvisionPlan: echo.ProvisionComplete,
-		ProvisionApply: []*proto.Provision_Response{{
-			Type: &proto.Provision_Response_Complete{
-				Complete: &proto.Provision_Complete{
+		ProvisionPlan: echo.PlanComplete,
+		ProvisionApply: []*proto.Response{{
+			Type: &proto.Response_Apply{
+				Apply: &proto.ApplyComplete{
 					Resources: []*proto.Resource{{
 						Name: "example",
 						Type: "aws_instance",
@@ -299,10 +304,13 @@ func TestAgents(t *testing.T) {
 	coderdtest.AwaitWorkspaceBuildJob(t, client, workspace.LatestBuild.ID)
 
 	// given
+	derpMap, _ := tailnettest.RunDERPAndSTUN(t)
+	derpMapFn := func() *tailcfg.DERPMap {
+		return derpMap
+	}
 	coordinator := tailnet.NewCoordinator(slogtest.Make(t, nil).Leveled(slog.LevelDebug))
 	coordinatorPtr := atomic.Pointer[tailnet.Coordinator]{}
 	coordinatorPtr.Store(&coordinator)
-	derpMap := tailnettest.RunDERPAndSTUN(t)
 	agentInactiveDisconnectTimeout := 1 * time.Hour // don't need to focus on this value in tests
 	registry := prometheus.NewRegistry()
 
@@ -312,7 +320,7 @@ func TestAgents(t *testing.T) {
 	// when
 	closeFunc, err := prometheusmetrics.Agents(ctx, slogtest.Make(t, &slogtest.Options{
 		IgnoreErrors: true,
-	}), registry, db, &coordinatorPtr, derpMap, agentInactiveDisconnectTimeout, time.Millisecond)
+	}), registry, db, &coordinatorPtr, derpMapFn, agentInactiveDisconnectTimeout, 50*time.Millisecond)
 	require.NoError(t, err)
 	t.Cleanup(closeFunc)
 
@@ -332,8 +340,10 @@ func TestAgents(t *testing.T) {
 		for _, metric := range metrics {
 			switch metric.GetName() {
 			case "coderd_agents_up":
-				assert.Equal(t, "testuser", metric.Metric[0].Label[0].GetValue())     // Username
-				assert.Equal(t, workspace.Name, metric.Metric[0].Label[1].GetValue()) // Workspace name
+				assert.Equal(t, template.Name, metric.Metric[0].Label[0].GetValue())  // Template name
+				assert.Equal(t, version.Name, metric.Metric[0].Label[1].GetValue())   // Template version name
+				assert.Equal(t, "testuser", metric.Metric[0].Label[2].GetValue())     // Username
+				assert.Equal(t, workspace.Name, metric.Metric[0].Label[3].GetValue()) // Workspace name
 				assert.Equal(t, 1, int(metric.Metric[0].Gauge.GetValue()))            // Metric value
 				agentsUp = true
 			case "coderd_agents_connections":
@@ -366,9 +376,31 @@ func TestAgents(t *testing.T) {
 func TestAgentStats(t *testing.T) {
 	t.Parallel()
 
+	ctx, cancelFunc := context.WithCancel(context.Background())
+	t.Cleanup(cancelFunc)
+
+	db, pubsub := dbtestutil.NewDB(t)
+	log := slogtest.Make(t, nil).Leveled(slog.LevelDebug)
+
+	batcher, closeBatcher, err := batchstats.New(ctx,
+		// We had previously set the batch size to 1 here, but that caused
+		// intermittent test flakes due to a race between the batcher completing
+		// its flush and the test asserting that the metrics were collected.
+		// Instead, we close the batcher after all stats have been posted, which
+		// forces a flush.
+		batchstats.WithStore(db),
+		batchstats.WithLogger(log),
+	)
+	require.NoError(t, err, "create stats batcher failed")
+	t.Cleanup(closeBatcher)
+
 	// Build sample workspaces with test agents and fake agent client
-	client, _, api := coderdtest.NewWithAPI(t, &coderdtest.Options{IncludeProvisionerDaemon: true})
-	db := api.Database
+	client, _, _ := coderdtest.NewWithAPI(t, &coderdtest.Options{
+		Database:                 db,
+		IncludeProvisionerDaemon: true,
+		Pubsub:                   pubsub,
+		StatsBatcher:             batcher,
+	})
 
 	user := coderdtest.CreateFirstUser(t, client)
 
@@ -378,11 +410,7 @@ func TestAgentStats(t *testing.T) {
 
 	registry := prometheus.NewRegistry()
 
-	ctx, cancelFunc := context.WithCancel(context.Background())
-	defer cancelFunc()
-
 	// given
-	var err error
 	var i int64
 	for i = 0; i < 3; i++ {
 		_, err = agent1.PostStats(ctx, &agentsdk.Stats{
@@ -409,6 +437,11 @@ func TestAgentStats(t *testing.T) {
 		})
 		require.NoError(t, err)
 	}
+
+	// Ensure that all stats are flushed to the database
+	// before we query them. We do not expect any more stats
+	// to be posted after this.
+	closeBatcher()
 
 	// when
 	//
@@ -469,7 +502,7 @@ func prepareWorkspaceAndAgent(t *testing.T, client *codersdk.Client, user coders
 
 	version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
 		Parse:          echo.ParseComplete,
-		ProvisionPlan:  echo.ProvisionComplete,
+		ProvisionPlan:  echo.PlanComplete,
 		ProvisionApply: echo.ProvisionApplyWithAgent(authToken),
 	})
 	template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)

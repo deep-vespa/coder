@@ -2,11 +2,11 @@ terraform {
   required_providers {
     coder = {
       source  = "coder/coder"
-      version = "0.8.3"
+      version = "0.11.0"
     }
     docker = {
       source  = "kreuzwerker/docker"
-      version = "~> 2.22.0"
+      version = "~> 3.0.0"
     }
   }
 }
@@ -40,9 +40,10 @@ data "coder_parameter" "dotfiles_url" {
 }
 
 data "coder_parameter" "region" {
-  type = "string"
-  name = "Region"
-  icon = "/emojis/1f30e.png"
+  type    = "string"
+  name    = "Region"
+  icon    = "/emojis/1f30e.png"
+  default = "us-pittsburgh"
   option {
     icon  = "/emojis/1f1fa-1f1f8.png"
     name  = "Pittsburgh"
@@ -85,114 +86,82 @@ data "coder_workspace" "me" {}
 resource "coder_agent" "dev" {
   arch = "amd64"
   os   = "linux"
-
-  dir = data.coder_parameter.repo_dir.value
+  dir  = data.coder_parameter.repo_dir.value
   env = {
     GITHUB_TOKEN : data.coder_git_auth.github.access_token,
     OIDC_TOKEN : data.coder_workspace.me.owner_oidc_access_token,
+    CODER_USER_TOKEN : data.coder_workspace.me.owner_session_token,
+    CODER_DEPLOYMENT_URL : data.coder_workspace.me.access_url
   }
   startup_script_behavior = "blocking"
 
+  # The following metadata blocks are optional. They are used to display
+  # information about your workspace in the dashboard. You can remove them
+  # if you don't want to display any information.
   metadata {
     display_name = "CPU Usage"
+    key          = "0_cpu_usage"
+    script       = "coder stat cpu"
     interval     = 10
     timeout      = 1
-    key          = "0_cpu_usage"
-    script       = <<EOT
-      #!/bin/bash
-      # check if we are in cgroup v2 or v1
-      if [ -e /sys/fs/cgroup/cpu.stat ]; then
-        # cgroup v2
-        cusage=$(cat /sys/fs/cgroup/cpu.stat | head -n 1 | awk '{ print $2 }')
-      else
-        # cgroup v1
-#         cusage=$(cat /sys/fs/cgroup/cpu,cpuacct/cpuacct.usage)
-        echo "Coming Soon!"
-        exit 0
-      fi
-
-      # get previous usage
-      if [ -e /tmp/cusage ]; then
-        cusage_p=$(cat /tmp/cusage)
-      else
-        echo $cusage > /tmp/cusage
-        echo "Unknown"
-        exit 0
-      fi
-
-      # interval in microseconds should be metadata.interval * 1000000
-      interval=10000000
-      ncores=$(nproc)
-      echo "$cusage $cusage_p $interval $ncores" | awk '{ printf "%2.0f%%\n", (($1 - $2)/$3/$4)*100 }'
-
-      EOT
   }
 
   metadata {
     display_name = "RAM Usage"
+    key          = "1_ram_usage"
+    script       = "coder stat mem"
     interval     = 10
     timeout      = 1
-    key          = "1_ram_usage"
-    script       = <<EOT
-      #!/bin/bash
-      # first check if we are in cgroup v2 or v1
-      if [ -e /sys/fs/cgroup/memory.stat ]; then
-        # cgroup v2
-        echo "`cat /sys/fs/cgroup/memory.current` `cat /sys/fs/cgroup/memory.max`" | awk '{ used=$1/1024/1024/1024; total=$2/1024/1024/1024; printf "%0.2f / %0.2f GB\n", used, total }'
-      else
-        # cgroup v1
-        echo "`cat /sys/fs/cgroup/memory/memory.usage_in_bytes` `cat /sys/fs/cgroup/memory/memory.limit_in_bytes`" | awk '{ used=$1/1024/1024/1024; total=$2/1024/1024/1024; printf "%0.2f / %0.2f GB\n", used, total }'
-      fi
-      EOT
   }
-
 
   metadata {
     display_name = "CPU Usage (Host)"
-    key          = "2_cpu_host"
-    script       = <<EOT
-    vmstat | awk 'FNR==3 {printf "%2.0f%%", $13+$14+$16}'
-    EOT
+    key          = "2_cpu_usage_host"
+    script       = "coder stat cpu --host"
     interval     = 10
     timeout      = 1
   }
 
   metadata {
-    display_name = "Memory and Swap Usage (Host)"
-    key          = "3_mem_swap_host"
+    display_name = "RAM Usage (Host)"
+    key          = "3_ram_usage_host"
+    script       = "coder stat mem --host"
+    interval     = 10
+    timeout      = 1
+  }
+
+  metadata {
+    display_name = "Swap Usage (Host)"
+    key          = "4_swap_usage_host"
     script       = <<EOT
-      mem_usage=`free | awk '/^Mem/ { printf("%.0f%%", $3/$2 * 100.0) }'`
-      swp_usage=`free | awk '/^Swap/ { printf("%.0f%%", $3/$2 * 100.0) }'`
-      echo "Memory: $mem_usage, Swap: $swp_usage"
-      EOT
+      echo "$(free -b | awk '/^Swap/ { printf("%.1f/%.1f", $3/1024.0/1024.0/1024.0, $2/1024.0/1024.0/1024.0) }') GiB"
+    EOT
     interval     = 10
     timeout      = 1
   }
 
   metadata {
     display_name = "Load Average (Host)"
-    key          = "4_load_host"
+    key          = "5_load_host"
     # get load avg scaled by number of cores
     script   = <<EOT
       echo "`cat /proc/loadavg | awk '{ print $1 }'` `nproc`" | awk '{ printf "%0.2f", $1/$2 }'
     EOT
-    interval = 10
+    interval = 60
     timeout  = 1
   }
 
   metadata {
     display_name = "Disk Usage (Host)"
-    key          = "5_disk_host"
-    script       = <<EOT
-      df --output=pcent / | sed -n "2p"
-    EOT
+    key          = "6_disk_host"
+    script       = "coder stat disk --path /"
     interval     = 600
-    timeout      = 10 #getting disk usage can take a while
+    timeout      = 10
   }
 
   metadata {
     display_name = "Word of the Day"
-    key          = "6_word"
+    key          = "7_word"
     script       = <<EOT
       curl -o - --silent https://www.merriam-webster.com/word-of-the-day 2>&1 | awk ' $0 ~ "Word of the Day: [A-z]+" { print $5; exit }'
     EOT
@@ -205,15 +174,23 @@ resource "coder_agent" "dev" {
   startup_script         = <<-EOT
     set -eux -o pipefail
 
+    # change to home
+    cd "$HOME"
+
     # install and start code-server
     curl -fsSL https://code-server.dev/install.sh | sh -s -- --method=standalone --prefix=/tmp/code-server --version 4.8.3
     /tmp/code-server/bin/code-server --auth none --port 13337 >/tmp/code-server.log 2>&1 &
 
+    # Install and launch filebrowser
+    curl -fsSL https://raw.githubusercontent.com/filebrowser/get/master/get.sh | bash
+    filebrowser --noauth --root /home/coder --port 13338 >/tmp/filebrowser.log 2>&1 &
 
-    if [ ! -d ${data.coder_parameter.repo_dir.value} ]; then
-      mkdir -p ${data.coder_parameter.repo_dir.value}
+    repo_dir="${data.coder_parameter.repo_dir.value}"
+    repo_dir="$${repo_dir/#~\//$HOME\/}"
+    if [ ! -d "$repo_dir" ]; then
+      mkdir -p "$repo_dir"
 
-      git clone https://github.com/coder/coder ${data.coder_parameter.repo_dir.value}
+      git clone https://github.com/coder/coder "$repo_dir"
     fi
 
     sudo service docker start
@@ -227,6 +204,15 @@ resource "coder_agent" "dev" {
     elif [ -f ~/personalize ]; then
       echo "~/personalize is not executable, skipping..." | tee -a ~/.personalize.log
     fi
+
+    # Automatically authenticate the user if they are not
+    # logged in to another deployment
+    if ! coder list >/dev/null 2>&1; then
+      set +x; coder login --token=$CODER_USER_TOKEN --url=$CODER_DEPLOYMENT_URL
+    else
+      echo "You are already authenticated with coder"
+    fi
+
   EOT
 }
 
@@ -234,7 +220,7 @@ resource "coder_app" "code-server" {
   agent_id     = coder_agent.dev.id
   slug         = "code-server"
   display_name = "code-server"
-  url          = "http://localhost:13337/"
+  url          = "http://localhost:13337/?folder=${replace(data.coder_parameter.repo_dir.value, "/^~\\//", "/home/coder/")}"
   icon         = "/icon/code.svg"
   subdomain    = false
   share        = "owner"
@@ -244,6 +230,16 @@ resource "coder_app" "code-server" {
     interval  = 3
     threshold = 10
   }
+}
+
+resource "coder_app" "filebrowser" {
+  agent_id     = coder_agent.dev.id
+  display_name = "File Browser"
+  slug         = "filebrowser"
+  url          = "http://localhost:13338"
+  icon         = "https://raw.githubusercontent.com/matifali/logos/main/database.svg"
+  subdomain    = true
+  share        = "owner"
 }
 
 resource "docker_volume" "home_volume" {
@@ -278,15 +274,15 @@ locals {
   registry_name  = "codercom/oss-dogfood"
 }
 data "docker_registry_image" "dogfood" {
-  name = "${local.registry_name}:main"
+  // This is temporarily pinned to a pre-nix version of the image at commit
+  // 6cdf1c73c until the Nix kinks are worked out.
+  name = "${local.registry_name}:pre-nix"
 }
 
 resource "docker_image" "dogfood" {
   name = "${local.registry_name}@${data.docker_registry_image.dogfood.sha256_digest}"
   pull_triggers = [
-    data.docker_registry_image.dogfood.sha256_digest,
-    sha1(join("", [for f in fileset(path.module, "files/*") : filesha1(f)])),
-    filesha1("Dockerfile"),
+    data.docker_registry_image.dogfood.sha256_digest
   ]
   keep_locally = true
 }
@@ -300,7 +296,7 @@ resource "docker_container" "workspace" {
   # Use the docker gateway if the access URL is 127.0.0.1
   entrypoint = ["sh", "-c", coder_agent.dev.init_script]
   # CPU limits are unnecessary since Docker will load balance automatically
-  memory  = 32768
+  memory  = data.coder_workspace.me.owner == "code-asher" ? 65536 : 32768
   runtime = "sysbox-runc"
   env = [
     "CODER_AGENT_TOKEN=${coder_agent.dev.token}",
@@ -343,5 +339,9 @@ resource "coder_metadata" "container_info" {
   item {
     key   = "runtime"
     value = docker_container.workspace[0].runtime
+  }
+  item {
+    key   = "region"
+    value = data.coder_parameter.region.option[index(data.coder_parameter.region.option.*.value, data.coder_parameter.region.value)].name
   }
 }

@@ -14,14 +14,17 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/xerrors"
 
-	"github.com/coder/coder/coderd/audit"
-	"github.com/coder/coder/coderd/coderdtest"
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/coderd/rbac"
-	"github.com/coder/coder/codersdk"
-	"github.com/coder/coder/provisioner/echo"
-	"github.com/coder/coder/provisionersdk/proto"
-	"github.com/coder/coder/testutil"
+	"cdr.dev/slog"
+	"cdr.dev/slog/sloggers/slogtest"
+	"github.com/coder/coder/v2/coderd/audit"
+	"github.com/coder/coder/v2/coderd/coderdtest"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/database/dbtime"
+	"github.com/coder/coder/v2/coderd/rbac"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/provisioner/echo"
+	"github.com/coder/coder/v2/provisionersdk/proto"
+	"github.com/coder/coder/v2/testutil"
 )
 
 func TestWorkspaceBuild(t *testing.T) {
@@ -169,7 +172,7 @@ func TestWorkspaceBuilds(t *testing.T) {
 
 		// Test since
 		builds, err = client.WorkspaceBuilds(ctx,
-			codersdk.WorkspaceBuildsRequest{WorkspaceID: workspace.ID, Since: database.Now().Add(time.Minute)},
+			codersdk.WorkspaceBuildsRequest{WorkspaceID: workspace.ID, Since: dbtime.Now().Add(time.Minute)},
 		)
 		require.NoError(t, err)
 		require.Len(t, builds, 0)
@@ -177,7 +180,7 @@ func TestWorkspaceBuilds(t *testing.T) {
 		require.NotNil(t, builds)
 
 		builds, err = client.WorkspaceBuilds(ctx,
-			codersdk.WorkspaceBuildsRequest{WorkspaceID: workspace.ID, Since: database.Now().Add(-time.Hour)},
+			codersdk.WorkspaceBuildsRequest{WorkspaceID: workspace.ID, Since: dbtime.Now().Add(-time.Hour)},
 		)
 		require.NoError(t, err)
 		require.Len(t, builds, 1)
@@ -376,12 +379,12 @@ func TestPatchCancelWorkspaceBuild(t *testing.T) {
 		user := coderdtest.CreateFirstUser(t, client)
 		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
 			Parse: echo.ParseComplete,
-			ProvisionApply: []*proto.Provision_Response{{
-				Type: &proto.Provision_Response_Log{
+			ProvisionApply: []*proto.Response{{
+				Type: &proto.Response_Log{
 					Log: &proto.Log{},
 				},
 			}},
-			ProvisionPlan: echo.ProvisionComplete,
+			ProvisionPlan: echo.PlanComplete,
 		})
 		coderdtest.AwaitTemplateVersionJob(t, client, version.ID)
 		template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
@@ -401,26 +404,30 @@ func TestPatchCancelWorkspaceBuild(t *testing.T) {
 		require.Eventually(t, func() bool {
 			var err error
 			build, err = client.WorkspaceBuild(ctx, build.ID)
+			// job gets marked Failed when there is an Error; in practice we never get to Status = Canceled
+			// because provisioners report an Error when canceled. We check the Error string to ensure we don't mask
+			// other errors in this test.
 			return assert.NoError(t, err) &&
-				// The job will never actually cancel successfully because it will never send a
-				// provision complete response.
-				assert.Empty(t, build.Job.Error) &&
-				build.Job.Status == codersdk.ProvisionerJobCanceling
+				build.Job.Error == "canceled" &&
+				build.Job.Status == codersdk.ProvisionerJobFailed
 		}, testutil.WaitShort, testutil.IntervalFast)
 	})
 	t.Run("User is not allowed to cancel", func(t *testing.T) {
 		t.Parallel()
 
-		client := coderdtest.New(t, &coderdtest.Options{IncludeProvisionerDaemon: true})
+		// need to include our own logger because the provisioner (rightly) drops error logs when we shut down the
+		// test with a build in progress.
+		logger := slogtest.Make(t, &slogtest.Options{IgnoreErrors: true}).Leveled(slog.LevelDebug)
+		client := coderdtest.New(t, &coderdtest.Options{IncludeProvisionerDaemon: true, Logger: &logger})
 		owner := coderdtest.CreateFirstUser(t, client)
 		version := coderdtest.CreateTemplateVersion(t, client, owner.OrganizationID, &echo.Responses{
 			Parse: echo.ParseComplete,
-			ProvisionApply: []*proto.Provision_Response{{
-				Type: &proto.Provision_Response_Log{
+			ProvisionApply: []*proto.Response{{
+				Type: &proto.Response_Log{
 					Log: &proto.Log{},
 				},
 			}},
-			ProvisionPlan: echo.ProvisionComplete,
+			ProvisionPlan: echo.PlanComplete,
 		})
 		coderdtest.AwaitTemplateVersionJob(t, client, version.ID)
 		template := coderdtest.CreateTemplate(t, client, owner.OrganizationID, version.ID)
@@ -452,9 +459,9 @@ func TestWorkspaceBuildResources(t *testing.T) {
 		user := coderdtest.CreateFirstUser(t, client)
 		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
 			Parse: echo.ParseComplete,
-			ProvisionApply: []*proto.Provision_Response{{
-				Type: &proto.Provision_Response_Complete{
-					Complete: &proto.Provision_Complete{
+			ProvisionApply: []*proto.Response{{
+				Type: &proto.Response_Apply{
+					Apply: &proto.ApplyComplete{
 						Resources: []*proto.Resource{{
 							Name: "some",
 							Type: "example",
@@ -494,16 +501,16 @@ func TestWorkspaceBuildLogs(t *testing.T) {
 	user := coderdtest.CreateFirstUser(t, client)
 	version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
 		Parse: echo.ParseComplete,
-		ProvisionApply: []*proto.Provision_Response{{
-			Type: &proto.Provision_Response_Log{
+		ProvisionApply: []*proto.Response{{
+			Type: &proto.Response_Log{
 				Log: &proto.Log{
 					Level:  proto.LogLevel_INFO,
 					Output: "example",
 				},
 			},
 		}, {
-			Type: &proto.Provision_Response_Complete{
-				Complete: &proto.Provision_Complete{
+			Type: &proto.Response_Apply{
+				Apply: &proto.ApplyComplete{
 					Resources: []*proto.Resource{{
 						Name: "some",
 						Type: "example",
@@ -548,10 +555,10 @@ func TestWorkspaceBuildState(t *testing.T) {
 	wantState := []byte("some kinda state")
 	version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
 		Parse:         echo.ParseComplete,
-		ProvisionPlan: echo.ProvisionComplete,
-		ProvisionApply: []*proto.Provision_Response{{
-			Type: &proto.Provision_Response_Complete{
-				Complete: &proto.Provision_Complete{
+		ProvisionPlan: echo.PlanComplete,
+		ProvisionApply: []*proto.Response{{
+			Type: &proto.Response_Apply{
+				Apply: &proto.ApplyComplete{
 					State: wantState,
 				},
 			},
@@ -640,11 +647,51 @@ func TestWorkspaceBuildStatus(t *testing.T) {
 func TestWorkspaceBuildDebugMode(t *testing.T) {
 	t.Parallel()
 
+	t.Run("DebugModeDisabled", func(t *testing.T) {
+		t.Parallel()
+
+		// Create user
+		deploymentValues := coderdtest.DeploymentValues(t)
+		err := deploymentValues.EnableTerraformDebugMode.Set("false")
+		require.NoError(t, err)
+
+		adminClient := coderdtest.New(t, &coderdtest.Options{IncludeProvisionerDaemon: true, DeploymentValues: deploymentValues})
+		owner := coderdtest.CreateFirstUser(t, adminClient)
+
+		// Template author: create a template
+		version := coderdtest.CreateTemplateVersion(t, adminClient, owner.OrganizationID, nil)
+		template := coderdtest.CreateTemplate(t, adminClient, owner.OrganizationID, version.ID)
+		coderdtest.AwaitTemplateVersionJob(t, adminClient, version.ID)
+
+		// Template author: create a workspace
+		workspace := coderdtest.CreateWorkspace(t, adminClient, owner.OrganizationID, template.ID)
+		coderdtest.AwaitWorkspaceBuildJob(t, adminClient, workspace.LatestBuild.ID)
+
+		// Template author: try to start a workspace build in debug mode
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
+		defer cancel()
+
+		_, err = adminClient.CreateWorkspaceBuild(ctx, workspace.ID, codersdk.CreateWorkspaceBuildRequest{
+			TemplateVersionID: workspace.LatestBuild.TemplateVersionID,
+			Transition:        codersdk.WorkspaceTransitionStart,
+			LogLevel:          "debug",
+		})
+
+		// Template author: expect an error as the debug mode is disabled
+		require.NotNil(t, err)
+		var sdkError *codersdk.Error
+		isSdkError := xerrors.As(err, &sdkError)
+		require.True(t, isSdkError)
+		require.Contains(t, sdkError.Message, "Terraform debug mode is disabled in the deployment configuration.")
+	})
 	t.Run("AsRegularUser", func(t *testing.T) {
 		t.Parallel()
 
 		// Create users
-		templateAuthorClient := coderdtest.New(t, &coderdtest.Options{IncludeProvisionerDaemon: true})
+		deploymentValues := coderdtest.DeploymentValues(t)
+		deploymentValues.EnableTerraformDebugMode = true
+
+		templateAuthorClient := coderdtest.New(t, &coderdtest.Options{IncludeProvisionerDaemon: true, DeploymentValues: deploymentValues})
 		templateAuthor := coderdtest.CreateFirstUser(t, templateAuthorClient)
 		regularUserClient, _ := coderdtest.CreateAnotherUser(t, templateAuthorClient, templateAuthor.OrganizationID)
 
@@ -672,60 +719,99 @@ func TestWorkspaceBuildDebugMode(t *testing.T) {
 		var sdkError *codersdk.Error
 		isSdkError := xerrors.As(err, &sdkError)
 		require.True(t, isSdkError)
-		require.Contains(t, sdkError.Message, "Workspace builds with a custom log level are restricted to template authors only.")
+		require.Contains(t, sdkError.Message, "Workspace builds with a custom log level are restricted to administrators only.")
 	})
 	t.Run("AsTemplateAuthor", func(t *testing.T) {
 		t.Parallel()
 
 		// Create users
-		adminClient := coderdtest.New(t, &coderdtest.Options{IncludeProvisionerDaemon: true})
+		deploymentValues := coderdtest.DeploymentValues(t)
+		deploymentValues.EnableTerraformDebugMode = true
+
+		adminClient := coderdtest.New(t, &coderdtest.Options{IncludeProvisionerDaemon: true, DeploymentValues: deploymentValues})
 		admin := coderdtest.CreateFirstUser(t, adminClient)
-		templateAdminClient, _ := coderdtest.CreateAnotherUser(t, adminClient, admin.OrganizationID, rbac.RoleTemplateAdmin())
+		templateAuthorClient, _ := coderdtest.CreateAnotherUser(t, adminClient, admin.OrganizationID, rbac.RoleTemplateAdmin())
+
+		// Template author: create a template
+		version := coderdtest.CreateTemplateVersion(t, templateAuthorClient, admin.OrganizationID, nil)
+		template := coderdtest.CreateTemplate(t, templateAuthorClient, admin.OrganizationID, version.ID)
+		coderdtest.AwaitTemplateVersionJob(t, templateAuthorClient, version.ID)
+
+		// Template author: create a workspace
+		workspace := coderdtest.CreateWorkspace(t, templateAuthorClient, admin.OrganizationID, template.ID)
+		coderdtest.AwaitWorkspaceBuildJob(t, templateAuthorClient, workspace.LatestBuild.ID)
+
+		// Template author: try to start a workspace build in debug mode
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
+		defer cancel()
+
+		_, err := templateAuthorClient.CreateWorkspaceBuild(ctx, workspace.ID, codersdk.CreateWorkspaceBuildRequest{
+			TemplateVersionID: workspace.LatestBuild.TemplateVersionID,
+			Transition:        codersdk.WorkspaceTransitionStart,
+			LogLevel:          "debug",
+		})
+
+		// Template author: expect an error as the debug mode is disabled
+		require.NotNil(t, err)
+		var sdkError *codersdk.Error
+		isSdkError := xerrors.As(err, &sdkError)
+		require.True(t, isSdkError)
+		require.Contains(t, sdkError.Message, "Workspace builds with a custom log level are restricted to administrators only.")
+	})
+	t.Run("AsAdmin", func(t *testing.T) {
+		t.Parallel()
+
+		// Create users
+		deploymentValues := coderdtest.DeploymentValues(t)
+		deploymentValues.EnableTerraformDebugMode = true
+
+		adminClient := coderdtest.New(t, &coderdtest.Options{IncludeProvisionerDaemon: true, DeploymentValues: deploymentValues})
+		admin := coderdtest.CreateFirstUser(t, adminClient)
 
 		// Interact as template admin
 		echoResponses := &echo.Responses{
 			Parse:         echo.ParseComplete,
-			ProvisionPlan: echo.ProvisionComplete,
-			ProvisionApply: []*proto.Provision_Response{{
-				Type: &proto.Provision_Response_Log{
+			ProvisionPlan: echo.PlanComplete,
+			ProvisionApply: []*proto.Response{{
+				Type: &proto.Response_Log{
 					Log: &proto.Log{
 						Level:  proto.LogLevel_DEBUG,
 						Output: "want-it",
 					},
 				},
 			}, {
-				Type: &proto.Provision_Response_Log{
+				Type: &proto.Response_Log{
 					Log: &proto.Log{
 						Level:  proto.LogLevel_TRACE,
 						Output: "dont-want-it",
 					},
 				},
 			}, {
-				Type: &proto.Provision_Response_Log{
+				Type: &proto.Response_Log{
 					Log: &proto.Log{
 						Level:  proto.LogLevel_DEBUG,
 						Output: "done",
 					},
 				},
 			}, {
-				Type: &proto.Provision_Response_Complete{
-					Complete: &proto.Provision_Complete{},
+				Type: &proto.Response_Apply{
+					Apply: &proto.ApplyComplete{},
 				},
 			}},
 		}
-		version := coderdtest.CreateTemplateVersion(t, templateAdminClient, admin.OrganizationID, echoResponses)
-		template := coderdtest.CreateTemplate(t, templateAdminClient, admin.OrganizationID, version.ID)
-		coderdtest.AwaitTemplateVersionJob(t, templateAdminClient, version.ID)
+		version := coderdtest.CreateTemplateVersion(t, adminClient, admin.OrganizationID, echoResponses)
+		template := coderdtest.CreateTemplate(t, adminClient, admin.OrganizationID, version.ID)
+		coderdtest.AwaitTemplateVersionJob(t, adminClient, version.ID)
 
 		// Create workspace
-		workspace := coderdtest.CreateWorkspace(t, templateAdminClient, admin.OrganizationID, template.ID)
-		coderdtest.AwaitWorkspaceBuildJob(t, templateAdminClient, workspace.LatestBuild.ID)
+		workspace := coderdtest.CreateWorkspace(t, adminClient, admin.OrganizationID, template.ID)
+		coderdtest.AwaitWorkspaceBuildJob(t, adminClient, workspace.LatestBuild.ID)
 
 		// Create workspace build
 		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
 		defer cancel()
 
-		build, err := templateAdminClient.CreateWorkspaceBuild(ctx, workspace.ID, codersdk.CreateWorkspaceBuildRequest{
+		build, err := adminClient.CreateWorkspaceBuild(ctx, workspace.ID, codersdk.CreateWorkspaceBuildRequest{
 			TemplateVersionID: workspace.LatestBuild.TemplateVersionID,
 			Transition:        codersdk.WorkspaceTransitionStart,
 			ProvisionerState:  []byte(" "),
@@ -733,10 +819,10 @@ func TestWorkspaceBuildDebugMode(t *testing.T) {
 		})
 		require.Nil(t, err)
 
-		build = coderdtest.AwaitWorkspaceBuildJob(t, templateAdminClient, build.ID)
+		build = coderdtest.AwaitWorkspaceBuildJob(t, adminClient, build.ID)
 
 		// Watch for incoming logs
-		logs, closer, err := templateAdminClient.WorkspaceBuildLogsAfter(ctx, build.ID, 0)
+		logs, closer, err := adminClient.WorkspaceBuildLogsAfter(ctx, build.ID, 0)
 		require.NoError(t, err)
 		defer closer.Close()
 
@@ -752,7 +838,10 @@ func TestWorkspaceBuildDebugMode(t *testing.T) {
 				if !ok {
 					break processingLogs
 				}
-
+				t.Logf("got log: %s -- %s | %s | %s", log.Level, log.Stage, log.Source, log.Output)
+				if log.Source != "provisioner" {
+					continue
+				}
 				logsProcessed++
 
 				require.NotEqual(t, "dont-want-it", log.Output, "unexpected log message", "%s log message shouldn't be logged: %s")
@@ -762,7 +851,6 @@ func TestWorkspaceBuildDebugMode(t *testing.T) {
 				}
 			}
 		}
-
-		require.Len(t, echoResponses.ProvisionApply, logsProcessed)
+		require.Equal(t, 2, logsProcessed)
 	})
 }

@@ -15,6 +15,7 @@ export const Language = {
   rolesLabel: "Roles",
   statusLabel: "Status",
   lastSeenLabel: "Last Seen",
+  loginTypeLabel: "Login Type",
 }
 
 export interface UsersTableProps {
@@ -22,6 +23,7 @@ export interface UsersTableProps {
   roles?: TypesGen.AssignableRoles[]
   isUpdatingUserRoles?: boolean
   canEditUsers?: boolean
+  canViewActivity?: boolean
   isLoading?: boolean
   onSuspendUser: (user: TypesGen.User) => void
   onActivateUser: (user: TypesGen.User) => void
@@ -35,6 +37,8 @@ export interface UsersTableProps {
   ) => void
   isNonInitialPage: boolean
   actorID: string
+  oidcRoleSyncEnabled: boolean
+  authMethods?: TypesGen.AuthMethods
 }
 
 export const UsersTable: FC<React.PropsWithChildren<UsersTableProps>> = ({
@@ -49,9 +53,12 @@ export const UsersTable: FC<React.PropsWithChildren<UsersTableProps>> = ({
   onUpdateUserRoles,
   isUpdatingUserRoles,
   canEditUsers,
+  canViewActivity,
   isLoading,
   isNonInitialPage,
   actorID,
+  oidcRoleSyncEnabled,
+  authMethods,
 }) => {
   return (
     <TableContainer>
@@ -65,9 +72,8 @@ export const UsersTable: FC<React.PropsWithChildren<UsersTableProps>> = ({
                 <UserRoleHelpTooltip />
               </Stack>
             </TableCell>
+            <TableCell width="15%">{Language.loginTypeLabel}</TableCell>
             <TableCell width="15%">{Language.statusLabel}</TableCell>
-            <TableCell width="15%">{Language.lastSeenLabel}</TableCell>
-
             {/* 1% is a trick to make the table cell width fit the content */}
             {canEditUsers && <TableCell width="1%" />}
           </TableRow>
@@ -78,6 +84,7 @@ export const UsersTable: FC<React.PropsWithChildren<UsersTableProps>> = ({
             roles={roles}
             isLoading={isLoading}
             canEditUsers={canEditUsers}
+            canViewActivity={canViewActivity}
             isUpdatingUserRoles={isUpdatingUserRoles}
             onActivateUser={onActivateUser}
             onDeleteUser={onDeleteUser}
@@ -88,6 +95,8 @@ export const UsersTable: FC<React.PropsWithChildren<UsersTableProps>> = ({
             onUpdateUserRoles={onUpdateUserRoles}
             isNonInitialPage={isNonInitialPage}
             actorID={actorID}
+            oidcRoleSyncEnabled={oidcRoleSyncEnabled}
+            authMethods={authMethods}
           />
         </TableBody>
       </Table>

@@ -23,13 +23,13 @@ import (
 
 	"cdr.dev/slog"
 	"cdr.dev/slog/sloggers/slogtest"
-	"github.com/coder/coder/agent"
-	"github.com/coder/coder/coderd/wsconncache"
-	"github.com/coder/coder/codersdk"
-	"github.com/coder/coder/codersdk/agentsdk"
-	"github.com/coder/coder/tailnet"
-	"github.com/coder/coder/tailnet/tailnettest"
-	"github.com/coder/coder/testutil"
+	"github.com/coder/coder/v2/agent"
+	"github.com/coder/coder/v2/coderd/wsconncache"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/codersdk/agentsdk"
+	"github.com/coder/coder/v2/tailnet"
+	"github.com/coder/coder/v2/tailnet/tailnettest"
+	"github.com/coder/coder/v2/testutil"
 )
 
 func TestMain(m *testing.M) {
@@ -157,30 +157,32 @@ func TestCache(t *testing.T) {
 func setupAgent(t *testing.T, manifest agentsdk.Manifest, ptyTimeout time.Duration) *codersdk.WorkspaceAgentConn {
 	t.Helper()
 	logger := slogtest.Make(t, nil).Leveled(slog.LevelDebug)
-	manifest.DERPMap = tailnettest.RunDERPAndSTUN(t)
+	manifest.DERPMap, _ = tailnettest.RunDERPAndSTUN(t)
 
 	coordinator := tailnet.NewCoordinator(logger)
 	t.Cleanup(func() {
 		_ = coordinator.Close()
 	})
-	agentID := uuid.New()
+	manifest.AgentID = uuid.New()
 	closer := agent.New(agent.Options{
 		Client: &client{
 			t:           t,
-			agentID:     agentID,
+			agentID:     manifest.AgentID,
 			manifest:    manifest,
 			coordinator: coordinator,
 		},
 		Logger:                 logger.Named("agent"),
 		ReconnectingPTYTimeout: ptyTimeout,
+		Addresses:              []netip.Prefix{netip.PrefixFrom(codersdk.WorkspaceAgentIP, 128)},
 	})
 	t.Cleanup(func() {
 		_ = closer.Close()
 	})
 	conn, err := tailnet.NewConn(&tailnet.Options{
-		Addresses: []netip.Prefix{netip.PrefixFrom(tailnet.IP(), 128)},
-		DERPMap:   manifest.DERPMap,
-		Logger:    slogtest.Make(t, nil).Named("tailnet").Leveled(slog.LevelDebug),
+		Addresses:           []netip.Prefix{netip.PrefixFrom(tailnet.IP(), 128)},
+		DERPMap:             manifest.DERPMap,
+		DERPForceWebSockets: manifest.DERPForceWebSockets,
+		Logger:              slogtest.Make(t, nil).Named("tailnet").Leveled(slog.LevelDebug),
 	})
 	require.NoError(t, err)
 	clientConn, serverConn := net.Pipe()
@@ -189,14 +191,15 @@ func setupAgent(t *testing.T, manifest agentsdk.Manifest, ptyTimeout time.Durati
 		_ = serverConn.Close()
 		_ = conn.Close()
 	})
-	go coordinator.ServeClient(serverConn, uuid.New(), agentID)
-	sendNode, _ := tailnet.ServeCoordinator(clientConn, func(node []*tailnet.Node) error {
-		return conn.UpdateNodes(node, false)
+	go coordinator.ServeClient(serverConn, uuid.New(), manifest.AgentID)
+	sendNode, _ := tailnet.ServeCoordinator(clientConn, func(nodes []*tailnet.Node) error {
+		return conn.UpdateNodes(nodes, false)
 	})
 	conn.SetNodeCallback(sendNode)
-	agentConn := &codersdk.WorkspaceAgentConn{
-		Conn: conn,
-	}
+	agentConn := codersdk.NewWorkspaceAgentConn(conn, codersdk.WorkspaceAgentConnOptions{
+		AgentID: manifest.AgentID,
+		AgentIP: codersdk.WorkspaceAgentIP,
+	})
 	t.Cleanup(func() {
 		_ = agentConn.Close()
 	})
@@ -217,6 +220,24 @@ type client struct {
 
 func (c *client) Manifest(_ context.Context) (agentsdk.Manifest, error) {
 	return c.manifest, nil
+}
+
+type closer struct {
+	closeFunc func() error
+}
+
+func (c *closer) Close() error {
+	return c.closeFunc()
+}
+
+func (*client) DERPMapUpdates(_ context.Context) (<-chan agentsdk.DERPMapUpdate, io.Closer, error) {
+	closed := make(chan struct{})
+	return make(<-chan agentsdk.DERPMapUpdate), &closer{
+		closeFunc: func() error {
+			close(closed)
+			return nil
+		},
+	}, nil
 }
 
 func (c *client) Listen(_ context.Context) (net.Conn, error) {
@@ -254,6 +275,10 @@ func (*client) PostStartup(_ context.Context, _ agentsdk.PostStartupRequest) err
 	return nil
 }
 
-func (*client) PatchStartupLogs(_ context.Context, _ agentsdk.PatchStartupLogs) error {
+func (*client) PatchLogs(_ context.Context, _ agentsdk.PatchLogs) error {
 	return nil
+}
+
+func (*client) GetServiceBanner(_ context.Context) (codersdk.ServiceBannerConfig, error) {
+	return codersdk.ServiceBannerConfig{}, nil
 }

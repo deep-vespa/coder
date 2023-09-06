@@ -2,18 +2,17 @@ package cliui_test
 
 import (
 	"context"
-	"net/url"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/coder/coder/cli/clibase"
-	"github.com/coder/coder/cli/cliui"
-	"github.com/coder/coder/codersdk"
-	"github.com/coder/coder/pty/ptytest"
-	"github.com/coder/coder/testutil"
+	"github.com/coder/coder/v2/cli/clibase"
+	"github.com/coder/coder/v2/cli/cliui"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/pty/ptytest"
+	"github.com/coder/coder/v2/testutil"
 )
 
 func TestGitAuth(t *testing.T) {
@@ -33,7 +32,7 @@ func TestGitAuth(t *testing.T) {
 						ID:              "github",
 						Type:            codersdk.GitProviderGitHub,
 						Authenticated:   fetched.Load(),
-						AuthenticateURL: "https://example.com/gitauth/github?redirect=" + url.QueryEscape("/gitauth?notify"),
+						AuthenticateURL: "https://example.com/gitauth/github",
 					}}, nil
 				},
 				FetchInterval: time.Millisecond,

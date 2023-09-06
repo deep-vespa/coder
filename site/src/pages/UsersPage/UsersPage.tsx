@@ -9,8 +9,7 @@ import { useMe } from "hooks/useMe"
 import { usePermissions } from "hooks/usePermissions"
 import { FC, ReactNode, useEffect } from "react"
 import { Helmet } from "react-helmet-async"
-import { useNavigate } from "react-router"
-import { useSearchParams } from "react-router-dom"
+import { useSearchParams, useNavigate } from "react-router-dom"
 import { siteRolesMachine } from "xServices/roles/siteRolesXService"
 import { usersMachine } from "xServices/users/usersXService"
 import { ConfirmDialog } from "../../components/Dialogs/ConfirmDialog/ConfirmDialog"
@@ -18,8 +17,11 @@ import { ResetPasswordDialog } from "../../components/Dialogs/ResetPasswordDialo
 import { pageTitle } from "../../utils/page"
 import { UsersPageView } from "./UsersPageView"
 import { useStatusFilterMenu } from "./UsersFilter"
-import { useDashboard } from "components/Dashboard/DashboardProvider"
 import { useFilter } from "components/Filter/filter"
+import { useDashboard } from "components/Dashboard/DashboardProvider"
+import { deploymentConfigMachine } from "xServices/deploymentConfig/deploymentConfigMachine"
+import { useQuery } from "@tanstack/react-query"
+import { getAuthMethods } from "api/api"
 
 export const Language = {
   suspendDialogTitle: "Suspend user",
@@ -36,6 +38,7 @@ const getSelectedUser = (id: string, users?: User[]) =>
 export const UsersPage: FC<{ children?: ReactNode }> = () => {
   const navigate = useNavigate()
   const searchParamsResult = useSearchParams()
+  const { entitlements } = useDashboard()
   const [searchParams, setSearchParams] = searchParamsResult
   const filter = searchParams.get("filter") ?? ""
   const [usersState, usersSend] = useMachine(usersMachine, {
@@ -60,7 +63,7 @@ export const UsersPage: FC<{ children?: ReactNode }> = () => {
     count,
   } = usersState.context
 
-  const { updateUsers: canEditUsers } = usePermissions()
+  const { updateUsers: canEditUsers, viewDeploymentValues } = usePermissions()
   const [rolesState] = useMachine(siteRolesMachine, {
     context: {
       hasPermission: canEditUsers,
@@ -68,17 +71,16 @@ export const UsersPage: FC<{ children?: ReactNode }> = () => {
   })
   const { roles } = rolesState.context
 
-  // Is loading if
-  // - users are loading or
-  // - the user can edit the users but the roles are loading
-  const isLoading =
-    usersState.matches("gettingUsers") ||
-    (canEditUsers && rolesState.matches("gettingRoles"))
-
+  // Ideally this only runs if 'canViewDeployment' is true.
+  // TODO: Prevent api call if the user does not have the perms.
+  const [state] = useMachine(deploymentConfigMachine)
+  const { deploymentValues } = state.context
+  // Indicates if oidc roles are synced from the oidc idp.
+  // Assign 'false' if unknown.
+  const oidcRoleSyncEnabled =
+    viewDeploymentValues &&
+    deploymentValues?.config.oidc?.user_role_field !== ""
   const me = useMe()
-
-  // New filter
-  const dashboard = useDashboard()
   const useFilterResult = useFilter({
     searchParamsResult,
     onUpdate: () => {
@@ -96,6 +98,19 @@ export const UsersPage: FC<{ children?: ReactNode }> = () => {
         status: option?.value,
       }),
   })
+  const authMethods = useQuery({
+    queryKey: ["authMethods"],
+    queryFn: () => {
+      return getAuthMethods()
+    },
+  })
+  // Is loading if
+  // - users are loading or
+  // - the user can edit the users but the roles are loading
+  const isLoading =
+    usersState.matches("gettingUsers") ||
+    (canEditUsers && rolesState.matches("gettingRoles")) ||
+    authMethods.isLoading
 
   return (
     <>
@@ -103,8 +118,10 @@ export const UsersPage: FC<{ children?: ReactNode }> = () => {
         <title>{pageTitle("Users")}</title>
       </Helmet>
       <UsersPageView
+        oidcRoleSyncEnabled={oidcRoleSyncEnabled}
         roles={roles}
         users={users}
+        authMethods={authMethods.data}
         count={count}
         onListWorkspaces={(user) => {
           navigate(
@@ -148,28 +165,20 @@ export const UsersPage: FC<{ children?: ReactNode }> = () => {
             roles,
           })
         }}
-        error={getUsersError}
         isUpdatingUserRoles={usersState.matches("updatingUserRoles")}
         isLoading={isLoading}
         canEditUsers={canEditUsers}
+        canViewActivity={entitlements.features.audit_log.enabled}
         paginationRef={paginationRef}
         isNonInitialPage={nonInitialPage(searchParams)}
         actorID={me.id}
-        filterProps={
-          dashboard.experiments.includes("workspace_filter")
-            ? {
-                filter: useFilterResult,
-                menus: {
-                  status: statusMenu,
-                },
-              }
-            : {
-                filter: usersState.context.filter,
-                onFilter: (query) => {
-                  usersSend({ type: "UPDATE_FILTER", query })
-                },
-              }
-        }
+        filterProps={{
+          filter: useFilterResult,
+          error: getUsersError,
+          menus: {
+            status: statusMenu,
+          },
+        }}
       />
 
       <DeleteDialog

@@ -8,6 +8,12 @@ import { Stack } from "components/Stack/Stack"
 import Checkbox from "@mui/material/Checkbox"
 import UserIcon from "@mui/icons-material/PersonOutline"
 import { Role } from "api/typesGenerated"
+import {
+  HelpTooltip,
+  HelpTooltipText,
+  HelpTooltipTitle,
+} from "components/Tooltips/HelpTooltip"
+import { Maybe } from "components/Conditionals/Maybe"
 
 const Option: React.FC<{
   value: string
@@ -31,7 +37,7 @@ const Option: React.FC<{
             onChange(e.currentTarget.value)
           }}
         />
-        <Stack spacing={0.5}>
+        <Stack spacing={0}>
           <strong>{name}</strong>
           <span className={styles.optionDescription}>{description}</span>
         </Stack>
@@ -46,6 +52,8 @@ export interface EditRolesButtonProps {
   selectedRoles: Role[]
   onChange: (roles: Role["name"][]) => void
   defaultIsOpen?: boolean
+  oidcRoleSync: boolean
+  userLoginType: string
 }
 
 export const EditRolesButton: FC<EditRolesButtonProps> = ({
@@ -54,6 +62,8 @@ export const EditRolesButton: FC<EditRolesButtonProps> = ({
   onChange,
   isLoading,
   defaultIsOpen = false,
+  userLoginType,
+  oidcRoleSync,
 }) => {
   const styles = useStyles()
   const { t } = useTranslation("usersPage")
@@ -71,17 +81,30 @@ export const EditRolesButton: FC<EditRolesButtonProps> = ({
     onChange([...selectedRoleNames, roleName])
   }
 
+  const canSetRoles =
+    userLoginType !== "oidc" || (userLoginType === "oidc" && !oidcRoleSync)
+
   return (
     <>
-      <IconButton
-        ref={anchorRef}
-        size="small"
-        className={styles.editButton}
-        title={t("editUserRolesTooltip") || ""}
-        onClick={() => setIsOpen(true)}
-      >
-        <EditSquare />
-      </IconButton>
+      <Maybe condition={canSetRoles}>
+        <IconButton
+          ref={anchorRef}
+          size="small"
+          className={styles.editButton}
+          title={t("editUserRolesTooltip") || ""}
+          onClick={() => setIsOpen(true)}
+        >
+          <EditSquare />
+        </IconButton>
+      </Maybe>
+      <Maybe condition={!canSetRoles}>
+        <HelpTooltip size="small">
+          <HelpTooltipTitle>Externally controlled</HelpTooltipTitle>
+          <HelpTooltipText>
+            Roles for this user are controlled by the OIDC identity provider.
+          </HelpTooltipText>
+        </HelpTooltip>
+      </Maybe>
 
       <Popover
         id={id}
@@ -119,7 +142,7 @@ export const EditRolesButton: FC<EditRolesButtonProps> = ({
         <div className={styles.footer}>
           <Stack direction="row" alignItems="flex-start">
             <UserIcon className={styles.userIcon} />
-            <Stack spacing={0.5}>
+            <Stack spacing={0}>
               <strong>{t("member")}</strong>
               <span className={styles.optionDescription}>
                 {t("roleDescription.member")}
@@ -159,7 +182,7 @@ const useStyles = makeStyles((theme) => ({
     padding: 0,
 
     "&:disabled": {
-      opacity: 0.5,
+      opacity: 0,
     },
   },
   options: {
@@ -167,6 +190,7 @@ const useStyles = makeStyles((theme) => ({
   },
   option: {
     cursor: "pointer",
+    fontSize: 14,
   },
   checkbox: {
     padding: 0,
@@ -179,13 +203,15 @@ const useStyles = makeStyles((theme) => ({
     },
   },
   optionDescription: {
-    fontSize: 12,
+    fontSize: 13,
     color: theme.palette.text.secondary,
+    lineHeight: "160%",
   },
   footer: {
     padding: theme.spacing(3),
     backgroundColor: theme.palette.background.paper,
     borderTop: `1px solid ${theme.palette.divider}`,
+    fontSize: 14,
   },
   userIcon: {
     width: theme.spacing(2.5), // Same as the checkbox

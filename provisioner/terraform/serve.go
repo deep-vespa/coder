@@ -12,11 +12,8 @@ import (
 	"golang.org/x/xerrors"
 
 	"cdr.dev/slog"
-	"github.com/coder/coder/provisionersdk"
-)
-
-const (
-	defaultExitTimeout = 5 * time.Minute
+	"github.com/coder/coder/v2/coderd/unhanger"
+	"github.com/coder/coder/v2/provisionersdk"
 )
 
 type ServeOptions struct {
@@ -27,18 +24,18 @@ type ServeOptions struct {
 	BinaryPath string
 	// CachePath must not be used by multiple processes at once.
 	CachePath string
-	Logger    slog.Logger
 	Tracer    trace.Tracer
 
 	// ExitTimeout defines how long we will wait for a running Terraform
-	// command to exit (cleanly) if the provision was stopped. This only
-	// happens when the command is still running after the provision
-	// stream is closed. If the provision is canceled via RPC, this
-	// timeout will not be used.
+	// command to exit (cleanly) if the provision was stopped. This
+	// happens when the provision is canceled via RPC and when the command is
+	// still running after the provision stream is closed.
 	//
 	// This is a no-op on Windows where the process can't be interrupted.
 	//
-	// Default value: 5 minutes.
+	// Default value: 3 minutes (unhanger.HungJobExitTimeout). This value should
+	// be kept less than the value that Coder uses to mark hung jobs as failed,
+	// which is 5 minutes (see unhanger package).
 	ExitTimeout time.Duration
 }
 
@@ -96,7 +93,7 @@ func Serve(ctx context.Context, options *ServeOptions) error {
 		options.Tracer = trace.NewNoopTracerProvider().Tracer("noop")
 	}
 	if options.ExitTimeout == 0 {
-		options.ExitTimeout = defaultExitTimeout
+		options.ExitTimeout = unhanger.HungJobExitTimeout
 	}
 	return provisionersdk.Serve(ctx, &server{
 		execMut:     &sync.Mutex{},
@@ -130,5 +127,6 @@ func (s *server) executor(workdir string) *executor {
 		binaryPath: s.binaryPath,
 		cachePath:  s.cachePath,
 		workdir:    workdir,
+		logger:     s.logger.Named("executor"),
 	}
 }

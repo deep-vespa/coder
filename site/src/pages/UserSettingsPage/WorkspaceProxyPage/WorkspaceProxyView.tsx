@@ -17,12 +17,11 @@ import { ErrorAlert } from "components/Alert/ErrorAlert"
 export interface WorkspaceProxyViewProps {
   proxies?: Region[]
   proxyLatencies?: Record<string, ProxyLatencyReport>
-  getWorkspaceProxiesError?: Error | unknown
+  getWorkspaceProxiesError?: unknown
   isLoading: boolean
   hasLoaded: boolean
-  onSelect: (proxy: Region) => void
   preferredProxy?: Region
-  selectProxyError?: Error | unknown
+  selectProxyError?: unknown
 }
 
 export const WorkspaceProxyView: FC<
@@ -33,9 +32,7 @@ export const WorkspaceProxyView: FC<
   getWorkspaceProxiesError,
   isLoading,
   hasLoaded,
-  onSelect,
   selectProxyError,
-  preferredProxy,
 }) => {
   return (
     <Stack>
@@ -69,10 +66,6 @@ export const WorkspaceProxyView: FC<
                     latency={proxyLatencies?.[proxy.id]}
                     key={proxy.id}
                     proxy={proxy}
-                    onSelectRegion={onSelect}
-                    preferred={
-                      preferredProxy ? proxy.id === preferredProxy.id : false
-                    }
                   />
                 ))}
               </Cond>

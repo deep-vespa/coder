@@ -11,11 +11,12 @@ import (
 
 	"github.com/coder/terraform-provider-coder/provider"
 
-	"github.com/coder/coder/coderd/util/slice"
-	stringutil "github.com/coder/coder/coderd/util/strings"
-	"github.com/coder/coder/codersdk"
-	"github.com/coder/coder/provisioner"
-	"github.com/coder/coder/provisionersdk/proto"
+	"github.com/coder/coder/v2/coderd/util/slice"
+	stringutil "github.com/coder/coder/v2/coderd/util/strings"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/provisioner"
+	"github.com/coder/coder/v2/provisionersdk"
+	"github.com/coder/coder/v2/provisionersdk/proto"
 )
 
 type agentMetadata struct {
@@ -40,12 +41,21 @@ type agentAttributes struct {
 	TroubleshootingURL       string            `mapstructure:"troubleshooting_url"`
 	MOTDFile                 string            `mapstructure:"motd_file"`
 	// Deprecated, but remains here for backwards compatibility.
-	LoginBeforeReady             bool            `mapstructure:"login_before_ready"`
-	StartupScriptBehavior        string          `mapstructure:"startup_script_behavior"`
-	StartupScriptTimeoutSeconds  int32           `mapstructure:"startup_script_timeout"`
-	ShutdownScript               string          `mapstructure:"shutdown_script"`
-	ShutdownScriptTimeoutSeconds int32           `mapstructure:"shutdown_script_timeout"`
-	Metadata                     []agentMetadata `mapstructure:"metadata"`
+	LoginBeforeReady             bool                         `mapstructure:"login_before_ready"`
+	StartupScriptBehavior        string                       `mapstructure:"startup_script_behavior"`
+	StartupScriptTimeoutSeconds  int32                        `mapstructure:"startup_script_timeout"`
+	ShutdownScript               string                       `mapstructure:"shutdown_script"`
+	ShutdownScriptTimeoutSeconds int32                        `mapstructure:"shutdown_script_timeout"`
+	Metadata                     []agentMetadata              `mapstructure:"metadata"`
+	DisplayApps                  []agentDisplayAppsAttributes `mapstructure:"display_apps"`
+}
+
+type agentDisplayAppsAttributes struct {
+	VSCode               bool `mapstructure:"vscode"`
+	VSCodeInsiders       bool `mapstructure:"vscode_insiders"`
+	WebTerminal          bool `mapstructure:"web_terminal"`
+	SSHHelper            bool `mapstructure:"ssh_helper"`
+	PortForwardingHelper bool `mapstructure:"port_forwarding_helper"`
 }
 
 // A mapping of attributes on the "coder_app" resource.
@@ -97,8 +107,7 @@ type State struct {
 
 // ConvertState consumes Terraform state and a GraphViz representation
 // produced by `terraform graph` to produce resources consumable by Coder.
-// nolint:gocyclo
-func ConvertState(modules []*tfjson.StateModule, rawGraph string, rawParameterNames []string) (*State, error) {
+func ConvertState(modules []*tfjson.StateModule, rawGraph string) (*State, error) {
 	parsedGraph, err := gographviz.ParseString(rawGraph)
 	if err != nil {
 		return nil, xerrors.Errorf("parse graph: %w", err)
@@ -182,6 +191,20 @@ func ConvertState(modules []*tfjson.StateModule, rawGraph string, rawParameterNa
 				})
 			}
 
+			// If a user doesn't specify 'display_apps' then they default
+			// into all apps except VSCode Insiders.
+			displayApps := provisionersdk.DefaultDisplayApps()
+
+			if len(attrs.DisplayApps) != 0 {
+				displayApps = &proto.DisplayApps{
+					Vscode:               attrs.DisplayApps[0].VSCode,
+					VscodeInsiders:       attrs.DisplayApps[0].VSCodeInsiders,
+					WebTerminal:          attrs.DisplayApps[0].WebTerminal,
+					PortForwardingHelper: attrs.DisplayApps[0].PortForwardingHelper,
+					SshHelper:            attrs.DisplayApps[0].SSHHelper,
+				}
+			}
+
 			agent := &proto.Agent{
 				Name:                         tfResource.Name,
 				Id:                           attrs.ID,
@@ -198,6 +221,7 @@ func ConvertState(modules []*tfjson.StateModule, rawGraph string, rawParameterNa
 				ShutdownScript:               attrs.ShutdownScript,
 				ShutdownScriptTimeoutSeconds: attrs.ShutdownScriptTimeoutSeconds,
 				Metadata:                     metadata,
+				DisplayApps:                  displayApps,
 			}
 			switch attrs.Auth {
 			case "token":
@@ -385,6 +409,7 @@ func ConvertState(modules []*tfjson.StateModule, rawGraph string, rawParameterNa
 	resourceIcon := map[string]string{}
 	resourceCost := map[string]int32{}
 
+	metadataTargetLabels := map[string]bool{}
 	for _, resources := range tfResourcesByLabel {
 		for _, resource := range resources {
 			if resource.Type != "coder_metadata" {
@@ -396,7 +421,6 @@ func ConvertState(modules []*tfjson.StateModule, rawGraph string, rawParameterNa
 			if err != nil {
 				return nil, xerrors.Errorf("decode metadata attributes: %w", err)
 			}
-
 			resourceLabel := convertAddressToLabel(resource.Address)
 
 			var attachedNode *gographviz.Node
@@ -432,6 +456,11 @@ func ConvertState(modules []*tfjson.StateModule, rawGraph string, rawParameterNa
 				continue
 			}
 			targetLabel := attachedResource.Label
+
+			if metadataTargetLabels[targetLabel] {
+				return nil, xerrors.Errorf("duplicate metadata resource: %s", targetLabel)
+			}
+			metadataTargetLabels[targetLabel] = true
 
 			resourceHidden[targetLabel] = attrs.Hide
 			resourceIcon[targetLabel] = attrs.Icon
@@ -478,22 +507,23 @@ func ConvertState(modules []*tfjson.StateModule, rawGraph string, rawParameterNa
 
 	var duplicatedParamNames []string
 	parameters := make([]*proto.RichParameter, 0)
-	for _, resource := range orderedRichParametersResources(tfResourcesRichParameters, rawParameterNames) {
+	for _, resource := range tfResourcesRichParameters {
 		var param provider.Parameter
 		err = mapstructure.Decode(resource.AttributeValues, &param)
 		if err != nil {
 			return nil, xerrors.Errorf("decode map values for coder_parameter.%s: %w", resource.Name, err)
 		}
 		protoParam := &proto.RichParameter{
-			Name:               param.Name,
-			DisplayName:        param.DisplayName,
-			Description:        param.Description,
-			Type:               param.Type,
-			Mutable:            param.Mutable,
-			DefaultValue:       param.Default,
-			Icon:               param.Icon,
-			Required:           !param.Optional,
-			LegacyVariableName: param.LegacyVariableName,
+			Name:         param.Name,
+			DisplayName:  param.DisplayName,
+			Description:  param.Description,
+			Type:         param.Type,
+			Mutable:      param.Mutable,
+			DefaultValue: param.Default,
+			Icon:         param.Icon,
+			Required:     !param.Optional,
+			Order:        int32(param.Order),
+			Ephemeral:    param.Ephemeral,
 		}
 		if len(param.Validation) == 1 {
 			protoParam.ValidationRegex = param.Validation[0].Regex
@@ -716,36 +746,4 @@ func findResourcesInGraph(graph *gographviz.Graph, tfResourcesByLabel map[string
 	}
 
 	return graphResources
-}
-
-func orderedRichParametersResources(tfResourcesRichParameters []*tfjson.StateResource, orderedNames []string) []*tfjson.StateResource {
-	if len(orderedNames) == 0 {
-		return tfResourcesRichParameters
-	}
-
-	ordered := make([]*tfjson.StateResource, len(orderedNames))
-	for i, name := range orderedNames {
-		for _, resource := range tfResourcesRichParameters {
-			if resource.Name == name {
-				ordered[i] = resource
-			}
-		}
-	}
-
-	// There's an edge case possible for us to have a parameter name that isn't
-	// present in the state, since the ordered names come statically from
-	// parsing the Terraform file. We need to filter out the nil values if there
-	// are any present.
-	if len(tfResourcesRichParameters) != len(orderedNames) {
-		nonNil := make([]*tfjson.StateResource, 0, len(ordered))
-		for _, resource := range ordered {
-			if resource != nil {
-				nonNil = append(nonNil, resource)
-			}
-		}
-
-		ordered = nonNil
-	}
-
-	return ordered
 }

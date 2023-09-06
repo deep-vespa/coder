@@ -2,12 +2,11 @@ import Button from "@mui/material/Button"
 import { makeStyles } from "@mui/styles"
 import { Avatar } from "components/Avatar/Avatar"
 import { AgentRow } from "components/Resources/AgentRow"
-import { WorkspaceBuildLogs } from "components/WorkspaceBuildLogs/WorkspaceBuildLogs"
 import {
   ActiveTransition,
   WorkspaceBuildProgress,
 } from "components/WorkspaceBuildProgress/WorkspaceBuildProgress"
-import { FC } from "react"
+import { FC, useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { useNavigate } from "react-router-dom"
 import * as TypesGen from "../../api/typesGenerated"
@@ -27,10 +26,12 @@ import {
 } from "components/PageHeader/FullWidthPageHeader"
 import { TemplateVersionWarnings } from "components/TemplateVersionWarnings/TemplateVersionWarnings"
 import { ErrorAlert } from "components/Alert/ErrorAlert"
-import { ImpendingDeletionBanner } from "components/WorkspaceDeletion"
+import { DormantWorkspaceBanner } from "components/WorkspaceDeletion"
 import { useLocalStorage } from "hooks"
 import { ChooseOne, Cond } from "components/Conditionals/ChooseOne"
 import AlertTitle from "@mui/material/AlertTitle"
+import { Maybe } from "components/Conditionals/Maybe"
+import dayjs from "dayjs"
 
 export enum WorkspaceErrors {
   GET_BUILDS_ERROR = "getBuildsError",
@@ -44,14 +45,15 @@ export interface WorkspaceProps {
     maxDeadlineIncrease: number
     maxDeadlineDecrease: number
   }
-  handleStart: () => void
+  handleStart: (buildParameters?: TypesGen.WorkspaceBuildParameter[]) => void
   handleStop: () => void
-  handleRestart: () => void
+  handleRestart: (buildParameters?: TypesGen.WorkspaceBuildParameter[]) => void
   handleDelete: () => void
   handleUpdate: () => void
   handleCancel: () => void
   handleSettings: () => void
   handleChangeVersion: () => void
+  handleDormantActivate: () => void
   isUpdating: boolean
   isRestarting: boolean
   workspace: TypesGen.Workspace
@@ -59,17 +61,17 @@ export interface WorkspaceProps {
   builds?: TypesGen.WorkspaceBuild[]
   templateWarnings?: TypesGen.TemplateVersionWarning[]
   canUpdateWorkspace: boolean
-  canUpdateTemplate: boolean
+  canRetryDebugMode: boolean
   canChangeVersions: boolean
   hideSSHButton?: boolean
   hideVSCodeDesktopButton?: boolean
-  workspaceErrors: Partial<Record<WorkspaceErrors, Error | unknown>>
+  workspaceErrors: Partial<Record<WorkspaceErrors, unknown>>
   buildInfo?: TypesGen.BuildInfoResponse
   sshPrefix?: string
   template?: TypesGen.Template
   quota_budget?: number
-  failedBuildLogs: TypesGen.ProvisionerJobLog[] | undefined
   handleBuildRetry: () => void
+  buildLogs?: React.ReactNode
 }
 
 /**
@@ -85,13 +87,14 @@ export const Workspace: FC<React.PropsWithChildren<WorkspaceProps>> = ({
   handleCancel,
   handleSettings,
   handleChangeVersion,
+  handleDormantActivate: handleDormantActivate,
   workspace,
   isUpdating,
   isRestarting,
   resources,
   builds,
   canUpdateWorkspace,
-  canUpdateTemplate,
+  canRetryDebugMode,
   canChangeVersions,
   workspaceErrors,
   hideSSHButton,
@@ -100,9 +103,9 @@ export const Workspace: FC<React.PropsWithChildren<WorkspaceProps>> = ({
   sshPrefix,
   template,
   quota_budget,
-  failedBuildLogs,
   handleBuildRetry,
   templateWarnings,
+  buildLogs,
 }) => {
   const styles = useStyles()
   const navigate = useNavigate()
@@ -130,6 +133,38 @@ export const Workspace: FC<React.PropsWithChildren<WorkspaceProps>> = ({
   if (template !== undefined) {
     transitionStats = ActiveTransition(template, workspace)
   }
+
+  const [showAlertPendingInQueue, setShowAlertPendingInQueue] = useState(false)
+  const now = dayjs()
+  useEffect(() => {
+    if (
+      workspace.latest_build.status !== "pending" ||
+      workspace.latest_build.job.queue_size === 0
+    ) {
+      if (!showAlertPendingInQueue) {
+        return
+      }
+
+      const hideTimer = setTimeout(() => {
+        setShowAlertPendingInQueue(false)
+      }, 250)
+      return () => {
+        clearTimeout(hideTimer)
+      }
+    }
+
+    const t = Math.max(
+      0,
+      5000 - dayjs().diff(dayjs(workspace.latest_build.created_at)),
+    )
+    const showTimer = setTimeout(() => {
+      setShowAlertPendingInQueue(true)
+    }, t)
+
+    return () => {
+      clearTimeout(showTimer)
+    }
+  }, [workspace, now, showAlertPendingInQueue])
   return (
     <>
       <FullWidthPageHeader>
@@ -159,23 +194,25 @@ export const Workspace: FC<React.PropsWithChildren<WorkspaceProps>> = ({
           onDeadlinePlus={scheduleProps.onDeadlinePlus}
         />
 
-        <PageHeaderActions>
-          <WorkspaceActions
-            workspaceStatus={workspace.latest_build.status}
-            isOutdated={workspace.outdated}
-            handleStart={handleStart}
-            handleStop={handleStop}
-            handleRestart={handleRestart}
-            handleDelete={handleDelete}
-            handleUpdate={handleUpdate}
-            handleCancel={handleCancel}
-            handleSettings={handleSettings}
-            handleChangeVersion={handleChangeVersion}
-            canChangeVersions={canChangeVersions}
-            isUpdating={isUpdating}
-            isRestarting={isRestarting}
-          />
-        </PageHeaderActions>
+        {canUpdateWorkspace && (
+          <PageHeaderActions>
+            <WorkspaceActions
+              workspace={workspace}
+              handleStart={handleStart}
+              handleStop={handleStop}
+              handleRestart={handleRestart}
+              handleDelete={handleDelete}
+              handleUpdate={handleUpdate}
+              handleCancel={handleCancel}
+              handleSettings={handleSettings}
+              handleChangeVersion={handleChangeVersion}
+              handleDormantActivate={handleDormantActivate}
+              canChangeVersions={canChangeVersions}
+              isUpdating={isUpdating}
+              isRestarting={isRestarting}
+            />
+          </PageHeaderActions>
+        )}
       </FullWidthPageHeader>
 
       <Margins className={styles.content}>
@@ -186,6 +223,34 @@ export const Workspace: FC<React.PropsWithChildren<WorkspaceProps>> = ({
         >
           {buildError}
           {cancellationError}
+          {workspace.latest_build.status === "running" &&
+            !workspace.health.healthy && (
+              <Alert
+                severity="warning"
+                actions={
+                  canUpdateWorkspace && (
+                    <Button
+                      variant="text"
+                      size="small"
+                      onClick={() => {
+                        handleRestart()
+                      }}
+                    >
+                      Restart
+                    </Button>
+                  )
+                }
+              >
+                <AlertTitle>Workspace is unhealthy</AlertTitle>
+                <AlertDetail>
+                  Your workspace is running but{" "}
+                  {workspace.health.failing_agents.length > 1
+                    ? `${workspace.health.failing_agents.length} agents are unhealthy`
+                    : `1 agent is unhealthy`}
+                  .
+                </AlertDetail>
+              </Alert>
+            )}
 
           <ChooseOne>
             <Cond condition={workspace.latest_build.status === "deleted"}>
@@ -195,8 +260,8 @@ export const Workspace: FC<React.PropsWithChildren<WorkspaceProps>> = ({
             </Cond>
             <Cond>
               {/* <ImpendingDeletionBanner/> determines its own visibility */}
-              <ImpendingDeletionBanner
-                workspace={workspace}
+              <DormantWorkspaceBanner
+                workspaces={[workspace]}
                 shouldRedisplayBanner={
                   getLocal("dismissedWorkspace") !== workspace.id
                 }
@@ -207,28 +272,43 @@ export const Workspace: FC<React.PropsWithChildren<WorkspaceProps>> = ({
 
           <TemplateVersionWarnings warnings={templateWarnings} />
 
-          {failedBuildLogs && (
-            <Stack>
-              <Alert
-                severity="error"
-                actions={
-                  canUpdateTemplate && (
-                    <Button
-                      key={0}
-                      onClick={handleBuildRetry}
-                      variant="text"
-                      size="small"
-                    >
-                      {t("actionButton.retryDebugMode")}
-                    </Button>
-                  )
-                }
-              >
-                <AlertTitle>Workspace build failed</AlertTitle>
-                <AlertDetail>{workspace.latest_build.job.error}</AlertDetail>
-              </Alert>
-              <WorkspaceBuildLogs logs={failedBuildLogs} />
-            </Stack>
+          <Maybe condition={showAlertPendingInQueue}>
+            <Alert severity="info">
+              <AlertTitle>Workspace build is pending</AlertTitle>
+              <AlertDetail>
+                <div className={styles.alertPendingInQueue}>
+                  This workspace build job is waiting for a provisioner to
+                  become available. If you have been waiting for an extended
+                  period of time, please contact your administrator for
+                  assistance.
+                </div>
+                <div>
+                  Position in queue:{" "}
+                  <strong>{workspace.latest_build.job.queue_position}</strong>
+                </div>
+              </AlertDetail>
+            </Alert>
+          </Maybe>
+
+          {workspace.latest_build.job.error && (
+            <Alert
+              severity="error"
+              actions={
+                canRetryDebugMode && (
+                  <Button
+                    key={0}
+                    onClick={handleBuildRetry}
+                    variant="text"
+                    size="small"
+                  >
+                    {t("actionButton.retryDebugMode")}
+                  </Button>
+                )
+              }
+            >
+              <AlertTitle>Workspace build failed</AlertTitle>
+              <AlertDetail>{workspace.latest_build.job.error}</AlertDetail>
+            </Alert>
           )}
 
           {transitionStats !== undefined && (
@@ -237,6 +317,8 @@ export const Workspace: FC<React.PropsWithChildren<WorkspaceProps>> = ({
               transitionStats={transitionStats}
             />
           )}
+
+          {buildLogs}
 
           {typeof resources !== "undefined" && resources.length > 0 && (
             <Resources
@@ -248,6 +330,7 @@ export const Workspace: FC<React.PropsWithChildren<WorkspaceProps>> = ({
                   workspace={workspace}
                   sshPrefix={sshPrefix}
                   showApps={canUpdateWorkspace}
+                  showBuiltinApps={canUpdateWorkspace}
                   hideSSHButton={hideSSHButton}
                   hideVSCodeDesktopButton={hideVSCodeDesktopButton}
                   serverVersion={serverVersion}
@@ -318,6 +401,10 @@ export const useStyles = makeStyles((theme) => {
 
     fullWidth: {
       width: "100%",
+    },
+
+    alertPendingInQueue: {
+      marginBottom: 12,
     },
   }
 })

@@ -1,6 +1,8 @@
 package codersdk
 
 import (
+	"strconv"
+
 	"golang.org/x/xerrors"
 
 	"github.com/coder/terraform-provider-coder/provider"
@@ -25,13 +27,25 @@ func ValidateWorkspaceBuildParameters(richParameters []TemplateVersionParameter,
 
 		err := ValidateWorkspaceBuildParameter(richParameter, buildParameter, lastBuildParameter)
 		if err != nil {
-			return xerrors.Errorf("can't validate build parameter %q: %w", richParameter.Name, err)
+			return err
 		}
 	}
 	return nil
 }
 
 func ValidateWorkspaceBuildParameter(richParameter TemplateVersionParameter, buildParameter *WorkspaceBuildParameter, lastBuildParameter *WorkspaceBuildParameter) error {
+	err := validateBuildParameter(richParameter, buildParameter, lastBuildParameter)
+	if err != nil {
+		name := richParameter.Name
+		if richParameter.DisplayName != "" {
+			name = richParameter.DisplayName
+		}
+		return xerrors.Errorf("can't validate build parameter %q: %w", name, err)
+	}
+	return nil
+}
+
+func validateBuildParameter(richParameter TemplateVersionParameter, buildParameter *WorkspaceBuildParameter, lastBuildParameter *WorkspaceBuildParameter) error {
 	var value string
 
 	if buildParameter != nil {
@@ -47,14 +61,24 @@ func ValidateWorkspaceBuildParameter(richParameter TemplateVersionParameter, bui
 	}
 
 	if lastBuildParameter != nil && richParameter.Type == "number" && len(richParameter.ValidationMonotonic) > 0 {
+		prev, err := strconv.Atoi(lastBuildParameter.Value)
+		if err != nil {
+			return xerrors.Errorf("previous parameter value is not a number: %s", lastBuildParameter.Value)
+		}
+
+		current, err := strconv.Atoi(buildParameter.Value)
+		if err != nil {
+			return xerrors.Errorf("current parameter value is not a number: %s", buildParameter.Value)
+		}
+
 		switch richParameter.ValidationMonotonic {
 		case MonotonicOrderIncreasing:
-			if lastBuildParameter.Value > buildParameter.Value {
-				return xerrors.Errorf("parameter value must be equal or greater than previous value: %s", lastBuildParameter.Value)
+			if prev > current {
+				return xerrors.Errorf("parameter value must be equal or greater than previous value: %d", prev)
 			}
 		case MonotonicOrderDecreasing:
-			if lastBuildParameter.Value < buildParameter.Value {
-				return xerrors.Errorf("parameter value must be equal or lower than previous value: %s", lastBuildParameter.Value)
+			if prev < current {
+				return xerrors.Errorf("parameter value must be equal or lower than previous value: %d", prev)
 			}
 		}
 	}
@@ -148,8 +172,8 @@ func (r *ParameterResolver) ValidateResolve(p TemplateVersionParameter, v *Works
 	}
 	// First, the provided value
 	resolvedValue := v
-	// Second, previous value
-	if resolvedValue == nil {
+	// Second, previous value if not ephemeral
+	if resolvedValue == nil && !p.Ephemeral {
 		resolvedValue = prevV
 	}
 	// Last, default value

@@ -11,9 +11,9 @@ import (
 
 	"cdr.dev/slog"
 	"cdr.dev/slog/sloggers/sloghuman"
-	"github.com/coder/coder/cli/clibase"
-	"github.com/coder/coder/cli/cliui"
-	"github.com/coder/coder/codersdk"
+	"github.com/coder/coder/v2/cli/clibase"
+	"github.com/coder/coder/v2/cli/cliui"
+	"github.com/coder/coder/v2/codersdk"
 )
 
 func (r *RootCmd) speedtest() *clibase.Cmd {
@@ -35,27 +35,29 @@ func (r *RootCmd) speedtest() *clibase.Cmd {
 			ctx, cancel := context.WithCancel(inv.Context())
 			defer cancel()
 
-			workspace, workspaceAgent, err := getWorkspaceAndAgent(ctx, inv, client, codersdk.Me, inv.Args[0])
+			_, workspaceAgent, err := getWorkspaceAndAgent(ctx, inv, client, codersdk.Me, inv.Args[0])
 			if err != nil {
 				return err
 			}
 
-			err = cliui.Agent(ctx, inv.Stderr, cliui.AgentOptions{
-				WorkspaceName: workspace.Name,
-				Fetch: func(ctx context.Context) (codersdk.WorkspaceAgent, error) {
-					return client.WorkspaceAgent(ctx, workspaceAgent.ID)
-				},
-				Wait: false,
+			err = cliui.Agent(ctx, inv.Stderr, workspaceAgent.ID, cliui.AgentOptions{
+				Fetch: client.WorkspaceAgent,
+				Wait:  false,
 			})
-			if err != nil && !xerrors.Is(err, cliui.AgentStartError) {
+			if err != nil {
 				return xerrors.Errorf("await agent: %w", err)
 			}
+
 			logger, ok := LoggerFromContext(ctx)
 			if !ok {
 				logger = slog.Make(sloghuman.Sink(inv.Stderr))
 			}
 			if r.verbose {
 				logger = logger.Leveled(slog.LevelDebug)
+			}
+
+			if r.disableDirect {
+				_, _ = fmt.Fprintln(inv.Stderr, "Direct connections disabled.")
 			}
 			conn, err := client.DialWorkspaceAgent(ctx, workspaceAgent.ID, &codersdk.DialWorkspaceAgentOptions{
 				Logger: logger,
@@ -83,14 +85,14 @@ func (r *RootCmd) speedtest() *clibase.Cmd {
 					}
 					peer := status.Peer[status.Peers()[0]]
 					if !p2p && direct {
-						cliui.Infof(inv.Stdout, "Waiting for a direct connection... (%dms via %s)\n", dur.Milliseconds(), peer.Relay)
+						cliui.Infof(inv.Stdout, "Waiting for a direct connection... (%dms via %s)", dur.Milliseconds(), peer.Relay)
 						continue
 					}
 					via := peer.Relay
 					if via == "" {
 						via = "direct"
 					}
-					cliui.Infof(inv.Stdout, "%dms via %s\n", dur.Milliseconds(), via)
+					cliui.Infof(inv.Stdout, "%dms via %s", dur.Milliseconds(), via)
 					break
 				}
 			} else {
@@ -105,7 +107,7 @@ func (r *RootCmd) speedtest() *clibase.Cmd {
 			default:
 				return xerrors.Errorf("invalid direction: %q", direction)
 			}
-			cliui.Infof(inv.Stdout, "Starting a %ds %s test...\n", int(duration.Seconds()), tsDir)
+			cliui.Infof(inv.Stdout, "Starting a %ds %s test...", int(duration.Seconds()), tsDir)
 			results, err := conn.Speedtest(ctx, tsDir, duration)
 			if err != nil {
 				return err

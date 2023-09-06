@@ -24,6 +24,14 @@ export const handlers = [
       }),
     )
   }),
+  rest.get("/api/v2/workspaceproxies", async (req, res, ctx) => {
+    return res(
+      ctx.status(200),
+      ctx.json({
+        regions: M.MockWorkspaceProxies,
+      }),
+    )
+  }),
   // build info
   rest.get("/api/v2/buildinfo", async (req, res, ctx) => {
     return res(ctx.status(200), ctx.json(M.MockBuildInfo))
@@ -133,6 +141,14 @@ export const handlers = [
   }),
   rest.post("/api/v2/users", async (req, res, ctx) => {
     return res(ctx.status(200), ctx.json(M.MockUser))
+  }),
+  rest.get("/api/v2/users/:userid/login-type", async (req, res, ctx) => {
+    return res(
+      ctx.status(200),
+      ctx.json({
+        login_type: "password",
+      }),
+    )
   }),
   rest.get("/api/v2/users/me/organizations", (req, res, ctx) => {
     return res(ctx.status(200), ctx.json([M.MockOrganization]))
@@ -368,7 +384,15 @@ export const handlers = [
     return res(ctx.status(200), ctx.json(M.MockDeploymentSSH))
   }),
 
-  rest.get("/api/v2/workspaceagents/:agent/startup-logs", (_, res, ctx) => {
-    return res(ctx.status(200), ctx.json(M.MockStartupLogs))
+  rest.get("/api/v2/workspaceagents/:agent/logs", (_, res, ctx) => {
+    return res(ctx.status(200), ctx.json(M.MockWorkspaceAgentLogs))
+  }),
+
+  rest.get("/api/v2/debug/health", (_, res, ctx) => {
+    return res(ctx.status(200), ctx.json(M.MockHealth))
+  }),
+
+  rest.get("/api/v2/workspaceagents/:agent/listening-ports", (_, res, ctx) => {
+    return res(ctx.status(200), ctx.json(M.MockListeningPortsResponse))
   }),
 ]

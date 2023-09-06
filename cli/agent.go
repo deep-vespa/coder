@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,12 +28,12 @@ import (
 	"cdr.dev/slog/sloggers/sloghuman"
 	"cdr.dev/slog/sloggers/slogjson"
 	"cdr.dev/slog/sloggers/slogstackdriver"
-	"github.com/coder/coder/agent"
-	"github.com/coder/coder/agent/reaper"
-	"github.com/coder/coder/buildinfo"
-	"github.com/coder/coder/cli/clibase"
-	"github.com/coder/coder/codersdk"
-	"github.com/coder/coder/codersdk/agentsdk"
+	"github.com/coder/coder/v2/agent"
+	"github.com/coder/coder/v2/agent/reaper"
+	"github.com/coder/coder/v2/buildinfo"
+	"github.com/coder/coder/v2/cli/clibase"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/codersdk/agentsdk"
 )
 
 func (r *RootCmd) workspaceAgent() *clibase.Cmd {
@@ -106,12 +107,12 @@ func (r *RootCmd) workspaceAgent() *clibase.Cmd {
 			// Spawn a reaper so that we don't accumulate a ton
 			// of zombie processes.
 			if reaper.IsInitProcess() && !noReap && isLinux {
-				logWriter := &lumberjack.Logger{
+				logWriter := &lumberjackWriteCloseFixer{w: &lumberjack.Logger{
 					Filename: filepath.Join(logDir, "coder-agent-init.log"),
 					MaxSize:  5, // MB
 					// Without this, rotated logs will never be deleted.
 					MaxBackups: 1,
-				}
+				}}
 				defer logWriter.Close()
 
 				sinks = append(sinks, sloghuman.Sink(logWriter))
@@ -126,7 +127,7 @@ func (r *RootCmd) workspaceAgent() *clibase.Cmd {
 					reaper.WithCatchSignals(InterruptSignals...),
 				)
 				if err != nil {
-					logger.Error(ctx, "failed to reap", slog.Error(err))
+					logger.Error(ctx, "agent process reaper unable to fork", slog.Error(err))
 					return xerrors.Errorf("fork reap: %w", err)
 				}
 
@@ -149,27 +150,25 @@ func (r *RootCmd) workspaceAgent() *clibase.Cmd {
 			// reaper.
 			go DumpHandler(ctx)
 
-			ljLogger := &lumberjack.Logger{
+			logWriter := &lumberjackWriteCloseFixer{w: &lumberjack.Logger{
 				Filename: filepath.Join(logDir, "coder-agent.log"),
 				MaxSize:  5, // MB
 				// Without this, rotated logs will never be deleted.
 				MaxBackups: 1,
-			}
-			defer ljLogger.Close()
-			logWriter := &closeWriter{w: ljLogger}
+			}}
 			defer logWriter.Close()
 
 			sinks = append(sinks, sloghuman.Sink(logWriter))
 			logger := slog.Make(sinks...).Leveled(slog.LevelDebug)
 
 			version := buildinfo.Version()
-			logger.Info(ctx, "starting agent",
+			logger.Info(ctx, "agent is starting now",
 				slog.F("url", r.agentURL),
 				slog.F("auth", auth),
 				slog.F("version", version),
 			)
 			client := agentsdk.New(r.agentURL)
-			client.SDK.Logger = logger
+			client.SDK.SetLogger(logger)
 			// Set a reasonable timeout so requests can't hang forever!
 			// The timeout needs to be reasonably long, because requests
 			// with large payloads can take a bit. e.g. startup scripts
@@ -255,7 +254,19 @@ func (r *RootCmd) workspaceAgent() *clibase.Cmd {
 			}
 
 			prometheusRegistry := prometheus.NewRegistry()
-			subsystem := inv.Environ.Get(agent.EnvAgentSubsystem)
+			subsystemsRaw := inv.Environ.Get(agent.EnvAgentSubsystem)
+			subsystems := []codersdk.AgentSubsystem{}
+			for _, s := range strings.Split(subsystemsRaw, ",") {
+				subsystem := codersdk.AgentSubsystem(strings.TrimSpace(s))
+				if subsystem == "" {
+					continue
+				}
+				if !subsystem.Valid() {
+					return xerrors.Errorf("invalid subsystem %q", subsystem)
+				}
+				subsystems = append(subsystems, subsystem)
+			}
+
 			agnt := agent.New(agent.Options{
 				Client:            client,
 				Logger:            logger,
@@ -277,7 +288,7 @@ func (r *RootCmd) workspaceAgent() *clibase.Cmd {
 				},
 				IgnorePorts:   ignorePorts,
 				SSHMaxTimeout: sshMaxTimeout,
-				Subsystem:     codersdk.AgentSubsystem(subsystem),
+				Subsystems:    subsystems,
 
 				PrometheusRegistry: prometheusRegistry,
 			})
@@ -323,10 +334,11 @@ func (r *RootCmd) workspaceAgent() *clibase.Cmd {
 			Value:       clibase.BoolOf(&noReap),
 		},
 		{
-			Flag:        "ssh-max-timeout",
-			Default:     "0",
+			Flag: "ssh-max-timeout",
+			// tcpip.KeepaliveIdleOption = 72h + 1min (forwardTCPSockOpts() in tailnet/conn.go)
+			Default:     "72h",
 			Env:         "CODER_AGENT_SSH_MAX_TIMEOUT",
-			Description: "Specify the max timeout for a SSH connection.",
+			Description: "Specify the max timeout for a SSH connection, it is advisable to set it to a minimum of 60s, but no more than 72h.",
 			Value:       clibase.DurationOf(&sshMaxTimeout),
 		},
 		{
@@ -402,16 +414,16 @@ func ServeHandler(ctx context.Context, logger slog.Logger, handler http.Handler,
 	}
 }
 
-// closeWriter is a wrapper around an io.WriteCloser that prevents
-// writes after Close. This is necessary because lumberjack will
-// re-open the file on write.
-type closeWriter struct {
+// lumberjackWriteCloseFixer is a wrapper around an io.WriteCloser that
+// prevents writes after Close. This is necessary because lumberjack
+// re-opens the file on Write.
+type lumberjackWriteCloseFixer struct {
 	w      io.WriteCloser
 	mu     sync.Mutex // Protects following.
 	closed bool
 }
 
-func (c *closeWriter) Close() error {
+func (c *lumberjackWriteCloseFixer) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -419,7 +431,7 @@ func (c *closeWriter) Close() error {
 	return c.w.Close()
 }
 
-func (c *closeWriter) Write(p []byte) (int, error) {
+func (c *lumberjackWriteCloseFixer) Write(p []byte) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 

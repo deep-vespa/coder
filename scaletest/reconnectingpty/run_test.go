@@ -9,16 +9,17 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
+	"cdr.dev/slog"
 	"cdr.dev/slog/sloggers/slogtest"
-	"github.com/coder/coder/agent"
-	"github.com/coder/coder/coderd/coderdtest"
-	"github.com/coder/coder/coderd/httpapi"
-	"github.com/coder/coder/codersdk"
-	"github.com/coder/coder/codersdk/agentsdk"
-	"github.com/coder/coder/provisioner/echo"
-	"github.com/coder/coder/provisionersdk/proto"
-	"github.com/coder/coder/scaletest/reconnectingpty"
-	"github.com/coder/coder/testutil"
+	"github.com/coder/coder/v2/agent"
+	"github.com/coder/coder/v2/coderd/coderdtest"
+	"github.com/coder/coder/v2/coderd/httpapi"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/codersdk/agentsdk"
+	"github.com/coder/coder/v2/provisioner/echo"
+	"github.com/coder/coder/v2/provisionersdk/proto"
+	"github.com/coder/coder/v2/scaletest/reconnectingpty"
+	"github.com/coder/coder/v2/testutil"
 )
 
 func Test_Runner(t *testing.T) {
@@ -243,7 +244,7 @@ func Test_Runner(t *testing.T) {
 func setupRunnerTest(t *testing.T) (client *codersdk.Client, agentID uuid.UUID) {
 	t.Helper()
 
-	client = coderdtest.New(t, &coderdtest.Options{
+	client, _, api := coderdtest.NewWithAPI(t, &coderdtest.Options{
 		IncludeProvisionerDaemon: true,
 	})
 	user := coderdtest.CreateFirstUser(t, client)
@@ -251,10 +252,10 @@ func setupRunnerTest(t *testing.T) (client *codersdk.Client, agentID uuid.UUID) 
 	authToken := uuid.NewString()
 	version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
 		Parse:         echo.ParseComplete,
-		ProvisionPlan: echo.ProvisionComplete,
-		ProvisionApply: []*proto.Provision_Response{{
-			Type: &proto.Provision_Response_Complete{
-				Complete: &proto.Provision_Complete{
+		ProvisionPlan: echo.PlanComplete,
+		ProvisionApply: []*proto.Response{{
+			Type: &proto.Response_Apply{
+				Apply: &proto.ApplyComplete{
 					Resources: []*proto.Resource{{
 						Name: "example",
 						Type: "aws_instance",
@@ -282,12 +283,16 @@ func setupRunnerTest(t *testing.T) (client *codersdk.Client, agentID uuid.UUID) 
 	agentClient.SetSessionToken(authToken)
 	agentCloser := agent.New(agent.Options{
 		Client: agentClient,
-		Logger: slogtest.Make(t, &slogtest.Options{IgnoreErrors: true}).Named("agent"),
+		Logger: slogtest.Make(t, &slogtest.Options{IgnoreErrors: true}).Named("agent").Leveled(slog.LevelDebug),
 	})
 	t.Cleanup(func() {
 		_ = agentCloser.Close()
 	})
 
 	resources := coderdtest.AwaitWorkspaceAgents(t, client, workspace.ID)
+	require.Eventually(t, func() bool {
+		t.Log("agent id", resources[0].Agents[0].ID)
+		return (*api.TailnetCoordinator.Load()).Node(resources[0].Agents[0].ID) != nil
+	}, testutil.WaitLong, testutil.IntervalMedium, "agent never connected")
 	return client, resources[0].Agents[0].ID
 }

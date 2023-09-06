@@ -8,6 +8,9 @@ permissions:
 on:
   workflow_dispatch:
 
+  # Uncomment when testing.
+  # pull_request:
+
   schedule:
     # Run every 6 hours Monday-Friday!
     - cron: "0 0/6 * * 1-5"
@@ -18,21 +21,20 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-security
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-env:
-  CODER_GO_VERSION: "1.20.5"
-
 jobs:
   codeql:
     runs-on: ${{ github.repository_owner == 'coder' && 'buildjet-8vcpu-ubuntu-2204' || 'ubuntu-latest' }}
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v3
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v2
         with:
           languages: go, javascript
 
-      - uses: ./.github/actions/setup-go
+      - name: Setup Go
+        uses: ./.github/actions/setup-go
 
       # Workaround to prevent CodeQL from building the dashboard.
       - name: Remove Makefile
@@ -56,26 +58,20 @@ jobs:
   trivy:
     runs-on: ${{ github.repository_owner == 'coder' && 'buildjet-8vcpu-ubuntu-2204' || 'ubuntu-latest' }}
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v3
         with:
           fetch-depth: 0
 
-      - uses: ./.github/actions/setup-go
+      - name: Setup Go
+        uses: ./.github/actions/setup-go
 
-      - name: Cache Node
-        id: cache-node
-        uses: buildjet/cache@v3
-        with:
-          path: |
-            **/node_modules
-            .eslintcache
-          key: js-${{ runner.os }}-test-${{ hashFiles('**/yarn.lock') }}
-          restore-keys: |
-            js-${{ runner.os }}-
+      - name: Setup Node
+        uses: ./.github/actions/setup-node
 
-      - name: Install sqlc
-        run: |
-          curl -sSL https://github.com/kyleconroy/sqlc/releases/download/v1.17.2/sqlc_1.17.2_linux_amd64.tar.gz | sudo tar -C /usr/bin -xz sqlc
+      - name: Setup sqlc
+        uses: ./.github/actions/setup-sqlc
+
       - name: Install yq
         run: go run github.com/mikefarah/yq/v4@v4.30.6
       - name: Install mockgen
@@ -126,7 +122,7 @@ jobs:
           image_name: ${{ steps.build.outputs.image }}
 
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@41f05d9ecffa2ed3f1580af306000f734b733e54
+        uses: aquasecurity/trivy-action@fbd16365eb88e12433951383f5e99bd901fc618f
         with:
           image-ref: ${{ steps.build.outputs.image }}
           format: sarif

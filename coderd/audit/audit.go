@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/coder/coder/coderd/database"
+	"github.com/coder/coder/v2/coderd/database"
 )
 
 type Auditor interface {
@@ -40,6 +40,14 @@ func NewMock() *MockAuditor {
 type MockAuditor struct {
 	mutex     sync.Mutex
 	auditLogs []database.AuditLog
+}
+
+// ResetLogs removes all audit logs from the mock auditor.
+// This is helpful for testing to get a clean slate.
+func (a *MockAuditor) ResetLogs() {
+	a.mutex.Lock()
+	defer a.mutex.Unlock()
+	a.auditLogs = make([]database.AuditLog, 0)
 }
 
 func (a *MockAuditor) AuditLogs() []database.AuditLog {

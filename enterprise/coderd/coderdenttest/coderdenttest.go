@@ -10,14 +10,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/coder/v2/coderd/database/dbfake"
+	"github.com/coder/coder/v2/coderd/database/pubsub"
+
 	"github.com/golang-jwt/jwt/v4"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
-	"github.com/coder/coder/coderd/coderdtest"
-	"github.com/coder/coder/codersdk"
-	"github.com/coder/coder/enterprise/coderd"
-	"github.com/coder/coder/enterprise/coderd/license"
+	"github.com/coder/coder/v2/coderd/coderdtest"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/enterprise/coderd"
+	"github.com/coder/coder/v2/enterprise/coderd/license"
 )
 
 const (
@@ -42,21 +45,29 @@ func init() {
 
 type Options struct {
 	*coderdtest.Options
-	AuditLogging               bool
-	BrowserOnly                bool
-	EntitlementsUpdateInterval time.Duration
-	SCIMAPIKey                 []byte
-	UserWorkspaceQuota         int
-	ProxyHealthInterval        time.Duration
+	AuditLogging                bool
+	BrowserOnly                 bool
+	EntitlementsUpdateInterval  time.Duration
+	SCIMAPIKey                  []byte
+	UserWorkspaceQuota          int
+	ProxyHealthInterval         time.Duration
+	LicenseOptions              *LicenseOptions
+	NoDefaultQuietHoursSchedule bool
+	DontAddLicense              bool
+	DontAddFirstUser            bool
+	ReplicaSyncUpdateInterval   time.Duration
+	ProvisionerDaemonPSK        string
 }
 
 // New constructs a codersdk client connected to an in-memory Enterprise API instance.
-func New(t *testing.T, options *Options) *codersdk.Client {
-	client, _, _ := NewWithAPI(t, options)
-	return client
+func New(t *testing.T, options *Options) (*codersdk.Client, codersdk.CreateFirstUserResponse) {
+	client, _, _, user := NewWithAPI(t, options)
+	return client, user
 }
 
-func NewWithAPI(t *testing.T, options *Options) (*codersdk.Client, io.Closer, *coderd.API) {
+func NewWithAPI(t *testing.T, options *Options) (
+	*codersdk.Client, io.Closer, *coderd.API, codersdk.CreateFirstUserResponse,
+) {
 	t.Helper()
 
 	if options == nil {
@@ -65,18 +76,26 @@ func NewWithAPI(t *testing.T, options *Options) (*codersdk.Client, io.Closer, *c
 	if options.Options == nil {
 		options.Options = &coderdtest.Options{}
 	}
+	require.False(t, options.DontAddFirstUser && !options.DontAddLicense, "DontAddFirstUser requires DontAddLicense")
 	setHandler, cancelFunc, serverURL, oop := coderdtest.NewOptions(t, options.Options)
+	if !options.NoDefaultQuietHoursSchedule && oop.DeploymentValues.UserQuietHoursSchedule.DefaultSchedule.Value() == "" {
+		err := oop.DeploymentValues.UserQuietHoursSchedule.DefaultSchedule.Set("0 0 * * *")
+		require.NoError(t, err)
+	}
 	coderAPI, err := coderd.New(context.Background(), &coderd.Options{
 		RBAC:                       true,
 		AuditLogging:               options.AuditLogging,
 		BrowserOnly:                options.BrowserOnly,
 		SCIMAPIKey:                 options.SCIMAPIKey,
 		DERPServerRelayAddress:     oop.AccessURL.String(),
-		DERPServerRegionID:         oop.DERPMap.RegionIDs()[0],
+		DERPServerRegionID:         oop.BaseDERPMap.RegionIDs()[0],
+		ReplicaSyncUpdateInterval:  options.ReplicaSyncUpdateInterval,
 		Options:                    oop,
 		EntitlementsUpdateInterval: options.EntitlementsUpdateInterval,
 		Keys:                       Keys,
 		ProxyHealthInterval:        options.ProxyHealthInterval,
+		DefaultQuietHoursSchedule:  oop.DeploymentValues.UserQuietHoursSchedule.DefaultSchedule.Value(),
+		ProvisionerDaemonPSK:       options.ProvisionerDaemonPSK,
 	})
 	require.NoError(t, err)
 	setHandler(coderAPI.AGPL.RootHandler)
@@ -99,7 +118,26 @@ func NewWithAPI(t *testing.T, options *Options) (*codersdk.Client, io.Closer, *c
 			},
 		},
 	}
-	return client, provisionerCloser, coderAPI
+	var user codersdk.CreateFirstUserResponse
+	if !options.DontAddFirstUser {
+		user = coderdtest.CreateFirstUser(t, client)
+		if !options.DontAddLicense {
+			lo := LicenseOptions{}
+			if options.LicenseOptions != nil {
+				lo = *options.LicenseOptions
+				// The pgCoord is not supported by the fake DB & in-memory Pubsub.  It only works on a real postgres.
+				if lo.AllFeatures || (lo.Features != nil && lo.Features[codersdk.FeatureHighAvailability] != 0) {
+					// we check for the in-memory test types so that the real types don't have to exported
+					_, ok := coderAPI.Pubsub.(*pubsub.MemoryPubsub)
+					require.False(t, ok, "FeatureHighAvailability is incompatible with MemoryPubsub")
+					_, ok = coderAPI.Database.(*dbfake.FakeQuerier)
+					require.False(t, ok, "FeatureHighAvailability is incompatible with dbfake")
+				}
+			}
+			_ = AddLicense(t, client, lo)
+		}
+	}
+	return client, provisionerCloser, coderAPI, user
 }
 
 type LicenseOptions struct {
@@ -110,6 +148,11 @@ type LicenseOptions struct {
 	GraceAt     time.Time
 	ExpiresAt   time.Time
 	Features    license.Features
+}
+
+// AddFullLicense generates a license with all features enabled.
+func AddFullLicense(t *testing.T, client *codersdk.Client) codersdk.License {
+	return AddLicense(t, client, LicenseOptions{AllFeatures: true})
 }
 
 // AddLicense generates a new license with the options provided and inserts it.

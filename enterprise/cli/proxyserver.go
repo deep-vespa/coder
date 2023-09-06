@@ -22,13 +22,14 @@ import (
 	"golang.org/x/xerrors"
 
 	"cdr.dev/slog"
-	"github.com/coder/coder/cli"
-	"github.com/coder/coder/cli/clibase"
-	"github.com/coder/coder/cli/cliui"
-	"github.com/coder/coder/coderd/httpapi"
-	"github.com/coder/coder/coderd/httpmw"
-	"github.com/coder/coder/codersdk"
-	"github.com/coder/coder/enterprise/wsproxy"
+	"github.com/coder/coder/v2/cli"
+	"github.com/coder/coder/v2/cli/clibase"
+	"github.com/coder/coder/v2/cli/cliui"
+	"github.com/coder/coder/v2/coderd"
+	"github.com/coder/coder/v2/coderd/httpapi"
+	"github.com/coder/coder/v2/coderd/httpmw"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/enterprise/wsproxy"
 )
 
 type closers []func()
@@ -55,6 +56,7 @@ func (*RootCmd) proxyServer() *clibase.Cmd {
 		}
 		proxySessionToken clibase.String
 		primaryAccessURL  clibase.URL
+		derpOnly          clibase.Bool
 	)
 	opts.Add(
 		// Options only for external workspace proxies
@@ -65,7 +67,7 @@ func (*RootCmd) proxyServer() *clibase.Cmd {
 			Flag:        "proxy-session-token",
 			Env:         "CODER_PROXY_SESSION_TOKEN",
 			YAML:        "proxySessionToken",
-			Default:     "",
+			Required:    true,
 			Value:       &proxySessionToken,
 			Group:       &externalProxyOptionGroup,
 			Hidden:      false,
@@ -77,8 +79,24 @@ func (*RootCmd) proxyServer() *clibase.Cmd {
 			Flag:        "primary-access-url",
 			Env:         "CODER_PRIMARY_ACCESS_URL",
 			YAML:        "primaryAccessURL",
-			Default:     "",
-			Value:       &primaryAccessURL,
+			Required:    true,
+			Value: clibase.Validate(&primaryAccessURL, func(value *clibase.URL) error {
+				if !(value.Scheme == "http" || value.Scheme == "https") {
+					return xerrors.Errorf("'--primary-access-url' value must be http or https: url=%s", primaryAccessURL.String())
+				}
+				return nil
+			}),
+			Group:  &externalProxyOptionGroup,
+			Hidden: false,
+		},
+		clibase.Option{
+			Name:        "DERP-only proxy",
+			Description: "Run a proxy server that only supports DERP connections and does not proxy workspace app/terminal traffic.",
+			Flag:        "derp-only",
+			Env:         "CODER_PROXY_DERP_ONLY",
+			YAML:        "derpOnly",
+			Required:    false,
+			Value:       &derpOnly,
 			Group:       &externalProxyOptionGroup,
 			Hidden:      false,
 		},
@@ -94,10 +112,6 @@ func (*RootCmd) proxyServer() *clibase.Cmd {
 			clibase.RequireNArgs(0),
 		),
 		Handler: func(inv *clibase.Invocation) error {
-			if !(primaryAccessURL.Scheme == "http" || primaryAccessURL.Scheme == "https") {
-				return xerrors.Errorf("primary access URL must be http or https: url=%s", primaryAccessURL.String())
-			}
-
 			var closers closers
 			// Main command context for managing cancellation of running
 			// services.
@@ -107,7 +121,7 @@ func (*RootCmd) proxyServer() *clibase.Cmd {
 
 			go cli.DumpHandler(ctx)
 
-			cli.PrintLogo(inv)
+			cli.PrintLogo(inv, "Coder Workspace Proxy")
 			logger, logCloser, err := cli.BuildLogger(inv, cfg)
 			if err != nil {
 				return xerrors.Errorf("make logger: %w", err)
@@ -161,6 +175,10 @@ func (*RootCmd) proxyServer() *clibase.Cmd {
 				}
 			}
 
+			if derpOnly.Value() && !cfg.DERP.Server.Enable.Value() {
+				return xerrors.Errorf("cannot use --derp-only with DERP server disabled")
+			}
+
 			// TODO: @emyrk I find this strange that we add this to the context
 			// at the root here.
 			ctx, httpClient, err := cli.ConfigureHTTPClient(
@@ -174,20 +192,6 @@ func (*RootCmd) proxyServer() *clibase.Cmd {
 			}
 			defer httpClient.CloseIdleConnections()
 			closers.Add(httpClient.CloseIdleConnections)
-
-			// Warn the user if the access URL appears to be a loopback address.
-			isLocal, err := cli.IsLocalURL(ctx, cfg.AccessURL.Value())
-			if isLocal || err != nil {
-				reason := "could not be resolved"
-				if isLocal {
-					reason = "isn't externally reachable"
-				}
-				cliui.Warnf(
-					inv.Stderr,
-					"The access URL %s %s, this may cause unexpected problems when creating workspaces. Generate a unique *.try.coder.app URL by not specifying an access URL.\n",
-					cliui.DefaultStyles.Field.Render(cfg.AccessURL.String()), reason,
-				)
-			}
 
 			// A newline is added before for visibility in terminal output.
 			cliui.Infof(inv.Stdout, "\nView the Web UI: %s", cfg.AccessURL.String())
@@ -232,20 +236,24 @@ func (*RootCmd) proxyServer() *clibase.Cmd {
 			}
 
 			proxy, err := wsproxy.New(ctx, &wsproxy.Options{
-				Logger:             logger,
-				HTTPClient:         httpClient,
-				DashboardURL:       primaryAccessURL.Value(),
-				AccessURL:          cfg.AccessURL.Value(),
-				AppHostname:        appHostname,
-				AppHostnameRegex:   appHostnameRegex,
-				RealIPConfig:       realIPConfig,
-				Tracing:            tracer,
-				PrometheusRegistry: prometheusRegistry,
-				APIRateLimit:       int(cfg.RateLimit.API.Value()),
-				SecureAuthCookie:   cfg.SecureAuthCookie.Value(),
-				DisablePathApps:    cfg.DisablePathApps.Value(),
-				ProxySessionToken:  proxySessionToken.Value(),
-				AllowAllCors:       cfg.Dangerous.AllowAllCors.Value(),
+				Logger:                 logger,
+				Experiments:            coderd.ReadExperiments(logger, cfg.Experiments.Value()),
+				HTTPClient:             httpClient,
+				DashboardURL:           primaryAccessURL.Value(),
+				AccessURL:              cfg.AccessURL.Value(),
+				AppHostname:            appHostname,
+				AppHostnameRegex:       appHostnameRegex,
+				RealIPConfig:           realIPConfig,
+				Tracing:                tracer,
+				PrometheusRegistry:     prometheusRegistry,
+				APIRateLimit:           int(cfg.RateLimit.API.Value()),
+				SecureAuthCookie:       cfg.SecureAuthCookie.Value(),
+				DisablePathApps:        cfg.DisablePathApps.Value(),
+				ProxySessionToken:      proxySessionToken.Value(),
+				AllowAllCors:           cfg.Dangerous.AllowAllCors.Value(),
+				DERPEnabled:            cfg.DERP.Server.Enable.Value(),
+				DERPOnly:               derpOnly.Value(),
+				DERPServerRelayAddress: cfg.DERP.Server.RelayURL.String(),
 			})
 			if err != nil {
 				return xerrors.Errorf("create workspace proxy: %w", err)

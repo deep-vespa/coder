@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,12 +19,12 @@ import (
 
 	"cdr.dev/slog"
 	"cdr.dev/slog/sloggers/slogtest"
-	"github.com/coder/coder/cli"
-	"github.com/coder/coder/cli/clibase"
-	"github.com/coder/coder/cli/config"
-	"github.com/coder/coder/codersdk"
-	"github.com/coder/coder/provisioner/echo"
-	"github.com/coder/coder/testutil"
+	"github.com/coder/coder/v2/cli"
+	"github.com/coder/coder/v2/cli/clibase"
+	"github.com/coder/coder/v2/cli/config"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/provisioner/echo"
+	"github.com/coder/coder/v2/testutil"
 )
 
 // New creates a CLI instance with a configuration pointed to a
@@ -86,7 +85,10 @@ func SetupConfig(t *testing.T, client *codersdk.Client, root config.Root) {
 // new temporary testing directory.
 func CreateTemplateVersionSource(t *testing.T, responses *echo.Responses) string {
 	directory := t.TempDir()
-	f, err := ioutil.TempFile(directory, "*.tf")
+	f, err := os.CreateTemp(directory, "*.tf")
+	require.NoError(t, err)
+	_ = f.Close()
+	f, err = os.Create(filepath.Join(directory, ".terraform.lock.hcl"))
 	require.NoError(t, err)
 	_ = f.Close()
 	data, err := echo.Tar(responses)

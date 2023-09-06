@@ -14,6 +14,8 @@ import (
 	"golang.org/x/exp/slices"
 	"golang.org/x/xerrors"
 	"gopkg.in/yaml.v3"
+
+	"github.com/coder/coder/v2/coderd/util/slice"
 )
 
 // Cmd describes an executable command.
@@ -102,11 +104,11 @@ func (c *Cmd) PrepareAll() error {
 		}
 	}
 
-	slices.SortFunc(c.Options, func(a, b Option) bool {
-		return a.Name < b.Name
+	slices.SortFunc(c.Options, func(a, b Option) int {
+		return slice.Ascending(a.Name, b.Name)
 	})
-	slices.SortFunc(c.Children, func(a, b *Cmd) bool {
-		return a.Name() < b.Name()
+	slices.SortFunc(c.Children, func(a, b *Cmd) int {
+		return slice.Ascending(a.Name(), b.Name())
 	})
 	for _, child := range c.Children {
 		child.Parent = c
@@ -331,6 +333,18 @@ func (inv *Invocation) run(state *runState) error {
 			state.allArgs,
 			inv.Command.FullName(), state.flagParseErr,
 		)
+	}
+
+	// All options should be set. Check all required options have sources,
+	// meaning they were set by the user in some way (env, flag, etc).
+	var missing []string
+	for _, opt := range inv.Command.Options {
+		if opt.Required && opt.ValueSource == ValueSourceNone {
+			missing = append(missing, opt.Flag)
+		}
+	}
+	if len(missing) > 0 {
+		return xerrors.Errorf("Missing values for the required flags: %s", strings.Join(missing, ", "))
 	}
 
 	if inv.Command.RawArgs {

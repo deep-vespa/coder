@@ -5,16 +5,19 @@ package database_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"sort"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/coderd/database/dbgen"
-	"github.com/coder/coder/coderd/database/migrations"
-	"github.com/coder/coder/testutil"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/database/dbgen"
+	"github.com/coder/coder/v2/coderd/database/dbtime"
+	"github.com/coder/coder/v2/coderd/database/migrations"
+	"github.com/coder/coder/v2/testutil"
 )
 
 func TestGetDeploymentWorkspaceAgentStats(t *testing.T) {
@@ -41,7 +44,7 @@ func TestGetDeploymentWorkspaceAgentStats(t *testing.T) {
 			ConnectionMedianLatencyMS: 2,
 			SessionCountVSCode:        1,
 		})
-		stats, err := db.GetDeploymentWorkspaceAgentStats(ctx, database.Now().Add(-time.Hour))
+		stats, err := db.GetDeploymentWorkspaceAgentStats(ctx, dbtime.Now().Add(-time.Hour))
 		require.NoError(t, err)
 
 		require.Equal(t, int64(2), stats.WorkspaceTxBytes)
@@ -60,7 +63,7 @@ func TestGetDeploymentWorkspaceAgentStats(t *testing.T) {
 		db := database.New(sqlDB)
 		ctx := context.Background()
 		agentID := uuid.New()
-		insertTime := database.Now()
+		insertTime := dbtime.Now()
 		dbgen.WorkspaceAgentStat(t, db, database.WorkspaceAgentStat{
 			CreatedAt:                 insertTime.Add(-time.Second),
 			AgentID:                   agentID,
@@ -78,7 +81,7 @@ func TestGetDeploymentWorkspaceAgentStats(t *testing.T) {
 			ConnectionMedianLatencyMS: 2,
 			SessionCountVSCode:        1,
 		})
-		stats, err := db.GetDeploymentWorkspaceAgentStats(ctx, database.Now().Add(-time.Hour))
+		stats, err := db.GetDeploymentWorkspaceAgentStats(ctx, dbtime.Now().Add(-time.Hour))
 		require.NoError(t, err)
 
 		require.Equal(t, int64(2), stats.WorkspaceTxBytes)
@@ -89,7 +92,7 @@ func TestGetDeploymentWorkspaceAgentStats(t *testing.T) {
 	})
 }
 
-func TestInsertWorkspaceAgentStartupLogs(t *testing.T) {
+func TestInsertWorkspaceAgentLogs(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {
 		t.SkipNow()
@@ -109,25 +112,27 @@ func TestInsertWorkspaceAgentStartupLogs(t *testing.T) {
 	agent := dbgen.WorkspaceAgent(t, db, database.WorkspaceAgent{
 		ResourceID: resource.ID,
 	})
-	logs, err := db.InsertWorkspaceAgentStartupLogs(ctx, database.InsertWorkspaceAgentStartupLogsParams{
+	logs, err := db.InsertWorkspaceAgentLogs(ctx, database.InsertWorkspaceAgentLogsParams{
 		AgentID:   agent.ID,
-		CreatedAt: []time.Time{database.Now()},
+		CreatedAt: []time.Time{dbtime.Now()},
 		Output:    []string{"first"},
 		Level:     []database.LogLevel{database.LogLevelInfo},
+		Source:    []database.WorkspaceAgentLogSource{database.WorkspaceAgentLogSourceExternal},
 		// 1 MB is the max
 		OutputLength: 1 << 20,
 	})
 	require.NoError(t, err)
 	require.Equal(t, int64(1), logs[0].ID)
 
-	_, err = db.InsertWorkspaceAgentStartupLogs(ctx, database.InsertWorkspaceAgentStartupLogsParams{
+	_, err = db.InsertWorkspaceAgentLogs(ctx, database.InsertWorkspaceAgentLogsParams{
 		AgentID:      agent.ID,
-		CreatedAt:    []time.Time{database.Now()},
+		CreatedAt:    []time.Time{dbtime.Now()},
 		Output:       []string{"second"},
 		Level:        []database.LogLevel{database.LogLevelInfo},
+		Source:       []database.WorkspaceAgentLogSource{database.WorkspaceAgentLogSourceExternal},
 		OutputLength: 1,
 	})
-	require.True(t, database.IsStartupLogsLimitError(err))
+	require.True(t, database.IsWorkspaceAgentLogsLimitError(err))
 }
 
 func TestProxyByHostname(t *testing.T) {
@@ -311,4 +316,182 @@ func TestDefaultProxy(t *testing.T) {
 	found, err := db.GetDeploymentID(ctx)
 	require.NoError(t, err, "get deployment id")
 	require.Equal(t, depID, found)
+}
+
+func TestQueuePosition(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.SkipNow()
+	}
+	sqlDB := testSQLDB(t)
+	err := migrations.Up(sqlDB)
+	require.NoError(t, err)
+	db := database.New(sqlDB)
+	ctx := testutil.Context(t, testutil.WaitLong)
+
+	org := dbgen.Organization(t, db, database.Organization{})
+	jobCount := 10
+	jobs := []database.ProvisionerJob{}
+	jobIDs := []uuid.UUID{}
+	for i := 0; i < jobCount; i++ {
+		job := dbgen.ProvisionerJob(t, db, database.ProvisionerJob{
+			OrganizationID: org.ID,
+			Tags:           database.StringMap{},
+		})
+		jobs = append(jobs, job)
+		jobIDs = append(jobIDs, job.ID)
+
+		// We need a slight amount of time between each insertion to ensure that
+		// the queue position is correct... it's sorted by `created_at`.
+		time.Sleep(time.Millisecond)
+	}
+
+	queued, err := db.GetProvisionerJobsByIDsWithQueuePosition(ctx, jobIDs)
+	require.NoError(t, err)
+	require.Len(t, queued, jobCount)
+	sort.Slice(queued, func(i, j int) bool {
+		return queued[i].QueuePosition < queued[j].QueuePosition
+	})
+	// Ensure that the queue positions are correct based on insertion ID!
+	for index, job := range queued {
+		require.Equal(t, job.QueuePosition, int64(index+1))
+		require.Equal(t, job.ProvisionerJob.ID, jobs[index].ID)
+	}
+
+	job, err := db.AcquireProvisionerJob(ctx, database.AcquireProvisionerJobParams{
+		StartedAt: sql.NullTime{
+			Time:  dbtime.Now(),
+			Valid: true,
+		},
+		Types: database.AllProvisionerTypeValues(),
+		WorkerID: uuid.NullUUID{
+			UUID:  uuid.New(),
+			Valid: true,
+		},
+		Tags: json.RawMessage("{}"),
+	})
+	require.NoError(t, err)
+	require.Equal(t, jobs[0].ID, job.ID)
+
+	queued, err = db.GetProvisionerJobsByIDsWithQueuePosition(ctx, jobIDs)
+	require.NoError(t, err)
+	require.Len(t, queued, jobCount)
+	sort.Slice(queued, func(i, j int) bool {
+		return queued[i].QueuePosition < queued[j].QueuePosition
+	})
+	// Ensure that queue positions are updated now that the first job has been acquired!
+	for index, job := range queued {
+		if index == 0 {
+			require.Equal(t, job.QueuePosition, int64(0))
+			continue
+		}
+		require.Equal(t, job.QueuePosition, int64(index))
+		require.Equal(t, job.ProvisionerJob.ID, jobs[index].ID)
+	}
+}
+
+func TestUserLastSeenFilter(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.SkipNow()
+	}
+	t.Run("Before", func(t *testing.T) {
+		t.Parallel()
+		sqlDB := testSQLDB(t)
+		err := migrations.Up(sqlDB)
+		require.NoError(t, err)
+		db := database.New(sqlDB)
+		ctx := context.Background()
+		now := dbtime.Now()
+
+		yesterday := dbgen.User(t, db, database.User{
+			LastSeenAt: now.Add(time.Hour * -25),
+		})
+		today := dbgen.User(t, db, database.User{
+			LastSeenAt: now,
+		})
+		lastWeek := dbgen.User(t, db, database.User{
+			LastSeenAt: now.Add((time.Hour * -24 * 7) + (-1 * time.Hour)),
+		})
+
+		beforeToday, err := db.GetUsers(ctx, database.GetUsersParams{
+			LastSeenBefore: now.Add(time.Hour * -24),
+		})
+		require.NoError(t, err)
+		database.ConvertUserRows(beforeToday)
+
+		requireUsersMatch(t, []database.User{yesterday, lastWeek}, beforeToday, "before today")
+
+		justYesterday, err := db.GetUsers(ctx, database.GetUsersParams{
+			LastSeenBefore: now.Add(time.Hour * -24),
+			LastSeenAfter:  now.Add(time.Hour * -24 * 2),
+		})
+		require.NoError(t, err)
+		requireUsersMatch(t, []database.User{yesterday}, justYesterday, "just yesterday")
+
+		all, err := db.GetUsers(ctx, database.GetUsersParams{
+			LastSeenBefore: now.Add(time.Hour),
+		})
+		require.NoError(t, err)
+		requireUsersMatch(t, []database.User{today, yesterday, lastWeek}, all, "all")
+
+		allAfterLastWeek, err := db.GetUsers(ctx, database.GetUsersParams{
+			LastSeenAfter: now.Add(time.Hour * -24 * 7),
+		})
+		require.NoError(t, err)
+		requireUsersMatch(t, []database.User{today, yesterday}, allAfterLastWeek, "after last week")
+	})
+}
+
+func TestUserChangeLoginType(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.SkipNow()
+	}
+
+	sqlDB := testSQLDB(t)
+	err := migrations.Up(sqlDB)
+	require.NoError(t, err)
+	db := database.New(sqlDB)
+	ctx := context.Background()
+
+	alice := dbgen.User(t, db, database.User{
+		LoginType: database.LoginTypePassword,
+	})
+	bob := dbgen.User(t, db, database.User{
+		LoginType: database.LoginTypePassword,
+	})
+	bobExpPass := bob.HashedPassword
+	require.NotEmpty(t, alice.HashedPassword, "hashed password should not start empty")
+	require.NotEmpty(t, bob.HashedPassword, "hashed password should not start empty")
+
+	alice, err = db.UpdateUserLoginType(ctx, database.UpdateUserLoginTypeParams{
+		NewLoginType: database.LoginTypeOIDC,
+		UserID:       alice.ID,
+	})
+	require.NoError(t, err)
+
+	require.Empty(t, alice.HashedPassword, "hashed password should be empty")
+
+	// First check other users are not affected
+	bob, err = db.GetUserByID(ctx, bob.ID)
+	require.NoError(t, err)
+	require.Equal(t, bobExpPass, bob.HashedPassword, "hashed password should not change")
+
+	// Then check password -> password is a noop
+	bob, err = db.UpdateUserLoginType(ctx, database.UpdateUserLoginTypeParams{
+		NewLoginType: database.LoginTypePassword,
+		UserID:       bob.ID,
+	})
+	require.NoError(t, err)
+
+	bob, err = db.GetUserByID(ctx, bob.ID)
+	require.NoError(t, err)
+	require.Equal(t, bobExpPass, bob.HashedPassword, "hashed password should not change")
+}
+
+func requireUsersMatch(t testing.TB, expected []database.User, found []database.GetUsersRow, msg string) {
+	t.Helper()
+	require.ElementsMatch(t, expected, database.ConvertUserRows(found), msg)
 }

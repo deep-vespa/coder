@@ -2,7 +2,7 @@
 SELECT
 	*
 FROM
-	template_versions
+	template_version_with_user AS template_versions
 WHERE
 	template_id = @template_id :: uuid
 	AND CASE
@@ -36,18 +36,18 @@ LIMIT
 SELECT
 	*
 FROM
-	template_versions
+	template_version_with_user AS template_versions
 WHERE
 	job_id = $1;
 
 -- name: GetTemplateVersionsCreatedAfter :many
-SELECT * FROM template_versions WHERE created_at > $1;
+SELECT * FROM template_version_with_user AS template_versions WHERE created_at > $1;
 
 -- name: GetTemplateVersionByTemplateIDAndName :one
 SELECT
 	*
 FROM
-	template_versions
+	template_version_with_user AS template_versions
 WHERE
 	template_id = $1
 	AND "name" = $2;
@@ -56,7 +56,7 @@ WHERE
 SELECT
 	*
 FROM
-	template_versions
+	template_version_with_user AS template_versions
 WHERE
 	id = $1;
 
@@ -64,11 +64,11 @@ WHERE
 SELECT
 	*
 FROM
-	template_versions
+	template_version_with_user AS template_versions
 WHERE
 	id = ANY(@ids :: uuid [ ]);
 
--- name: InsertTemplateVersion :one
+-- name: InsertTemplateVersion :exec
 INSERT INTO
 	template_versions (
 		id,
@@ -77,22 +77,24 @@ INSERT INTO
 		created_at,
 		updated_at,
 		"name",
+		message,
 		readme,
 		job_id,
 		created_by
 	)
 VALUES
-	($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *;
+	($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);
 
--- name: UpdateTemplateVersionByID :one
+-- name: UpdateTemplateVersionByID :exec
 UPDATE
 	template_versions
 SET
 	template_id = $2,
 	updated_at = $3,
-	name = $4
+	name = $4,
+	message = $5
 WHERE
-	id = $1 RETURNING *;
+	id = $1;
 
 -- name: UpdateTemplateVersionDescriptionByJobID :exec
 UPDATE
@@ -116,11 +118,11 @@ WHERE
 SELECT
 	*
 FROM
-	template_versions
+	template_version_with_user AS template_versions
 WHERE
 	created_at < (
 		SELECT created_at
-		FROM template_versions AS tv
+		FROM template_version_with_user AS tv
 		WHERE tv.organization_id = $1 AND tv.name = $2 AND tv.template_id = $3
 	)
 	AND organization_id = $1

@@ -18,13 +18,14 @@ import (
 	"nhooyr.io/websocket"
 
 	"cdr.dev/slog"
-	"github.com/coder/coder/agent/agentssh"
-	"github.com/coder/coder/coderd/httpapi"
-	"github.com/coder/coder/coderd/httpmw"
-	"github.com/coder/coder/coderd/tracing"
-	"github.com/coder/coder/coderd/wsconncache"
-	"github.com/coder/coder/codersdk"
-	"github.com/coder/coder/site"
+	"github.com/coder/coder/v2/agent/agentssh"
+	"github.com/coder/coder/v2/coderd/database/dbtime"
+	"github.com/coder/coder/v2/coderd/httpapi"
+	"github.com/coder/coder/v2/coderd/httpmw"
+	"github.com/coder/coder/v2/coderd/tracing"
+	"github.com/coder/coder/v2/coderd/util/slice"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/site"
 )
 
 const (
@@ -60,6 +61,22 @@ var nonCanonicalHeaders = map[string]string{
 	"Sec-Websocket-Version":    "Sec-WebSocket-Version",
 }
 
+type AgentProvider interface {
+	// ReverseProxy returns an httputil.ReverseProxy for proxying HTTP requests
+	// to the specified agent.
+	//
+	// TODO: after wsconncache is deleted this doesn't need to return an error.
+	ReverseProxy(targetURL, dashboardURL *url.URL, agentID uuid.UUID) (_ *httputil.ReverseProxy, release func(), _ error)
+
+	// AgentConn returns a new connection to the specified agent.
+	//
+	// TODO: after wsconncache is deleted this doesn't need to return a release
+	// func.
+	AgentConn(ctx context.Context, agentID uuid.UUID) (_ *codersdk.WorkspaceAgentConn, release func(), _ error)
+
+	Close() error
+}
+
 // Server serves workspace apps endpoints, including:
 // - Path-based apps
 // - Subdomain app middleware
@@ -82,7 +99,6 @@ type Server struct {
 	RealIPConfig  *httpmw.RealIPConfig
 
 	SignedTokenProvider SignedTokenProvider
-	WorkspaceConnCache  *wsconncache.Cache
 	AppSecurityKey      SecurityKey
 
 	// DisablePathApps disables path-based apps. This is a security feature as path
@@ -93,6 +109,9 @@ type Server struct {
 	// calls to the dashboard are not possible due to CORs.
 	DisablePathApps  bool
 	SecureAuthCookie bool
+
+	AgentProvider  AgentProvider
+	StatsCollector *StatsCollector
 
 	websocketWaitMutex sync.Mutex
 	websocketWaitGroup sync.WaitGroup
@@ -105,8 +124,12 @@ func (s *Server) Close() error {
 	s.websocketWaitGroup.Wait()
 	s.websocketWaitMutex.Unlock()
 
-	// The caller must close the SignedTokenProvider (if necessary) and the
-	// wsconncache.
+	if s.StatsCollector != nil {
+		_ = s.StatsCollector.Close()
+	}
+
+	// The caller must close the SignedTokenProvider and the AgentProvider (if
+	// necessary).
 
 	return nil
 }
@@ -197,8 +220,12 @@ func (s *Server) handleAPIKeySmuggling(rw http.ResponseWriter, r *http.Request, 
 	// We don't set an expiration because the key in the database already has an
 	// expiration, and expired tokens don't affect the user experience (they get
 	// auto-redirected to re-smuggle the API key).
+	//
+	// We use different cookie names for path apps and for subdomain apps to
+	// avoid both being set and sent to the server at the same time and the
+	// server using the wrong value.
 	http.SetCookie(rw, &http.Cookie{
-		Name:     codersdk.DevURLSessionTokenCookie,
+		Name:     AppConnectSessionTokenCookieName(accessMethod),
 		Value:    token,
 		Domain:   domain,
 		Path:     "/",
@@ -229,8 +256,8 @@ func (s *Server) handleAPIKeySmuggling(rw http.ResponseWriter, r *http.Request, 
 func (s *Server) workspaceAppsProxyPath(rw http.ResponseWriter, r *http.Request) {
 	if s.DisablePathApps {
 		site.RenderStaticErrorPage(rw, r, site.ErrorPageData{
-			Status:       http.StatusUnauthorized,
-			Title:        "Unauthorized",
+			Status:       http.StatusForbidden,
+			Title:        "Forbidden",
 			Description:  "Path-based applications are disabled on this Coder deployment by the administrator.",
 			RetryEnabled: false,
 			DashboardURL: s.DashboardURL.String(),
@@ -516,18 +543,7 @@ func (s *Server) proxyWorkspaceApp(rw http.ResponseWriter, r *http.Request, appT
 	r.URL.Path = path
 	appURL.RawQuery = ""
 
-	proxy := httputil.NewSingleHostReverseProxy(appURL)
-	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		site.RenderStaticErrorPage(rw, r, site.ErrorPageData{
-			Status:       http.StatusBadGateway,
-			Title:        "Bad Gateway",
-			Description:  "Failed to proxy request to application: " + err.Error(),
-			RetryEnabled: true,
-			DashboardURL: s.DashboardURL.String(),
-		})
-	}
-
-	conn, release, err := s.WorkspaceConnCache.Acquire(appToken.AgentID)
+	proxy, release, err := s.AgentProvider.ReverseProxy(appURL, s.DashboardURL, appToken.AgentID)
 	if err != nil {
 		site.RenderStaticErrorPage(rw, r, site.ErrorPageData{
 			Status:       http.StatusBadGateway,
@@ -539,7 +555,26 @@ func (s *Server) proxyWorkspaceApp(rw http.ResponseWriter, r *http.Request, appT
 		return
 	}
 	defer release()
-	proxy.Transport = conn.HTTPTransport()
+
+	proxy.ModifyResponse = func(r *http.Response) error {
+		r.Header.Del(httpmw.AccessControlAllowOriginHeader)
+		r.Header.Del(httpmw.AccessControlAllowCredentialsHeader)
+		r.Header.Del(httpmw.AccessControlAllowMethodsHeader)
+		r.Header.Del(httpmw.AccessControlAllowHeadersHeader)
+		varies := r.Header.Values(httpmw.VaryHeader)
+		r.Header.Del(httpmw.VaryHeader)
+		forbiddenVary := []string{
+			httpmw.OriginHeader,
+			httpmw.AccessControlRequestMethodsHeader,
+			httpmw.AccessControlRequestHeadersHeader,
+		}
+		for _, value := range varies {
+			if !slice.ContainsCompare(forbiddenVary, value, strings.EqualFold) {
+				r.Header.Add(httpmw.VaryHeader, value)
+			}
+		}
+		return nil
+	}
 
 	// This strips the session token from a workspace app request.
 	cookieHeaders := r.Header.Values("Cookie")[:]
@@ -560,6 +595,14 @@ func (s *Server) proxyWorkspaceApp(rw http.ResponseWriter, r *http.Request, appT
 
 	// end span so we don't get long lived trace data
 	tracing.EndHTTPSpan(r, http.StatusOK, trace.SpanFromContext(ctx))
+
+	report := newStatsReportFromSignedToken(appToken)
+	s.collectStats(report)
+	defer func() {
+		// We must use defer here because ServeHTTP may panic.
+		report.SessionEndedAt = dbtime.Now()
+		s.collectStats(report)
+	}()
 
 	proxy.ServeHTTP(rw, r)
 }
@@ -637,7 +680,7 @@ func (s *Server) workspaceAgentPTY(rw http.ResponseWriter, r *http.Request) {
 
 	go httpapi.Heartbeat(ctx, conn)
 
-	agentConn, release, err := s.WorkspaceConnCache.Acquire(appToken.AgentID)
+	agentConn, release, err := s.AgentProvider.AgentConn(ctx, appToken.AgentID)
 	if err != nil {
 		log.Debug(ctx, "dial workspace agent", slog.Error(err))
 		_ = conn.Close(websocket.StatusInternalError, httpapi.WebsocketCloseSprintf("dial workspace agent: %s", err))
@@ -653,8 +696,22 @@ func (s *Server) workspaceAgentPTY(rw http.ResponseWriter, r *http.Request) {
 	}
 	defer ptNetConn.Close()
 	log.Debug(ctx, "obtained PTY")
+
+	report := newStatsReportFromSignedToken(*appToken)
+	s.collectStats(report)
+	defer func() {
+		report.SessionEndedAt = dbtime.Now()
+		s.collectStats(report)
+	}()
+
 	agentssh.Bicopy(ctx, wsNetConn, ptNetConn)
 	log.Debug(ctx, "pty Bicopy finished")
+}
+
+func (s *Server) collectStats(stats StatsReport) {
+	if s.StatsCollector != nil {
+		s.StatsCollector.Collect(stats)
+	}
 }
 
 // wsNetConn wraps net.Conn created by websocket.NetConn(). Cancel func

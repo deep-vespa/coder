@@ -4,22 +4,23 @@ import RadioGroup from "@mui/material/RadioGroup"
 import { makeStyles } from "@mui/styles"
 import TextField, { TextFieldProps } from "@mui/material/TextField"
 import { Stack } from "components/Stack/Stack"
-import { FC, useState } from "react"
+import { FC } from "react"
 import { TemplateVersionParameter } from "../../api/typesGenerated"
 import { colors } from "theme/colors"
 import { MemoizedMarkdown } from "components/Markdown/Markdown"
 import { MultiTextField } from "components/MultiTextField/MultiTextField"
+import Box from "@mui/material/Box"
+import { Theme } from "@mui/material/styles"
 
 const isBoolean = (parameter: TemplateVersionParameter) => {
   return parameter.type === "bool"
 }
 
 export interface ParameterLabelProps {
-  id: string
   parameter: TemplateVersionParameter
 }
 
-const ParameterLabel: FC<ParameterLabelProps> = ({ id, parameter }) => {
+const ParameterLabel: FC<ParameterLabelProps> = ({ parameter }) => {
   const styles = useStyles()
   const hasDescription = parameter.description && parameter.description !== ""
   const displayName = parameter.display_name
@@ -27,7 +28,7 @@ const ParameterLabel: FC<ParameterLabelProps> = ({ id, parameter }) => {
     : parameter.name
 
   return (
-    <label htmlFor={id}>
+    <label htmlFor={parameter.name}>
       <Stack direction="row" alignItems="center">
         {parameter.icon && (
           <span className={styles.labelIconWrapper}>
@@ -41,10 +42,10 @@ const ParameterLabel: FC<ParameterLabelProps> = ({ id, parameter }) => {
 
         {hasDescription ? (
           <Stack spacing={0}>
-            <span className={styles.labelCaption}>{displayName}</span>
-            <span className={styles.labelPrimary}>
-              <MemoizedMarkdown>{parameter.description}</MemoizedMarkdown>
-            </span>
+            <span className={styles.labelPrimary}>{displayName}</span>
+            <MemoizedMarkdown className={styles.labelCaption}>
+              {parameter.description}
+            </MemoizedMarkdown>
           </Stack>
         ) : (
           <span className={styles.labelPrimary}>{displayName}</span>
@@ -54,37 +55,33 @@ const ParameterLabel: FC<ParameterLabelProps> = ({ id, parameter }) => {
   )
 }
 
-export type RichParameterInputProps = Omit<TextFieldProps, "onChange"> & {
-  index: number
+type Size = "medium" | "small"
+
+export type RichParameterInputProps = Omit<
+  TextFieldProps,
+  "size" | "onChange"
+> & {
   parameter: TemplateVersionParameter
   onChange: (value: string) => void
-  initialValue?: string
-  id: string
+  size?: Size
 }
 
 export const RichParameterInput: FC<RichParameterInputProps> = ({
-  index,
-  disabled,
-  onChange,
   parameter,
-  initialValue,
+  size = "medium",
   ...fieldProps
 }) => {
-  const styles = useStyles()
-
   return (
-    <Stack direction="column" spacing={2}>
-      <ParameterLabel id={fieldProps.id} parameter={parameter} />
-      <div className={styles.input}>
-        <RichParameterField
-          {...fieldProps}
-          index={index}
-          disabled={disabled}
-          onChange={onChange}
-          parameter={parameter}
-          initialValue={initialValue}
-        />
-      </div>
+    <Stack
+      direction="column"
+      spacing={size === "small" ? 1.25 : 2}
+      className={size}
+      data-testid={`parameter-field-${parameter.name}`}
+    >
+      <ParameterLabel parameter={parameter} />
+      <Box sx={{ display: "flex", flexDirection: "column" }}>
+        <RichParameterField {...fieldProps} size={size} parameter={parameter} />
+      </Box>
     </Stack>
   )
 }
@@ -93,19 +90,20 @@ const RichParameterField: React.FC<RichParameterInputProps> = ({
   disabled,
   onChange,
   parameter,
-  initialValue,
+  value,
+  size,
   ...props
 }) => {
-  const [parameterValue, setParameterValue] = useState(initialValue)
   const styles = useStyles()
 
   if (isBoolean(parameter)) {
     return (
       <RadioGroup
-        defaultValue={parameterValue}
-        onChange={(event) => {
-          onChange(event.target.value)
-        }}
+        id={parameter.name}
+        data-testid="parameter-field-bool"
+        className={styles.radioGroup}
+        value={value}
+        onChange={(_, value) => onChange(value)}
       >
         <FormControlLabel
           disabled={disabled}
@@ -126,10 +124,11 @@ const RichParameterField: React.FC<RichParameterInputProps> = ({
   if (parameter.options.length > 0) {
     return (
       <RadioGroup
-        defaultValue={parameterValue}
-        onChange={(event) => {
-          onChange(event.target.value)
-        }}
+        id={parameter.name}
+        data-testid="parameter-field-options"
+        className={styles.radioGroup}
+        value={value}
+        onChange={(_, value) => onChange(value)}
       >
         {parameter.options.map((option) => (
           <FormControlLabel
@@ -161,9 +160,13 @@ const RichParameterField: React.FC<RichParameterInputProps> = ({
   if (parameter.type === "list(string)") {
     let values: string[] = []
 
-    if (parameterValue) {
+    if (typeof value !== "string") {
+      throw new Error("Expected value to be a string")
+    }
+
+    if (value) {
       try {
-        values = JSON.parse(parameterValue) as string[]
+        values = JSON.parse(value) as string[]
       } catch (e) {
         console.error("Error parsing list(string) parameter", e)
       }
@@ -171,12 +174,13 @@ const RichParameterField: React.FC<RichParameterInputProps> = ({
 
     return (
       <MultiTextField
+        id={parameter.name}
+        data-testid="parameter-field-list-of-string"
         label={props.label as string}
         values={values}
         onChange={(values) => {
           try {
             const value = JSON.stringify(values)
-            setParameterValue(value)
             onChange(value)
           } catch (e) {
             console.error("Error on change of list(string) parameter", e)
@@ -192,28 +196,33 @@ const RichParameterField: React.FC<RichParameterInputProps> = ({
   return (
     <TextField
       {...props}
+      id={parameter.name}
+      data-testid="parameter-field-text"
+      className={styles.textField}
       type={parameter.type}
       disabled={disabled}
       required={parameter.required}
       placeholder={parameter.default_value}
-      value={parameterValue}
+      value={value}
       onChange={(event) => {
-        setParameterValue(event.target.value)
         onChange(event.target.value)
       }}
     />
   )
 }
 
-const optionIconSize = 20
-
-const useStyles = makeStyles((theme) => ({
+const useStyles = makeStyles<Theme>((theme) => ({
   label: {
     marginBottom: theme.spacing(0.5),
   },
   labelCaption: {
     fontSize: 14,
     color: theme.palette.text.secondary,
+
+    ".small &": {
+      fontSize: 13,
+      lineHeight: "140%",
+    },
   },
   labelPrimary: {
     fontSize: 16,
@@ -224,15 +233,34 @@ const useStyles = makeStyles((theme) => ({
       margin: 0,
       lineHeight: "24px", // Keep the same as ParameterInput
     },
+
+    ".small &": {
+      fontSize: 14,
+    },
   },
   labelImmutable: {
     marginTop: theme.spacing(0.5),
     marginBottom: theme.spacing(0.5),
     color: colors.yellow[7],
   },
-  input: {
-    display: "flex",
-    flexDirection: "column",
+  textField: {
+    ".small & .MuiInputBase-root": {
+      height: 36,
+      fontSize: 14,
+      borderRadius: 6,
+    },
+  },
+  radioGroup: {
+    ".small & .MuiFormControlLabel-label": {
+      fontSize: 14,
+    },
+    ".small & .MuiRadio-root": {
+      padding: theme.spacing(0.75, "9px"), // 8px + 1px border
+    },
+    ".small & .MuiRadio-root svg": {
+      width: 16,
+      height: 16,
+    },
   },
   checkbox: {
     display: "flex",
@@ -243,6 +271,10 @@ const useStyles = makeStyles((theme) => ({
     width: theme.spacing(2.5),
     height: theme.spacing(2.5),
     display: "block",
+
+    ".small &": {
+      display: "none",
+    },
   },
   labelIcon: {
     width: "100%",
@@ -255,7 +287,12 @@ const useStyles = makeStyles((theme) => ({
     gap: theme.spacing(1.5),
   },
   optionIcon: {
-    maxHeight: optionIconSize,
-    width: optionIconSize,
+    maxHeight: 20,
+    width: 20,
+
+    ".small &": {
+      maxHeight: 16,
+      width: 16,
+    },
   },
 }))

@@ -179,6 +179,11 @@ const AddNewLicensePage = lazy(
 const TemplateEmbedPage = lazy(
   () => import("./pages/TemplatePage/TemplateEmbedPage/TemplateEmbedPage"),
 )
+const TemplateInsightsPage = lazy(
+  () =>
+    import("./pages/TemplatePage/TemplateInsightsPage/TemplateInsightsPage"),
+)
+const HealthPage = lazy(() => import("./pages/HealthPage/HealthPage"))
 
 export const AppRouter: FC = () => {
   return (
@@ -193,7 +198,9 @@ export const AppRouter: FC = () => {
             <Route element={<DashboardLayout />}>
               <Route index element={<IndexPage />} />
 
-              <Route path="gitauth" element={<GitAuthPage />} />
+              <Route path="health" element={<HealthPage />} />
+
+              <Route path="gitauth/:provider" element={<GitAuthPage />} />
 
               <Route path="workspaces" element={<WorkspacesPage />} />
 
@@ -212,6 +219,7 @@ export const AppRouter: FC = () => {
                     <Route path="files" element={<TemplateFilesPage />} />
                     <Route path="versions" element={<TemplateVersionsPage />} />
                     <Route path="embed" element={<TemplateEmbedPage />} />
+                    <Route path="insights" element={<TemplateInsightsPage />} />
                   </Route>
 
                   <Route path="workspace" element={<CreateWorkspacePage />} />
@@ -264,10 +272,7 @@ export const AppRouter: FC = () => {
 
               <Route path="/audit" element={<AuditPage />} />
 
-              <Route
-                path="/settings/deployment"
-                element={<DeploySettingsLayout />}
-              >
+              <Route path="/deployment" element={<DeploySettingsLayout />}>
                 <Route path="general" element={<GeneralSettingsPage />} />
                 <Route path="licenses" element={<LicensesSettingsPage />} />
                 <Route path="licenses/add" element={<AddNewLicensePage />} />
@@ -276,6 +281,10 @@ export const AppRouter: FC = () => {
                 <Route path="network" element={<NetworkSettingsPage />} />
                 <Route path="userauth" element={<UserAuthSettingsPage />} />
                 <Route path="gitauth" element={<GitAuthSettingsPage />} />
+                <Route
+                  path="workspace-proxies"
+                  element={<WorkspaceProxyPage />}
+                />
               </Route>
 
               <Route path="settings" element={<SettingsLayout />}>
@@ -286,13 +295,9 @@ export const AppRouter: FC = () => {
                   <Route index element={<TokensPage />} />
                   <Route path="new" element={<CreateTokenPage />} />
                 </Route>
-                <Route
-                  path="workspace-proxies"
-                  element={<WorkspaceProxyPage />}
-                />
               </Route>
 
-              <Route path="/@:username">
+              <Route path="/:username">
                 <Route path=":workspace">
                   <Route index element={<WorkspacePage />} />
                   <Route
@@ -316,8 +321,8 @@ export const AppRouter: FC = () => {
 
             {/* Terminal and CLI auth pages don't have the dashboard layout */}
             <Route
-              path="/@:username/:workspace/terminal"
-              element={<TerminalPage />}
+              path="/:username/:workspace/terminal"
+              element={<TerminalPage renderer="webgl" />}
             />
             <Route path="cli-auth" element={<CliAuthenticationPage />} />
           </Route>

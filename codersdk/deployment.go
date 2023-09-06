@@ -16,8 +16,8 @@ import (
 
 	"github.com/coreos/go-oidc/v3/oidc"
 
-	"github.com/coder/coder/buildinfo"
-	"github.com/coder/coder/cli/clibase"
+	"github.com/coder/coder/v2/buildinfo"
+	"github.com/coder/coder/v2/cli/clibase"
 )
 
 // Entitlement represents whether a feature is licensed.
@@ -35,17 +35,20 @@ const (
 type FeatureName string
 
 const (
-	FeatureUserLimit                  FeatureName = "user_limit"
-	FeatureAuditLog                   FeatureName = "audit_log"
-	FeatureBrowserOnly                FeatureName = "browser_only"
-	FeatureSCIM                       FeatureName = "scim"
-	FeatureTemplateRBAC               FeatureName = "template_rbac"
-	FeatureHighAvailability           FeatureName = "high_availability"
-	FeatureMultipleGitAuth            FeatureName = "multiple_git_auth"
-	FeatureExternalProvisionerDaemons FeatureName = "external_provisioner_daemons"
-	FeatureAppearance                 FeatureName = "appearance"
-	FeatureAdvancedTemplateScheduling FeatureName = "advanced_template_scheduling"
-	FeatureWorkspaceProxy             FeatureName = "workspace_proxy"
+	FeatureUserLimit                   FeatureName = "user_limit"
+	FeatureAuditLog                    FeatureName = "audit_log"
+	FeatureBrowserOnly                 FeatureName = "browser_only"
+	FeatureSCIM                        FeatureName = "scim"
+	FeatureTemplateRBAC                FeatureName = "template_rbac"
+	FeatureUserRoleManagement          FeatureName = "user_role_management"
+	FeatureHighAvailability            FeatureName = "high_availability"
+	FeatureMultipleGitAuth             FeatureName = "multiple_git_auth"
+	FeatureExternalProvisionerDaemons  FeatureName = "external_provisioner_daemons"
+	FeatureAppearance                  FeatureName = "appearance"
+	FeatureAdvancedTemplateScheduling  FeatureName = "advanced_template_scheduling"
+	FeatureTemplateAutostopRequirement FeatureName = "template_autostop_requirement"
+	FeatureWorkspaceProxy              FeatureName = "workspace_proxy"
+	FeatureWorkspaceBatchActions       FeatureName = "workspace_batch_actions"
 )
 
 // FeatureNames must be kept in-sync with the Feature enum above.
@@ -61,6 +64,8 @@ var FeatureNames = []FeatureName{
 	FeatureAppearance,
 	FeatureAdvancedTemplateScheduling,
 	FeatureWorkspaceProxy,
+	FeatureUserRoleManagement,
+	FeatureWorkspaceBatchActions,
 }
 
 // Humanize returns the feature name in a human-readable format.
@@ -100,6 +105,7 @@ type Entitlements struct {
 	HasLicense       bool                    `json:"has_license"`
 	Trial            bool                    `json:"trial"`
 	RequireTelemetry bool                    `json:"require_telemetry"`
+	RefreshedAt      time.Time               `json:"refreshed_at" format:"date-time"`
 }
 
 func (c *Client) Entitlements(ctx context.Context) (Entitlements, error) {
@@ -120,10 +126,12 @@ type DeploymentValues struct {
 	Verbose             clibase.Bool `json:"verbose,omitempty"`
 	AccessURL           clibase.URL  `json:"access_url,omitempty"`
 	WildcardAccessURL   clibase.URL  `json:"wildcard_access_url,omitempty"`
+	DocsURL             clibase.URL  `json:"docs_url,omitempty"`
 	RedirectToAccessURL clibase.Bool `json:"redirect_to_access_url,omitempty"`
 	// HTTPAddress is a string because it may be set to zero to disable.
 	HTTPAddress                     clibase.String                  `json:"http_address,omitempty" typescript:",notnull"`
 	AutobuildPollInterval           clibase.Duration                `json:"autobuild_poll_interval,omitempty"`
+	JobHangDetectorInterval         clibase.Duration                `json:"job_hang_detector_interval,omitempty"`
 	DERP                            DERP                            `json:"derp,omitempty" typescript:",notnull"`
 	Prometheus                      PrometheusConfig                `json:"prometheus,omitempty" typescript:",notnull"`
 	Pprof                           PprofConfig                     `json:"pprof,omitempty" typescript:",notnull"`
@@ -164,6 +172,8 @@ type DeploymentValues struct {
 	WgtunnelHost                    clibase.String                  `json:"wgtunnel_host,omitempty" typescript:",notnull"`
 	DisableOwnerWorkspaceExec       clibase.Bool                    `json:"disable_owner_workspace_exec,omitempty" typescript:",notnull"`
 	ProxyHealthStatusInterval       clibase.Duration                `json:"proxy_health_status_interval,omitempty" typescript:",notnull"`
+	EnableTerraformDebugMode        clibase.Bool                    `json:"enable_terraform_debug_mode,omitempty" typescript:",notnull"`
+	UserQuietHoursSchedule          UserQuietHoursScheduleConfig    `json:"user_quiet_hours_schedule,omitempty" typescript:",notnull"`
 
 	Config      clibase.YAMLConfigPath `json:"config,omitempty" typescript:",notnull"`
 	WriteConfig clibase.Bool           `json:"write_config,omitempty" typescript:",notnull"`
@@ -221,14 +231,17 @@ type DERPServerConfig struct {
 }
 
 type DERPConfig struct {
-	URL  clibase.String `json:"url" typescript:",notnull"`
-	Path clibase.String `json:"path" typescript:",notnull"`
+	BlockDirect     clibase.Bool   `json:"block_direct" typescript:",notnull"`
+	ForceWebSockets clibase.Bool   `json:"force_websockets" typescript:",notnull"`
+	URL             clibase.String `json:"url" typescript:",notnull"`
+	Path            clibase.String `json:"path" typescript:",notnull"`
 }
 
 type PrometheusConfig struct {
 	Enable            clibase.Bool     `json:"enable" typescript:",notnull"`
 	Address           clibase.HostPort `json:"address" typescript:",notnull"`
 	CollectAgentStats clibase.Bool     `json:"collect_agent_stats" typescript:",notnull"`
+	CollectDBMetrics  clibase.Bool     `json:"collect_db_metrics" typescript:",notnull"`
 }
 
 type PprofConfig struct {
@@ -251,21 +264,29 @@ type OAuth2GithubConfig struct {
 }
 
 type OIDCConfig struct {
-	AllowSignups        clibase.Bool                      `json:"allow_signups" typescript:",notnull"`
-	ClientID            clibase.String                    `json:"client_id" typescript:",notnull"`
-	ClientSecret        clibase.String                    `json:"client_secret" typescript:",notnull"`
-	EmailDomain         clibase.StringArray               `json:"email_domain" typescript:",notnull"`
-	IssuerURL           clibase.String                    `json:"issuer_url" typescript:",notnull"`
-	Scopes              clibase.StringArray               `json:"scopes" typescript:",notnull"`
-	IgnoreEmailVerified clibase.Bool                      `json:"ignore_email_verified" typescript:",notnull"`
-	UsernameField       clibase.String                    `json:"username_field" typescript:",notnull"`
-	EmailField          clibase.String                    `json:"email_field" typescript:",notnull"`
-	AuthURLParams       clibase.Struct[map[string]string] `json:"auth_url_params" typescript:",notnull"`
-	IgnoreUserInfo      clibase.Bool                      `json:"ignore_user_info" typescript:",notnull"`
-	GroupField          clibase.String                    `json:"groups_field" typescript:",notnull"`
-	GroupMapping        clibase.Struct[map[string]string] `json:"group_mapping" typescript:",notnull"`
-	SignInText          clibase.String                    `json:"sign_in_text" typescript:",notnull"`
-	IconURL             clibase.URL                       `json:"icon_url" typescript:",notnull"`
+	AllowSignups clibase.Bool   `json:"allow_signups" typescript:",notnull"`
+	ClientID     clibase.String `json:"client_id" typescript:",notnull"`
+	ClientSecret clibase.String `json:"client_secret" typescript:",notnull"`
+	// ClientKeyFile & ClientCertFile are used in place of ClientSecret for PKI auth.
+	ClientKeyFile       clibase.String                      `json:"client_key_file" typescript:",notnull"`
+	ClientCertFile      clibase.String                      `json:"client_cert_file" typescript:",notnull"`
+	EmailDomain         clibase.StringArray                 `json:"email_domain" typescript:",notnull"`
+	IssuerURL           clibase.String                      `json:"issuer_url" typescript:",notnull"`
+	Scopes              clibase.StringArray                 `json:"scopes" typescript:",notnull"`
+	IgnoreEmailVerified clibase.Bool                        `json:"ignore_email_verified" typescript:",notnull"`
+	UsernameField       clibase.String                      `json:"username_field" typescript:",notnull"`
+	EmailField          clibase.String                      `json:"email_field" typescript:",notnull"`
+	AuthURLParams       clibase.Struct[map[string]string]   `json:"auth_url_params" typescript:",notnull"`
+	IgnoreUserInfo      clibase.Bool                        `json:"ignore_user_info" typescript:",notnull"`
+	GroupAutoCreate     clibase.Bool                        `json:"group_auto_create" typescript:",notnull"`
+	GroupRegexFilter    clibase.Regexp                      `json:"group_regex_filter" typescript:",notnull"`
+	GroupField          clibase.String                      `json:"groups_field" typescript:",notnull"`
+	GroupMapping        clibase.Struct[map[string]string]   `json:"group_mapping" typescript:",notnull"`
+	UserRoleField       clibase.String                      `json:"user_role_field" typescript:",notnull"`
+	UserRoleMapping     clibase.Struct[map[string][]string] `json:"user_role_mapping" typescript:",notnull"`
+	UserRolesDefault    clibase.StringArray                 `json:"user_roles_default" typescript:",notnull"`
+	SignInText          clibase.String                      `json:"sign_in_text" typescript:",notnull"`
+	IconURL             clibase.URL                         `json:"icon_url" typescript:",notnull"`
 }
 
 type TelemetryConfig struct {
@@ -291,26 +312,33 @@ type TraceConfig struct {
 	Enable          clibase.Bool   `json:"enable" typescript:",notnull"`
 	HoneycombAPIKey clibase.String `json:"honeycomb_api_key" typescript:",notnull"`
 	CaptureLogs     clibase.Bool   `json:"capture_logs" typescript:",notnull"`
+	DataDog         clibase.Bool   `json:"data_dog" typescript:",notnull"`
 }
 
 type GitAuthConfig struct {
-	ID           string   `json:"id"`
-	Type         string   `json:"type"`
-	ClientID     string   `json:"client_id"`
-	ClientSecret string   `json:"-" yaml:"client_secret"`
-	AuthURL      string   `json:"auth_url"`
-	TokenURL     string   `json:"token_url"`
-	ValidateURL  string   `json:"validate_url"`
-	Regex        string   `json:"regex"`
-	NoRefresh    bool     `json:"no_refresh"`
-	Scopes       []string `json:"scopes"`
+	ID                  string   `json:"id"`
+	Type                string   `json:"type"`
+	ClientID            string   `json:"client_id"`
+	ClientSecret        string   `json:"-" yaml:"client_secret"`
+	AuthURL             string   `json:"auth_url"`
+	TokenURL            string   `json:"token_url"`
+	ValidateURL         string   `json:"validate_url"`
+	AppInstallURL       string   `json:"app_install_url"`
+	AppInstallationsURL string   `json:"app_installations_url"`
+	Regex               string   `json:"regex"`
+	NoRefresh           bool     `json:"no_refresh"`
+	Scopes              []string `json:"scopes"`
+	DeviceFlow          bool     `json:"device_flow"`
+	DeviceCodeURL       string   `json:"device_code_url"`
 }
 
 type ProvisionerConfig struct {
 	Daemons             clibase.Int64    `json:"daemons" typescript:",notnull"`
+	DaemonsEcho         clibase.Bool     `json:"daemons_echo" typescript:",notnull"`
 	DaemonPollInterval  clibase.Duration `json:"daemon_poll_interval" typescript:",notnull"`
 	DaemonPollJitter    clibase.Duration `json:"daemon_poll_jitter" typescript:",notnull"`
 	ForceCancelInterval clibase.Duration `json:"force_cancel_interval" typescript:",notnull"`
+	DaemonPSK           clibase.String   `json:"daemon_psk" typescript:",notnull"`
 }
 
 type RateLimitConfig struct {
@@ -323,15 +351,23 @@ type SwaggerConfig struct {
 }
 
 type LoggingConfig struct {
-	Human       clibase.String `json:"human" typescript:",notnull"`
-	JSON        clibase.String `json:"json" typescript:",notnull"`
-	Stackdriver clibase.String `json:"stackdriver" typescript:",notnull"`
+	Filter      clibase.StringArray `json:"log_filter" typescript:",notnull"`
+	Human       clibase.String      `json:"human" typescript:",notnull"`
+	JSON        clibase.String      `json:"json" typescript:",notnull"`
+	Stackdriver clibase.String      `json:"stackdriver" typescript:",notnull"`
 }
 
 type DangerousConfig struct {
 	AllowPathAppSharing         clibase.Bool `json:"allow_path_app_sharing" typescript:",notnull"`
 	AllowPathAppSiteOwnerAccess clibase.Bool `json:"allow_path_app_site_owner_access" typescript:",notnull"`
 	AllowAllCors                clibase.Bool `json:"allow_all_cors" typescript:",notnull"`
+}
+
+type UserQuietHoursScheduleConfig struct {
+	DefaultSchedule clibase.String `json:"default_schedule" typescript:",notnull"`
+	// TODO: add WindowDuration and the ability to postpone max_deadline by this
+	// amount
+	// WindowDuration  clibase.Duration `json:"window_duration" typescript:",notnull"`
 }
 
 const (
@@ -457,6 +493,11 @@ when required by your organization's security policy.`,
 			Description: `Tune the behavior of the provisioner, which is responsible for creating, updating, and deleting workspace resources.`,
 			YAML:        "provisioning",
 		}
+		deploymentGroupUserQuietHoursSchedule = clibase.Group{
+			Name:        "User Quiet Hours Schedule",
+			Description: "Allow users to set quiet hours schedules each day for workspaces to avoid workspaces stopping during the day due to template max TTL.",
+			YAML:        "userQuietHoursSchedule",
+		}
 		deploymentGroupDangerous = clibase.Group{
 			Name: "⚠️ Dangerous",
 			YAML: "dangerous",
@@ -504,6 +545,16 @@ when required by your organization's security policy.`,
 		Group:       &deploymentGroupNetworking,
 		YAML:        "redirectToAccessURL",
 	}
+	logFilter := clibase.Option{
+		Name:          "Log Filter",
+		Description:   "Filter debug logs by matching against a given regex. Use .* to match all debug logs.",
+		Flag:          "log-filter",
+		FlagShorthand: "l",
+		Env:           "CODER_LOG_FILTER",
+		Value:         &c.Logging.Filter,
+		Group:         &deploymentGroupIntrospectionLogging,
+		YAML:          "filter",
+	}
 	opts := clibase.OptionSet{
 		{
 			Name:        "Access URL",
@@ -525,6 +576,16 @@ when required by your organization's security policy.`,
 			YAML:        "wildcardAccessURL",
 			Annotations: clibase.Annotations{}.Mark(annotationExternalProxies, "true"),
 		},
+		{
+			Name:        "Docs URL",
+			Description: "Specifies the custom docs URL.",
+			Value:       &c.DocsURL,
+			Flag:        "docs-url",
+			Env:         "CODER_DOCS_URL",
+			Group:       &deploymentGroupNetworking,
+			YAML:        "docsURL",
+			Annotations: clibase.Annotations{}.Mark(annotationExternalProxies, "true"),
+		},
 		redirectToAccessURL,
 		{
 			Name:        "Autobuild Poll Interval",
@@ -535,6 +596,16 @@ when required by your organization's security policy.`,
 			Default:     time.Minute.String(),
 			Value:       &c.AutobuildPollInterval,
 			YAML:        "autobuildPollInterval",
+		},
+		{
+			Name:        "Job Hang Detector Interval",
+			Description: "Interval to poll for hung jobs and automatically terminate them.",
+			Flag:        "job-hang-detector-interval",
+			Env:         "CODER_JOB_HANG_DETECTOR_INTERVAL",
+			Hidden:      true,
+			Default:     time.Minute.String(),
+			Value:       &c.JobHangDetectorInterval,
+			YAML:        "jobHangDetectorInterval",
 		},
 		httpAddress,
 		tlsBindAddress,
@@ -659,6 +730,7 @@ when required by your organization's security policy.`,
 			Value:       &c.DERP.Server.Enable,
 			Group:       &deploymentGroupNetworkingDERP,
 			YAML:        "enable",
+			Annotations: clibase.Annotations{}.Mark(annotationExternalProxies, "true"),
 		},
 		{
 			Name:        "DERP Server Region ID",
@@ -669,6 +741,8 @@ when required by your organization's security policy.`,
 			Value:       &c.DERP.Server.RegionID,
 			Group:       &deploymentGroupNetworkingDERP,
 			YAML:        "regionID",
+			Hidden:      true,
+			// Does not apply to external proxies as this value is generated.
 		},
 		{
 			Name:        "DERP Server Region Code",
@@ -679,6 +753,8 @@ when required by your organization's security policy.`,
 			Value:       &c.DERP.Server.RegionCode,
 			Group:       &deploymentGroupNetworkingDERP,
 			YAML:        "regionCode",
+			Hidden:      true,
+			// Does not apply to external proxies as we use the proxy name.
 		},
 		{
 			Name:        "DERP Server Region Name",
@@ -689,13 +765,14 @@ when required by your organization's security policy.`,
 			Value:       &c.DERP.Server.RegionName,
 			Group:       &deploymentGroupNetworkingDERP,
 			YAML:        "regionName",
+			// Does not apply to external proxies as we use the proxy name.
 		},
 		{
 			Name:        "DERP Server STUN Addresses",
-			Description: "Addresses for STUN servers to establish P2P connections. Use special value 'disable' to turn off STUN.",
+			Description: "Addresses for STUN servers to establish P2P connections. It's recommended to have at least two STUN servers to give users the best chance of connecting P2P to workspaces. Each STUN server will get it's own DERP region, with region IDs starting at `--derp-server-region-id + 1`. Use special value 'disable' to turn off STUN completely.",
 			Flag:        "derp-server-stun-addresses",
 			Env:         "CODER_DERP_SERVER_STUN_ADDRESSES",
-			Default:     "stun.l.google.com:19302",
+			Default:     "stun.l.google.com:19302,stun1.l.google.com:19302,stun2.l.google.com:19302,stun3.l.google.com:19302,stun4.l.google.com:19302",
 			Value:       &c.DERP.Server.STUNAddresses,
 			Group:       &deploymentGroupNetworkingDERP,
 			YAML:        "stunAddresses",
@@ -705,10 +782,33 @@ when required by your organization's security policy.`,
 			Description: "An HTTP URL that is accessible by other replicas to relay DERP traffic. Required for high availability.",
 			Flag:        "derp-server-relay-url",
 			Env:         "CODER_DERP_SERVER_RELAY_URL",
-			Annotations: clibase.Annotations{}.Mark(annotationEnterpriseKey, "true"),
 			Value:       &c.DERP.Server.RelayURL,
 			Group:       &deploymentGroupNetworkingDERP,
 			YAML:        "relayURL",
+			Annotations: clibase.Annotations{}.
+				Mark(annotationEnterpriseKey, "true").
+				Mark(annotationExternalProxies, "true"),
+		},
+		{
+			Name:        "Block Direct Connections",
+			Description: "Block peer-to-peer (aka. direct) workspace connections. All workspace connections from the CLI will be proxied through Coder (or custom configured DERP servers) and will never be peer-to-peer when enabled. Workspaces may still reach out to STUN servers to get their address until they are restarted after this change has been made, but new connections will still be proxied regardless.",
+			// This cannot be called `disable-direct-connections` because that's
+			// already a global CLI flag for CLI connections. This is a
+			// deployment-wide flag.
+			Flag:  "block-direct-connections",
+			Env:   "CODER_BLOCK_DIRECT",
+			Value: &c.DERP.Config.BlockDirect,
+			Group: &deploymentGroupNetworkingDERP,
+			YAML:  "blockDirect",
+		},
+		{
+			Name:        "DERP Force WebSockets",
+			Description: "Force clients and agents to always use WebSocket to connect to DERP relay servers. By default, DERP uses `Upgrade: derp`, which may cause issues with some reverse proxies. Clients may automatically fallback to WebSocket if they detect an issue with `Upgrade: derp`, but this does not work in all situations.",
+			Flag:        "derp-force-websockets",
+			Env:         "CODER_DERP_FORCE_WEBSOCKETS",
+			Value:       &c.DERP.Config.ForceWebSockets,
+			Group:       &deploymentGroupNetworkingDERP,
+			YAML:        "forceWebSockets",
 		},
 		{
 			Name:        "DERP Config URL",
@@ -759,6 +859,16 @@ when required by your organization's security policy.`,
 			Value:       &c.Prometheus.CollectAgentStats,
 			Group:       &deploymentGroupIntrospectionPrometheus,
 			YAML:        "collect_agent_stats",
+		},
+		{
+			Name:        "Prometheus Collect Database Metrics",
+			Description: "Collect database metrics (may increase charges for metrics storage).",
+			Flag:        "prometheus-collect-db-metrics",
+			Env:         "CODER_PROMETHEUS_COLLECT_DB_METRICS",
+			Value:       &c.Prometheus.CollectDBMetrics,
+			Group:       &deploymentGroupIntrospectionPrometheus,
+			YAML:        "collect_db_metrics",
+			Default:     "false",
 		},
 		// Pprof settings
 		{
@@ -876,6 +986,26 @@ when required by your organization's security policy.`,
 			Group:       &deploymentGroupOIDC,
 		},
 		{
+			Name: "OIDC Client Key File",
+			Description: "Pem encoded RSA private key to use for oauth2 PKI/JWT authorization. " +
+				"This can be used instead of oidc-client-secret if your IDP supports it.",
+			Flag:  "oidc-client-key-file",
+			Env:   "CODER_OIDC_CLIENT_KEY_FILE",
+			YAML:  "oidcClientKeyFile",
+			Value: &c.OIDC.ClientKeyFile,
+			Group: &deploymentGroupOIDC,
+		},
+		{
+			Name: "OIDC Client Cert File",
+			Description: "Pem encoded certificate file to use for oauth2 PKI/JWT authorization. " +
+				"The public certificate that accompanies oidc-client-key-file. A standard x509 certificate is expected.",
+			Flag:  "oidc-client-cert-file",
+			Env:   "CODER_OIDC_CLIENT_CERT_FILE",
+			YAML:  "oidcClientCertFile",
+			Value: &c.OIDC.ClientCertFile,
+			Group: &deploymentGroupOIDC,
+		},
+		{
 			Name:        "OIDC Email Domain",
 			Description: "Email domains that clients logging in with OIDC must match.",
 			Flag:        "oidc-email-domain",
@@ -978,6 +1108,58 @@ when required by your organization's security policy.`,
 			YAML:        "groupMapping",
 		},
 		{
+			Name:        "Enable OIDC Group Auto Create",
+			Description: "Automatically creates missing groups from a user's groups claim.",
+			Flag:        "oidc-group-auto-create",
+			Env:         "CODER_OIDC_GROUP_AUTO_CREATE",
+			Default:     "false",
+			Value:       &c.OIDC.GroupAutoCreate,
+			Group:       &deploymentGroupOIDC,
+			YAML:        "enableGroupAutoCreate",
+		},
+		{
+			Name:        "OIDC Regex Group Filter",
+			Description: "If provided any group name not matching the regex is ignored. This allows for filtering out groups that are not needed. This filter is applied after the group mapping.",
+			Flag:        "oidc-group-regex-filter",
+			Env:         "CODER_OIDC_GROUP_REGEX_FILTER",
+			Default:     ".*",
+			Value:       &c.OIDC.GroupRegexFilter,
+			Group:       &deploymentGroupOIDC,
+			YAML:        "groupRegexFilter",
+		},
+		{
+			Name:        "OIDC User Role Field",
+			Description: "This field must be set if using the user roles sync feature. Set this to the name of the claim used to store the user's role. The roles should be sent as an array of strings.",
+			Flag:        "oidc-user-role-field",
+			Env:         "CODER_OIDC_USER_ROLE_FIELD",
+			// This value is intentionally blank. If this is empty, then OIDC user role
+			// sync behavior is disabled.
+			Default: "",
+			Value:   &c.OIDC.UserRoleField,
+			Group:   &deploymentGroupOIDC,
+			YAML:    "userRoleField",
+		},
+		{
+			Name:        "OIDC User Role Mapping",
+			Description: "A map of the OIDC passed in user roles and the groups in Coder it should map to. This is useful if the group names do not match. If mapped to the empty string, the role will ignored.",
+			Flag:        "oidc-user-role-mapping",
+			Env:         "CODER_OIDC_USER_ROLE_MAPPING",
+			Default:     "{}",
+			Value:       &c.OIDC.UserRoleMapping,
+			Group:       &deploymentGroupOIDC,
+			YAML:        "userRoleMapping",
+		},
+		{
+			Name:        "OIDC User Role Default",
+			Description: "If user role sync is enabled, these roles are always included for all authenticated users. The 'member' role is always assigned.",
+			Flag:        "oidc-user-role-default",
+			Env:         "CODER_OIDC_USER_ROLE_DEFAULT",
+			Default:     "",
+			Value:       &c.OIDC.UserRolesDefault,
+			Group:       &deploymentGroupOIDC,
+			YAML:        "userRoleDefault",
+		},
+		{
 			Name:        "OpenID Connect sign in text",
 			Description: "The text to show on the OpenID Connect sign in button.",
 			Flag:        "oidc-sign-in-text",
@@ -989,7 +1171,7 @@ when required by your organization's security policy.`,
 		},
 		{
 			Name:        "OpenID connect icon URL",
-			Description: "URL pointing to the icon to use on the OepnID Connect login button.",
+			Description: "URL pointing to the icon to use on the OpenID Connect login button.",
 			Flag:        "oidc-icon-url",
 			Env:         "CODER_OIDC_ICON_URL",
 			Value:       &c.OIDC.IconURL,
@@ -1050,12 +1232,28 @@ when required by your organization's security policy.`,
 		},
 		{
 			Name:        "Capture Logs in Traces",
-			Description: "Enables capturing of logs as events in traces. This is useful for debugging, but may result in a very large amount of events being sent to the tracing backend which may incur significant costs. If the verbose flag was supplied, debug-level logs will be included.",
+			Description: "Enables capturing of logs as events in traces. This is useful for debugging, but may result in a very large amount of events being sent to the tracing backend which may incur significant costs.",
 			Flag:        "trace-logs",
 			Env:         "CODER_TRACE_LOGS",
 			Value:       &c.Trace.CaptureLogs,
 			Group:       &deploymentGroupIntrospectionTracing,
 			YAML:        "captureLogs",
+			Annotations: clibase.Annotations{}.Mark(annotationExternalProxies, "true"),
+		},
+		{
+			Name:        "Send Go runtime traces to DataDog",
+			Description: "Enables sending Go runtime traces to the local DataDog agent.",
+			Flag:        "trace-datadog",
+			Env:         "CODER_TRACE_DATADOG",
+			Value:       &c.Trace.DataDog,
+			Group:       &deploymentGroupIntrospectionTracing,
+			YAML:        "dataDog",
+			// Hidden until an external user asks for it. For the time being,
+			// it's used to detect leaks in dogfood.
+			Hidden: true,
+			// Default is false because datadog creates a bunch of goroutines that
+			// don't get cleaned up and trip the leak detector.
+			Default:     "false",
 			Annotations: clibase.Annotations{}.Mark(annotationExternalProxies, "true"),
 		},
 		// Provisioner settings
@@ -1068,6 +1266,17 @@ when required by your organization's security policy.`,
 			Value:       &c.Provisioner.Daemons,
 			Group:       &deploymentGroupProvisioning,
 			YAML:        "daemons",
+		},
+		{
+			Name:        "Echo Provisioner",
+			Description: "Whether to use echo provisioner daemons instead of Terraform. This is for E2E tests.",
+			Flag:        "provisioner-daemons-echo",
+			Env:         "CODER_PROVISIONER_DAEMONS_ECHO",
+			Hidden:      true,
+			Default:     "false",
+			Value:       &c.Provisioner.DaemonsEcho,
+			Group:       &deploymentGroupProvisioning,
+			YAML:        "daemonsEcho",
 		},
 		{
 			Name:        "Poll Interval",
@@ -1099,6 +1308,15 @@ when required by your organization's security policy.`,
 			Group:       &deploymentGroupProvisioning,
 			YAML:        "forceCancelInterval",
 		},
+		{
+			Name:        "Provisioner Daemon Pre-shared Key (PSK)",
+			Description: "Pre-shared key to authenticate external provisioner daemons to Coder server.",
+			Flag:        "provisioner-daemon-psk",
+			Env:         "CODER_PROVISIONER_DAEMON_PSK",
+			Value:       &c.Provisioner.DaemonPSK,
+			Group:       &deploymentGroupProvisioning,
+			YAML:        "daemonPSK",
+		},
 		// RateLimit settings
 		{
 			Name:        "Disable All Rate Limits",
@@ -1129,12 +1347,14 @@ when required by your organization's security policy.`,
 			Flag:          "verbose",
 			Env:           "CODER_VERBOSE",
 			FlagShorthand: "v",
-
-			Value:       &c.Verbose,
-			Group:       &deploymentGroupIntrospectionLogging,
-			YAML:        "verbose",
-			Annotations: clibase.Annotations{}.Mark(annotationExternalProxies, "true"),
+			Hidden:        true,
+			UseInstead:    []clibase.Option{logFilter},
+			Value:         &c.Verbose,
+			Group:         &deploymentGroupIntrospectionLogging,
+			YAML:          "verbose",
+			Annotations:   clibase.Annotations{}.Mark(annotationExternalProxies, "true"),
 		},
+		logFilter,
 		{
 			Name:        "Human Log Location",
 			Description: "Output human-readable logs to a given file.",
@@ -1168,10 +1388,20 @@ when required by your organization's security policy.`,
 			YAML:        "stackdriverPath",
 			Annotations: clibase.Annotations{}.Mark(annotationExternalProxies, "true"),
 		},
+		{
+			Name:        "Enable Terraform debug mode",
+			Description: "Allow administrators to enable Terraform debug output.",
+			Flag:        "enable-terraform-debug-mode",
+			Env:         "CODER_ENABLE_TERRAFORM_DEBUG_MODE",
+			Default:     "false",
+			Value:       &c.EnableTerraformDebugMode,
+			Group:       &deploymentGroupIntrospectionLogging,
+			YAML:        "enableTerraformDebugMode",
+		},
 		// ☢️ Dangerous settings
 		{
-			Name:        "DANGEROUS: Allow all CORs requests",
-			Description: "For security reasons, CORs requests are blocked except between workspace apps owned by the same user. If external requests are required, setting this to true will set all cors headers as '*'. This should never be used in production.",
+			Name:        "DANGEROUS: Allow all CORS requests",
+			Description: "For security reasons, CORS requests are blocked except between workspace apps owned by the same user. If external requests are required, setting this to true will set all cors headers as '*'. This should never be used in production.",
 			Flag:        "dangerous-allow-cors-requests",
 			Env:         "CODER_DANGEROUS_ALLOW_CORS_REQUESTS",
 			Hidden:      true, // Hidden, should only be used by yarn dev server
@@ -1508,6 +1738,16 @@ Write out the current server config as YAML to stdout.`,
 			Group:       &deploymentGroupNetworkingHTTP,
 			YAML:        "proxyHealthInterval",
 		},
+		{
+			Name:        "Default Quiet Hours Schedule",
+			Description: "The default daily cron schedule applied to users that haven't set a custom quiet hours schedule themselves. The quiet hours schedule determines when workspaces will be force stopped due to the template's max TTL, and will round the max TTL up to be within the user's quiet hours window (or default). The format is the same as the standard cron format, but the day-of-month, month and day-of-week must be *. Only one hour and minute can be specified (ranges or comma separated values are not supported).",
+			Flag:        "default-quiet-hours-schedule",
+			Env:         "CODER_QUIET_HOURS_DEFAULT_SCHEDULE",
+			Default:     "",
+			Value:       &c.UserQuietHoursSchedule.DefaultSchedule,
+			Group:       &deploymentGroupUserQuietHoursSchedule,
+			YAML:        "defaultQuietHoursSchedule",
+		},
 	}
 	return opts
 }
@@ -1693,8 +1933,32 @@ const (
 	// https://github.com/coder/coder/milestone/19
 	ExperimentWorkspaceActions Experiment = "workspace_actions"
 
-	// New workspace filter
-	ExperimentWorkspaceFilter Experiment = "workspace_filter"
+	// ExperimentTailnetPGCoordinator enables the PGCoord in favor of the pubsub-
+	// only Coordinator
+	ExperimentTailnetPGCoordinator Experiment = "tailnet_pg_coordinator"
+
+	// ExperimentSingleTailnet replaces workspace connections inside coderd to
+	// all use a single tailnet, instead of the previous behavior of creating a
+	// single tailnet for each agent.
+	// WARNING: This cannot be enabled when using HA.
+	ExperimentSingleTailnet Experiment = "single_tailnet"
+
+	// ExperimentTemplateAutostopRequirement allows template admins to have more
+	// control over when workspaces created on a template are required to
+	// stop, and allows users to ensure these restarts never happen during their
+	// business hours.
+	//
+	// This will replace the MaxTTL setting on templates.
+	//
+	// Enables:
+	// - User quiet hours schedule settings
+	// - Template autostop requirement settings
+	// - Changes the max_deadline algorithm to use autostop requirement and user
+	//   quiet hours instead of max_ttl.
+	ExperimentTemplateAutostopRequirement Experiment = "template_autostop_requirement"
+
+	// Deployment health page
+	ExperimentDeploymentHealthPage Experiment = "deployment_health_page"
 
 	// Add new experiments here!
 	// ExperimentExample Experiment = "example"
@@ -1705,7 +1969,7 @@ const (
 // Experiments that are not ready for consumption by all users should
 // not be included here and will be essentially hidden.
 var ExperimentsAll = Experiments{
-	ExperimentWorkspaceFilter,
+	ExperimentDeploymentHealthPage,
 }
 
 // Experiments is a list of experiments that are enabled for the deployment.

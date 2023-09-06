@@ -10,7 +10,24 @@ Create a workspace
 coder create [flags] [name]
 ```
 
+## Description
+
+```console
+  - Create a workspace for another user (if you have permission):
+
+      $ coder create <username>/<workspace_name>
+```
+
 ## Options
+
+### --parameter
+
+|             |                                    |
+| ----------- | ---------------------------------- |
+| Type        | <code>string-array</code>          |
+| Environment | <code>$CODER_RICH_PARAMETER</code> |
+
+Rich parameter value in the format "name=value".
 
 ### --rich-parameter-file
 

@@ -71,7 +71,7 @@ export const MockTokens: TypesGen.APIKeyWithOwner[] = [
   },
 ]
 
-export const MockPrimaryWorkspaceProxy: TypesGen.Region = {
+export const MockPrimaryWorkspaceProxy: TypesGen.WorkspaceProxy = {
   id: "4aa23000-526a-481f-a007-0f20b98b1e12",
   name: "primary",
   display_name: "Default",
@@ -79,9 +79,18 @@ export const MockPrimaryWorkspaceProxy: TypesGen.Region = {
   healthy: true,
   path_app_url: "https://coder.com",
   wildcard_hostname: "*.coder.com",
+  derp_enabled: true,
+  derp_only: false,
+  created_at: new Date().toISOString(),
+  updated_at: new Date().toISOString(),
+  deleted: false,
+  status: {
+    status: "ok",
+    checked_at: new Date().toISOString(),
+  },
 }
 
-export const MockHealthyWildWorkspaceProxy: TypesGen.Region = {
+export const MockHealthyWildWorkspaceProxy: TypesGen.WorkspaceProxy = {
   id: "5e2c1ab7-479b-41a9-92ce-aa85625de52c",
   name: "haswildcard",
   display_name: "Subdomain Supported",
@@ -89,9 +98,18 @@ export const MockHealthyWildWorkspaceProxy: TypesGen.Region = {
   healthy: true,
   path_app_url: "https://external.com",
   wildcard_hostname: "*.external.com",
+  derp_enabled: true,
+  derp_only: false,
+  created_at: new Date().toISOString(),
+  updated_at: new Date().toISOString(),
+  deleted: false,
+  status: {
+    status: "ok",
+    checked_at: new Date().toISOString(),
+  },
 }
 
-export const MockUnhealthyWildWorkspaceProxy: TypesGen.Region = {
+export const MockUnhealthyWildWorkspaceProxy: TypesGen.WorkspaceProxy = {
   id: "8444931c-0247-4171-842a-569d9f9cbadb",
   name: "unhealthy",
   display_name: "Unhealthy",
@@ -99,9 +117,22 @@ export const MockUnhealthyWildWorkspaceProxy: TypesGen.Region = {
   healthy: false,
   path_app_url: "https://unhealthy.coder.com",
   wildcard_hostname: "*unhealthy..coder.com",
+  derp_enabled: true,
+  derp_only: true,
+  created_at: new Date().toISOString(),
+  updated_at: new Date().toISOString(),
+  deleted: false,
+  status: {
+    status: "unhealthy",
+    report: {
+      errors: ["This workspace proxy is manually marked as unhealthy."],
+      warnings: ["This is a manual warning for this workspace proxy."],
+    },
+    checked_at: new Date().toISOString(),
+  },
 }
 
-export const MockWorkspaceProxies: TypesGen.Region[] = [
+export const MockWorkspaceProxies: TypesGen.WorkspaceProxy[] = [
   MockPrimaryWorkspaceProxy,
   MockHealthyWildWorkspaceProxy,
   MockUnhealthyWildWorkspaceProxy,
@@ -113,35 +144,47 @@ export const MockWorkspaceProxies: TypesGen.Region[] = [
     healthy: true,
     path_app_url: "https://cowboy.coder.com",
     wildcard_hostname: "",
+    derp_enabled: false,
+    derp_only: false,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    deleted: false,
+    status: {
+      status: "ok",
+      checked_at: new Date().toISOString(),
+    },
   },
 ]
 
 export const MockProxyLatencies: Record<string, ProxyLatencyReport> = {
-  ...MockWorkspaceProxies.reduce((acc, proxy) => {
-    if (!proxy.healthy) {
+  ...MockWorkspaceProxies.reduce(
+    (acc, proxy) => {
+      if (!proxy.healthy) {
+        return acc
+      }
+      acc[proxy.id] = {
+        // Make one of them inaccurate.
+        accurate: proxy.id !== "26e84c16-db24-4636-a62d-aa1a4232b858",
+        // This is a deterministic way to generate a latency to for each proxy.
+        // It will be the same for each run as long as the IDs don't change.
+        latencyMS:
+          (Number(
+            Array.from(proxy.id).reduce(
+              // Multiply each char code by some large prime number to increase the
+              // size of the number and allow use to get some decimal points.
+              (acc, char) => acc + char.charCodeAt(0) * 37,
+              0,
+            ),
+          ) /
+            // Cap at 250ms
+            100) %
+          250,
+        at: new Date(),
+      }
       return acc
-    }
-    acc[proxy.id] = {
-      // Make one of them inaccurate.
-      accurate: proxy.id !== "26e84c16-db24-4636-a62d-aa1a4232b858",
-      // This is a deterministic way to generate a latency to for each proxy.
-      // It will be the same for each run as long as the IDs don't change.
-      latencyMS:
-        (Number(
-          Array.from(proxy.id).reduce(
-            // Multiply each char code by some large prime number to increase the
-            // size of the number and allow use to get some decimal points.
-            (acc, char) => acc + char.charCodeAt(0) * 37,
-            0,
-          ),
-        ) /
-          // Cap at 250ms
-          100) %
-        250,
-      at: new Date(),
-    }
-    return acc
-  }, {} as Record<string, ProxyLatencyReport>),
+    },
+    {} as Record<string, ProxyLatencyReport>,
+  ),
 }
 
 export const MockBuildInfo: TypesGen.BuildInfoResponse = {
@@ -233,6 +276,7 @@ export const MockUser: TypesGen.User = {
   roles: [MockOwnerRole],
   avatar_url: "https://avatars.githubusercontent.com/u/95932066?s=200&v=4",
   last_seen_at: "",
+  login_type: "password",
 }
 
 export const MockUserAdmin: TypesGen.User = {
@@ -245,6 +289,7 @@ export const MockUserAdmin: TypesGen.User = {
   roles: [MockUserAdminRole],
   avatar_url: "",
   last_seen_at: "",
+  login_type: "password",
 }
 
 export const MockUser2: TypesGen.User = {
@@ -257,6 +302,7 @@ export const MockUser2: TypesGen.User = {
   roles: [],
   avatar_url: "",
   last_seen_at: "2022-09-14T19:12:21Z",
+  login_type: "oidc",
 }
 
 export const SuspendedMockUser: TypesGen.User = {
@@ -269,6 +315,7 @@ export const SuspendedMockUser: TypesGen.User = {
   roles: [],
   avatar_url: "",
   last_seen_at: "",
+  login_type: "password",
 }
 
 export const MockProvisioner: TypesGen.ProvisionerDaemon = {
@@ -286,6 +333,8 @@ export const MockProvisionerJob: TypesGen.ProvisionerJob = {
   file_id: MockOrganization.id,
   completed_at: "2022-05-17T17:39:01.382927298Z",
   tags: {},
+  queue_position: 0,
+  queue_size: 0,
 }
 
 export const MockFailedProvisionerJob: TypesGen.ProvisionerJob = {
@@ -308,6 +357,8 @@ export const MockRunningProvisionerJob: TypesGen.ProvisionerJob = {
 export const MockPendingProvisionerJob: TypesGen.ProvisionerJob = {
   ...MockProvisionerJob,
   status: "pending",
+  queue_position: 2,
+  queue_size: 4,
 }
 export const MockTemplateVersion: TypesGen.TemplateVersion = {
   id: "test-template-version",
@@ -316,6 +367,7 @@ export const MockTemplateVersion: TypesGen.TemplateVersion = {
   template_id: "test-template",
   job: MockProvisionerJob,
   name: "test-version",
+  message: "first version",
   readme: `---
 name:Template test
 ---
@@ -333,6 +385,7 @@ export const MockTemplateVersion2: TypesGen.TemplateVersion = {
   template_id: "test-template",
   job: MockProvisionerJob,
   name: "test-version-2",
+  message: "first version",
   readme: `---
 name:Template test 2
 ---
@@ -350,6 +403,7 @@ export const MockTemplateVersion3: TypesGen.TemplateVersion = {
   template_id: "test-template",
   job: MockProvisionerJob,
   name: "test-version-3",
+  message: "first version",
   readme: "README",
   created_by: MockUser,
   warnings: ["UNSUPPORTED_WORKSPACES"],
@@ -382,12 +436,17 @@ export const MockTemplate: TypesGen.Template = {
   description: "This is a test description.",
   default_ttl_ms: 24 * 60 * 60 * 1000,
   max_ttl_ms: 2 * 24 * 60 * 60 * 1000,
+  autostop_requirement: {
+    days_of_week: [],
+    weeks: 1,
+  },
   created_by_id: "test-creator-id",
   created_by_name: "test_creator",
   icon: "/icon/code.svg",
   allow_user_cancel_workspace_jobs: true,
   failure_ttl_ms: 0,
-  inactivity_ttl_ms: 0,
+  time_til_dormant_ms: 0,
+  time_til_dormant_autodelete_ms: 0,
   allow_user_autostart: false,
   allow_user_autostop: false,
 }
@@ -500,11 +559,21 @@ export const MockWorkspaceAgent: TypesGen.WorkspaceAgent = {
   lifecycle_state: "starting",
   login_before_ready: false, // Deprecated.
   startup_script_behavior: "blocking",
-  startup_logs_length: 0,
-  startup_logs_overflowed: false,
+  logs_length: 0,
+  logs_overflowed: false,
   startup_script_timeout_seconds: 120,
   shutdown_script_timeout_seconds: 120,
-  subsystem: "envbox",
+  subsystems: ["envbox", "exectrace"],
+  health: {
+    healthy: true,
+  },
+  display_apps: [
+    "ssh_helper",
+    "port_forwarding_helper",
+    "vscode",
+    "vscode_insiders",
+    "web_terminal",
+  ],
 }
 
 export const MockWorkspaceAgentDisconnected: TypesGen.WorkspaceAgent = {
@@ -515,6 +584,10 @@ export const MockWorkspaceAgentDisconnected: TypesGen.WorkspaceAgent = {
   version: "",
   latency: {},
   lifecycle_state: "ready",
+  health: {
+    healthy: false,
+    reason: "agent is not connected",
+  },
 }
 
 export const MockWorkspaceAgentOutdated: TypesGen.WorkspaceAgent = {
@@ -559,6 +632,10 @@ export const MockWorkspaceAgentTimeout: TypesGen.WorkspaceAgent = {
   version: "",
   latency: {},
   lifecycle_state: "created",
+  health: {
+    healthy: false,
+    reason: "agent is taking too long to connect",
+  },
 }
 
 export const MockWorkspaceAgentStarting: TypesGen.WorkspaceAgent = {
@@ -587,6 +664,10 @@ export const MockWorkspaceAgentStartError: TypesGen.WorkspaceAgent = {
   id: "test-workspace-agent-start-error",
   name: "a-workspace-agent-errored-while-running-startup-script",
   lifecycle_state: "start_error",
+  health: {
+    healthy: false,
+    reason: "agent startup script failed",
+  },
 }
 
 export const MockWorkspaceAgentShuttingDown: TypesGen.WorkspaceAgent = {
@@ -594,6 +675,10 @@ export const MockWorkspaceAgentShuttingDown: TypesGen.WorkspaceAgent = {
   id: "test-workspace-agent-shutting-down",
   name: "a-shutting-down-workspace-agent",
   lifecycle_state: "shutting_down",
+  health: {
+    healthy: false,
+    reason: "agent is shutting down",
+  },
 }
 
 export const MockWorkspaceAgentShutdownTimeout: TypesGen.WorkspaceAgent = {
@@ -601,6 +686,10 @@ export const MockWorkspaceAgentShutdownTimeout: TypesGen.WorkspaceAgent = {
   id: "test-workspace-agent-shutdown-timeout",
   name: "a-workspace-agent-timed-out-while-running-shutdownup-script",
   lifecycle_state: "shutdown_timeout",
+  health: {
+    healthy: false,
+    reason: "agent is shutting down",
+  },
 }
 
 export const MockWorkspaceAgentShutdownError: TypesGen.WorkspaceAgent = {
@@ -608,6 +697,10 @@ export const MockWorkspaceAgentShutdownError: TypesGen.WorkspaceAgent = {
   id: "test-workspace-agent-shutdown-error",
   name: "a-workspace-agent-errored-while-running-shutdownup-script",
   lifecycle_state: "shutdown_error",
+  health: {
+    healthy: false,
+    reason: "agent is shutting down",
+  },
 }
 
 export const MockWorkspaceAgentOff: TypesGen.WorkspaceAgent = {
@@ -615,6 +708,10 @@ export const MockWorkspaceAgentOff: TypesGen.WorkspaceAgent = {
   id: "test-workspace-agent-off",
   name: "a-workspace-agent-is-shut-down",
   lifecycle_state: "off",
+  health: {
+    healthy: false,
+    reason: "agent is shutting down",
+  },
 }
 
 export const MockWorkspaceResource: TypesGen.WorkspaceResource = {
@@ -725,7 +822,7 @@ export const MockFailedWorkspaceBuild = (
   deadline: "2022-05-17T23:39:00.00Z",
   reason: "initiator",
   resources: [],
-  status: "running",
+  status: "failed",
   daily_cost: 20,
 })
 
@@ -758,6 +855,7 @@ export const MockWorkspace: TypesGen.Workspace = {
   template_display_name: MockTemplate.display_name,
   template_allow_user_cancel_workspace_jobs:
     MockTemplate.allow_user_cancel_workspace_jobs,
+  template_active_version_id: MockTemplate.active_version_id,
   outdated: false,
   owner_id: MockUser.id,
   organization_id: MockOrganization.id,
@@ -766,6 +864,10 @@ export const MockWorkspace: TypesGen.Workspace = {
   ttl_ms: 2 * 60 * 60 * 1000,
   latest_build: MockWorkspaceBuild,
   last_used_at: "2022-05-16T15:29:10.302441433Z",
+  health: {
+    healthy: true,
+    failing_agents: [],
+  },
 }
 
 export const MockStoppedWorkspace: TypesGen.Workspace = {
@@ -883,6 +985,7 @@ export const MockTemplateVersionParameter1: TypesGen.TemplateVersionParameter =
     icon: "/icon/folder.svg",
     options: [],
     required: true,
+    ephemeral: false,
   }
 
 export const MockTemplateVersionParameter2: TypesGen.TemplateVersionParameter =
@@ -899,6 +1002,7 @@ export const MockTemplateVersionParameter2: TypesGen.TemplateVersionParameter =
     validation_max: 3,
     validation_monotonic: "increasing",
     required: true,
+    ephemeral: false,
   }
 
 export const MockTemplateVersionParameter3: TypesGen.TemplateVersionParameter =
@@ -914,6 +1018,7 @@ export const MockTemplateVersionParameter3: TypesGen.TemplateVersionParameter =
     validation_error: "No way!",
     validation_regex: "^[a-z]{3}$",
     required: true,
+    ephemeral: false,
   }
 
 export const MockTemplateVersionParameter4: TypesGen.TemplateVersionParameter =
@@ -927,6 +1032,7 @@ export const MockTemplateVersionParameter4: TypesGen.TemplateVersionParameter =
     icon: "/icon/database.svg",
     options: [],
     required: true,
+    ephemeral: false,
   }
 
 export const MockTemplateVersionParameter5: TypesGen.TemplateVersionParameter =
@@ -943,6 +1049,7 @@ export const MockTemplateVersionParameter5: TypesGen.TemplateVersionParameter =
     validation_max: 10,
     validation_monotonic: "decreasing",
     required: true,
+    ephemeral: false,
   }
 
 export const MockTemplateVersionVariable1: TypesGen.TemplateVersionVariable = {
@@ -1018,6 +1125,12 @@ export const MockAuthMethods: TypesGen.AuthMethods = {
   password: { enabled: true },
   github: { enabled: false },
   oidc: { enabled: false, signInText: "", iconUrl: "" },
+}
+
+export const MockAuthMethodsWithPasswordType: TypesGen.AuthMethods = {
+  ...MockAuthMethods,
+  github: { enabled: true },
+  oidc: { enabled: true, signInText: "", iconUrl: "" },
 }
 
 export const MockGitSSHKey: TypesGen.GitSSHKey = {
@@ -1301,6 +1414,315 @@ export const MockWorkspaceBuildLogs: TypesGen.ProvisionerJobLog[] = [
   },
 ]
 
+export const MockWorkspaceExtendedBuildLogs: TypesGen.ProvisionerJobLog[] = [
+  {
+    id: 938494,
+    created_at: "2023-08-25T19:07:43.331Z",
+    log_source: "provisioner_daemon",
+    log_level: "info",
+    stage: "Setting up",
+    output: "",
+  },
+  {
+    id: 938495,
+    created_at: "2023-08-25T19:07:43.331Z",
+    log_source: "provisioner_daemon",
+    log_level: "info",
+    stage: "Parsing template parameters",
+    output: "",
+  },
+  {
+    id: 938496,
+    created_at: "2023-08-25T19:07:43.339Z",
+    log_source: "provisioner_daemon",
+    log_level: "info",
+    stage: "Detecting persistent resources",
+    output: "",
+  },
+  {
+    id: 938497,
+    created_at: "2023-08-25T19:07:44.15Z",
+    log_source: "provisioner",
+    log_level: "debug",
+    stage: "Detecting persistent resources",
+    output: "Initializing the backend...",
+  },
+  {
+    id: 938498,
+    created_at: "2023-08-25T19:07:44.215Z",
+    log_source: "provisioner",
+    log_level: "debug",
+    stage: "Detecting persistent resources",
+    output: "Initializing provider plugins...",
+  },
+  {
+    id: 938499,
+    created_at: "2023-08-25T19:07:44.216Z",
+    log_source: "provisioner",
+    log_level: "debug",
+    stage: "Detecting persistent resources",
+    output: '- Finding coder/coder versions matching "~> 0.11.0"...',
+  },
+  {
+    id: 938500,
+    created_at: "2023-08-25T19:07:44.668Z",
+    log_source: "provisioner",
+    log_level: "debug",
+    stage: "Detecting persistent resources",
+    output: '- Finding kreuzwerker/docker versions matching "~> 3.0.1"...',
+  },
+  {
+    id: 938501,
+    created_at: "2023-08-25T19:07:44.722Z",
+    log_source: "provisioner",
+    log_level: "debug",
+    stage: "Detecting persistent resources",
+    output: "- Using coder/coder v0.11.1 from the shared cache directory",
+  },
+  {
+    id: 938502,
+    created_at: "2023-08-25T19:07:44.857Z",
+    log_source: "provisioner",
+    log_level: "debug",
+    stage: "Detecting persistent resources",
+    output: "- Using kreuzwerker/docker v3.0.2 from the shared cache directory",
+  },
+  {
+    id: 938503,
+    created_at: "2023-08-25T19:07:45.081Z",
+    log_source: "provisioner",
+    log_level: "debug",
+    stage: "Detecting persistent resources",
+    output:
+      "Terraform has created a lock file .terraform.lock.hcl to record the provider",
+  },
+  {
+    id: 938504,
+    created_at: "2023-08-25T19:07:45.081Z",
+    log_source: "provisioner",
+    log_level: "debug",
+    stage: "Detecting persistent resources",
+    output:
+      "selections it made above. Include this file in your version control repository",
+  },
+  {
+    id: 938505,
+    created_at: "2023-08-25T19:07:45.081Z",
+    log_source: "provisioner",
+    log_level: "debug",
+    stage: "Detecting persistent resources",
+    output:
+      "so that Terraform can guarantee to make the same selections by default when",
+  },
+  {
+    id: 938506,
+    created_at: "2023-08-25T19:07:45.082Z",
+    log_source: "provisioner",
+    log_level: "debug",
+    stage: "Detecting persistent resources",
+    output: 'you run "terraform init" in the future.',
+  },
+  {
+    id: 938507,
+    created_at: "2023-08-25T19:07:45.083Z",
+    log_source: "provisioner",
+    log_level: "debug",
+    stage: "Detecting persistent resources",
+    output: "Terraform has been successfully initialized!",
+  },
+  {
+    id: 938508,
+    created_at: "2023-08-25T19:07:45.084Z",
+    log_source: "provisioner",
+    log_level: "debug",
+    stage: "Detecting persistent resources",
+    output:
+      'You may now begin working with Terraform. Try running "terraform plan" to see',
+  },
+  {
+    id: 938509,
+    created_at: "2023-08-25T19:07:45.084Z",
+    log_source: "provisioner",
+    log_level: "debug",
+    stage: "Detecting persistent resources",
+    output:
+      "any changes that are required for your infrastructure. All Terraform commands",
+  },
+  {
+    id: 938510,
+    created_at: "2023-08-25T19:07:45.084Z",
+    log_source: "provisioner",
+    log_level: "debug",
+    stage: "Detecting persistent resources",
+    output: "should now work.",
+  },
+  {
+    id: 938511,
+    created_at: "2023-08-25T19:07:45.084Z",
+    log_source: "provisioner",
+    log_level: "debug",
+    stage: "Detecting persistent resources",
+    output:
+      "If you ever set or change modules or backend configuration for Terraform,",
+  },
+  {
+    id: 938512,
+    created_at: "2023-08-25T19:07:45.084Z",
+    log_source: "provisioner",
+    log_level: "debug",
+    stage: "Detecting persistent resources",
+    output:
+      "rerun this command to reinitialize your working directory. If you forget, other",
+  },
+  {
+    id: 938513,
+    created_at: "2023-08-25T19:07:45.084Z",
+    log_source: "provisioner",
+    log_level: "debug",
+    stage: "Detecting persistent resources",
+    output: "commands will detect it and remind you to do so if necessary.",
+  },
+  {
+    id: 938514,
+    created_at: "2023-08-25T19:07:45.143Z",
+    log_source: "provisioner",
+    log_level: "info",
+    stage: "Detecting persistent resources",
+    output: "Terraform 1.1.9",
+  },
+  {
+    id: 938515,
+    created_at: "2023-08-25T19:07:46.297Z",
+    log_source: "provisioner",
+    log_level: "warn",
+    stage: "Detecting persistent resources",
+    output: "Warning: Argument is deprecated",
+  },
+  {
+    id: 938516,
+    created_at: "2023-08-25T19:07:46.297Z",
+    log_source: "provisioner",
+    log_level: "warn",
+    stage: "Detecting persistent resources",
+    output: 'on devcontainer-on-docker.tf line 15, in provider "coder":',
+  },
+  {
+    id: 938517,
+    created_at: "2023-08-25T19:07:46.297Z",
+    log_source: "provisioner",
+    log_level: "warn",
+    stage: "Detecting persistent resources",
+    output: "  15:   feature_use_managed_variables = true",
+  },
+  {
+    id: 938518,
+    created_at: "2023-08-25T19:07:46.297Z",
+    log_source: "provisioner",
+    log_level: "warn",
+    stage: "Detecting persistent resources",
+    output: "",
+  },
+  {
+    id: 938519,
+    created_at: "2023-08-25T19:07:46.297Z",
+    log_source: "provisioner",
+    log_level: "warn",
+    stage: "Detecting persistent resources",
+    output:
+      "Terraform variables are now exclusively utilized for template-wide variables after the removal of support for legacy parameters.",
+  },
+  {
+    id: 938520,
+    created_at: "2023-08-25T19:07:46.3Z",
+    log_source: "provisioner",
+    log_level: "error",
+    stage: "Detecting persistent resources",
+    output: "Error: ephemeral parameter requires the default property",
+  },
+  {
+    id: 938521,
+    created_at: "2023-08-25T19:07:46.3Z",
+    log_source: "provisioner",
+    log_level: "error",
+    stage: "Detecting persistent resources",
+    output:
+      'on devcontainer-on-docker.tf line 27, in data "coder_parameter" "another_one":',
+  },
+  {
+    id: 938522,
+    created_at: "2023-08-25T19:07:46.3Z",
+    log_source: "provisioner",
+    log_level: "error",
+    stage: "Detecting persistent resources",
+    output: '  27: data "coder_parameter" "another_one" {',
+  },
+  {
+    id: 938523,
+    created_at: "2023-08-25T19:07:46.301Z",
+    log_source: "provisioner",
+    log_level: "error",
+    stage: "Detecting persistent resources",
+    output: "",
+  },
+  {
+    id: 938524,
+    created_at: "2023-08-25T19:07:46.301Z",
+    log_source: "provisioner",
+    log_level: "error",
+    stage: "Detecting persistent resources",
+    output: "",
+  },
+  {
+    id: 938525,
+    created_at: "2023-08-25T19:07:46.303Z",
+    log_source: "provisioner",
+    log_level: "warn",
+    stage: "Detecting persistent resources",
+    output: "Warning: Argument is deprecated",
+  },
+  {
+    id: 938526,
+    created_at: "2023-08-25T19:07:46.303Z",
+    log_source: "provisioner",
+    log_level: "warn",
+    stage: "Detecting persistent resources",
+    output: 'on devcontainer-on-docker.tf line 15, in provider "coder":',
+  },
+  {
+    id: 938527,
+    created_at: "2023-08-25T19:07:46.303Z",
+    log_source: "provisioner",
+    log_level: "warn",
+    stage: "Detecting persistent resources",
+    output: "  15:   feature_use_managed_variables = true",
+  },
+  {
+    id: 938528,
+    created_at: "2023-08-25T19:07:46.303Z",
+    log_source: "provisioner",
+    log_level: "warn",
+    stage: "Detecting persistent resources",
+    output: "",
+  },
+  {
+    id: 938529,
+    created_at: "2023-08-25T19:07:46.303Z",
+    log_source: "provisioner",
+    log_level: "warn",
+    stage: "Detecting persistent resources",
+    output:
+      "Terraform variables are now exclusively utilized for template-wide variables after the removal of support for legacy parameters.",
+  },
+  {
+    id: 938530,
+    created_at: "2023-08-25T19:07:46.311Z",
+    log_source: "provisioner_daemon",
+    log_level: "info",
+    stage: "Cleaning Up",
+    output: "",
+  },
+]
+
 export const MockCancellationMessage = {
   message: "Job successfully canceled",
 }
@@ -1342,9 +1764,15 @@ export const MockEntitlements: TypesGen.Entitlements = {
   errors: [],
   warnings: [],
   has_license: false,
-  features: withDefaultFeatures({}),
+  features: withDefaultFeatures({
+    workspace_batch_actions: {
+      enabled: true,
+      entitlement: "entitled",
+    },
+  }),
   require_telemetry: false,
   trial: false,
+  refreshed_at: "2022-05-20T16:45:57.122Z",
 }
 
 export const MockEntitlementsWithWarnings: TypesGen.Entitlements = {
@@ -1353,6 +1781,7 @@ export const MockEntitlementsWithWarnings: TypesGen.Entitlements = {
   has_license: true,
   trial: false,
   require_telemetry: false,
+  refreshed_at: "2022-05-20T16:45:57.122Z",
   features: withDefaultFeatures({
     user_limit: {
       enabled: true,
@@ -1377,6 +1806,7 @@ export const MockEntitlementsWithAuditLog: TypesGen.Entitlements = {
   has_license: true,
   require_telemetry: false,
   trial: false,
+  refreshed_at: "2022-05-20T16:45:57.122Z",
   features: withDefaultFeatures({
     audit_log: {
       enabled: true,
@@ -1391,6 +1821,7 @@ export const MockEntitlementsWithScheduling: TypesGen.Entitlements = {
   has_license: true,
   require_telemetry: false,
   trial: false,
+  refreshed_at: "2022-05-20T16:45:57.122Z",
   features: withDefaultFeatures({
     advanced_template_scheduling: {
       enabled: true,
@@ -1402,7 +1833,6 @@ export const MockEntitlementsWithScheduling: TypesGen.Entitlements = {
 export const MockExperiments: TypesGen.Experiment[] = [
   "workspace_actions",
   "moons",
-  "workspace_filter",
 ]
 
 export const MockAuditLog: TypesGen.AuditLog = {
@@ -1503,6 +1933,42 @@ export const MockAuditLogGitSSH: TypesGen.AuditLog = {
   },
 }
 
+export const MockAuditOauthConvert: TypesGen.AuditLog = {
+  ...MockAuditLog,
+  resource_type: "convert_login",
+  resource_target: "oidc",
+  action: "create",
+  status_code: 201,
+  description: "{user} created login type conversion to {target}}",
+  diff: {
+    created_at: {
+      old: "0001-01-01T00:00:00Z",
+      new: "2023-06-20T20:44:54.243019Z",
+      secret: false,
+    },
+    expires_at: {
+      old: "0001-01-01T00:00:00Z",
+      new: "2023-06-20T20:49:54.243019Z",
+      secret: false,
+    },
+    state_string: {
+      old: "",
+      new: "",
+      secret: true,
+    },
+    to_type: {
+      old: "",
+      new: "oidc",
+      secret: false,
+    },
+    user_id: {
+      old: "",
+      new: "dc790496-eaec-4f88-a53f-8ce1f61a1fff",
+      secret: false,
+    },
+  },
+}
+
 export const MockAuditLogSuccessfulLogin: TypesGen.AuditLog = {
   ...MockAuditLog,
   resource_type: "api_key",
@@ -1525,10 +1991,12 @@ export const MockWorkspaceQuota: TypesGen.WorkspaceQuota = {
 export const MockGroup: TypesGen.Group = {
   id: "fbd2116a-8961-4954-87ae-e4575bd29ce0",
   name: "Front-End",
+  display_name: "Front-End",
   avatar_url: "https://example.com",
   organization_id: MockOrganization.id,
   members: [MockUser, MockUser2],
   quota_allowance: 5,
+  source: "user",
 }
 
 export const MockTemplateACL: TypesGen.TemplateACL = {
@@ -1577,6 +2045,15 @@ export const MockPermissions: Permissions = {
   viewDeploymentValues: true,
   viewUpdateCheck: true,
   viewDeploymentStats: true,
+  viewGitAuthConfig: true,
+  editWorkspaceProxies: true,
+}
+
+export const MockDeploymentConfig: Types.DeploymentConfig = {
+  config: {
+    enable_terraform_debug_mode: true,
+  },
+  options: [],
 }
 
 export const MockAppearance: TypesGen.AppearanceConfig = {
@@ -1599,6 +2076,11 @@ export const MockWorkspaceBuildParameter2: TypesGen.WorkspaceBuildParameter = {
 export const MockWorkspaceBuildParameter3: TypesGen.WorkspaceBuildParameter = {
   name: MockTemplateVersionParameter3.name,
   value: "my-database",
+}
+
+export const MockWorkspaceBuildParameter4: TypesGen.WorkspaceBuildParameter = {
+  name: MockTemplateVersionParameter4.name,
+  value: "immutable-value",
 }
 
 export const MockWorkspaceBuildParameter5: TypesGen.WorkspaceBuildParameter = {
@@ -1643,7 +2125,7 @@ export const MockDeploymentSSH: TypesGen.SSHConfigResponse = {
   ssh_config_options: {},
 }
 
-export const MockStartupLogs: TypesGen.WorkspaceAgentStartupLog[] = [
+export const MockWorkspaceAgentLogs: TypesGen.WorkspaceAgentLog[] = [
   {
     id: 166663,
     created_at: "2023-05-04T11:30:41.402072Z",
@@ -1712,3 +2194,431 @@ export const MockLicenseResponse: GetLicensesResponse[] = [
     },
   },
 ]
+
+export const MockHealth = {
+  time: "2023-08-01T16:51:03.29792825Z",
+  healthy: true,
+  failing_sections: null,
+  derp: {
+    healthy: true,
+    regions: {
+      "999": {
+        healthy: true,
+        region: {
+          EmbeddedRelay: true,
+          RegionID: 999,
+          RegionCode: "coder",
+          RegionName: "Council Bluffs, Iowa",
+          Nodes: [
+            {
+              Name: "999stun0",
+              RegionID: 999,
+              HostName: "stun.l.google.com",
+              STUNPort: 19302,
+              STUNOnly: true,
+            },
+            {
+              Name: "999b",
+              RegionID: 999,
+              HostName: "dev.coder.com",
+              STUNPort: -1,
+              DERPPort: 443,
+            },
+          ],
+        },
+        node_reports: [
+          {
+            healthy: true,
+            node: {
+              Name: "999stun0",
+              RegionID: 999,
+              HostName: "stun.l.google.com",
+              STUNPort: 19302,
+              STUNOnly: true,
+            },
+            node_info: {
+              TokenBucketBytesPerSecond: 0,
+              TokenBucketBytesBurst: 0,
+            },
+            can_exchange_messages: false,
+            round_trip_ping: 0,
+            uses_websocket: false,
+            client_logs: [],
+            client_errs: [],
+            error: null,
+            stun: {
+              Enabled: true,
+              CanSTUN: true,
+              Error: null,
+            },
+          },
+          {
+            healthy: true,
+            node: {
+              Name: "999b",
+              RegionID: 999,
+              HostName: "dev.coder.com",
+              STUNPort: -1,
+              DERPPort: 443,
+            },
+            node_info: {
+              TokenBucketBytesPerSecond: 0,
+              TokenBucketBytesBurst: 0,
+            },
+            can_exchange_messages: true,
+            round_trip_ping: 7674330,
+            uses_websocket: false,
+            client_logs: [
+              [
+                "derphttp.Client.Connect: connecting to https://dev.coder.com/derp",
+              ],
+              [
+                "derphttp.Client.Connect: connecting to https://dev.coder.com/derp",
+              ],
+            ],
+            client_errs: [[], []],
+            error: null,
+            stun: {
+              Enabled: false,
+              CanSTUN: false,
+              Error: null,
+            },
+          },
+        ],
+        error: null,
+      },
+      "10007": {
+        healthy: true,
+        region: {
+          EmbeddedRelay: false,
+          RegionID: 10007,
+          RegionCode: "coder_sydney",
+          RegionName: "sydney",
+          Nodes: [
+            {
+              Name: "10007stun0",
+              RegionID: 10007,
+              HostName: "stun.l.google.com",
+              STUNPort: 19302,
+              STUNOnly: true,
+            },
+            {
+              Name: "10007a",
+              RegionID: 10007,
+              HostName: "sydney.dev.coder.com",
+              STUNPort: -1,
+              DERPPort: 443,
+            },
+          ],
+        },
+        node_reports: [
+          {
+            healthy: true,
+            node: {
+              Name: "10007stun0",
+              RegionID: 10007,
+              HostName: "stun.l.google.com",
+              STUNPort: 19302,
+              STUNOnly: true,
+            },
+            node_info: {
+              TokenBucketBytesPerSecond: 0,
+              TokenBucketBytesBurst: 0,
+            },
+            can_exchange_messages: false,
+            round_trip_ping: 0,
+            uses_websocket: false,
+            client_logs: [],
+            client_errs: [],
+            error: null,
+            stun: {
+              Enabled: true,
+              CanSTUN: true,
+              Error: null,
+            },
+          },
+          {
+            healthy: true,
+            node: {
+              Name: "10007a",
+              RegionID: 10007,
+              HostName: "sydney.dev.coder.com",
+              STUNPort: -1,
+              DERPPort: 443,
+            },
+            node_info: {
+              TokenBucketBytesPerSecond: 0,
+              TokenBucketBytesBurst: 0,
+            },
+            can_exchange_messages: true,
+            round_trip_ping: 170527034,
+            uses_websocket: false,
+            client_logs: [
+              [
+                "derphttp.Client.Connect: connecting to https://sydney.dev.coder.com/derp",
+              ],
+              [
+                "derphttp.Client.Connect: connecting to https://sydney.dev.coder.com/derp",
+              ],
+            ],
+            client_errs: [[], []],
+            error: null,
+            stun: {
+              Enabled: false,
+              CanSTUN: false,
+              Error: null,
+            },
+          },
+        ],
+        error: null,
+      },
+      "10008": {
+        healthy: true,
+        region: {
+          EmbeddedRelay: false,
+          RegionID: 10008,
+          RegionCode: "coder_europe-frankfurt",
+          RegionName: "europe-frankfurt",
+          Nodes: [
+            {
+              Name: "10008stun0",
+              RegionID: 10008,
+              HostName: "stun.l.google.com",
+              STUNPort: 19302,
+              STUNOnly: true,
+            },
+            {
+              Name: "10008a",
+              RegionID: 10008,
+              HostName: "europe.dev.coder.com",
+              STUNPort: -1,
+              DERPPort: 443,
+            },
+          ],
+        },
+        node_reports: [
+          {
+            healthy: true,
+            node: {
+              Name: "10008stun0",
+              RegionID: 10008,
+              HostName: "stun.l.google.com",
+              STUNPort: 19302,
+              STUNOnly: true,
+            },
+            node_info: {
+              TokenBucketBytesPerSecond: 0,
+              TokenBucketBytesBurst: 0,
+            },
+            can_exchange_messages: false,
+            round_trip_ping: 0,
+            uses_websocket: false,
+            client_logs: [],
+            client_errs: [],
+            error: null,
+            stun: {
+              Enabled: true,
+              CanSTUN: true,
+              Error: null,
+            },
+          },
+          {
+            healthy: true,
+            node: {
+              Name: "10008a",
+              RegionID: 10008,
+              HostName: "europe.dev.coder.com",
+              STUNPort: -1,
+              DERPPort: 443,
+            },
+            node_info: {
+              TokenBucketBytesPerSecond: 0,
+              TokenBucketBytesBurst: 0,
+            },
+            can_exchange_messages: true,
+            round_trip_ping: 111329690,
+            uses_websocket: false,
+            client_logs: [
+              [
+                "derphttp.Client.Connect: connecting to https://europe.dev.coder.com/derp",
+              ],
+              [
+                "derphttp.Client.Connect: connecting to https://europe.dev.coder.com/derp",
+              ],
+            ],
+            client_errs: [[], []],
+            error: null,
+            stun: {
+              Enabled: false,
+              CanSTUN: false,
+              Error: null,
+            },
+          },
+        ],
+        error: null,
+      },
+      "10009": {
+        healthy: true,
+        region: {
+          EmbeddedRelay: false,
+          RegionID: 10009,
+          RegionCode: "coder_brazil-saopaulo",
+          RegionName: "brazil-saopaulo",
+          Nodes: [
+            {
+              Name: "10009stun0",
+              RegionID: 10009,
+              HostName: "stun.l.google.com",
+              STUNPort: 19302,
+              STUNOnly: true,
+            },
+            {
+              Name: "10009a",
+              RegionID: 10009,
+              HostName: "brazil.dev.coder.com",
+              STUNPort: -1,
+              DERPPort: 443,
+            },
+          ],
+        },
+        node_reports: [
+          {
+            healthy: true,
+            node: {
+              Name: "10009stun0",
+              RegionID: 10009,
+              HostName: "stun.l.google.com",
+              STUNPort: 19302,
+              STUNOnly: true,
+            },
+            node_info: {
+              TokenBucketBytesPerSecond: 0,
+              TokenBucketBytesBurst: 0,
+            },
+            can_exchange_messages: false,
+            round_trip_ping: 0,
+            uses_websocket: false,
+            client_logs: [],
+            client_errs: [],
+            error: null,
+            stun: {
+              Enabled: true,
+              CanSTUN: true,
+              Error: null,
+            },
+          },
+          {
+            healthy: true,
+            node: {
+              Name: "10009a",
+              RegionID: 10009,
+              HostName: "brazil.dev.coder.com",
+              STUNPort: -1,
+              DERPPort: 443,
+            },
+            node_info: {
+              TokenBucketBytesPerSecond: 0,
+              TokenBucketBytesBurst: 0,
+            },
+            can_exchange_messages: true,
+            round_trip_ping: 138185506,
+            uses_websocket: false,
+            client_logs: [
+              [
+                "derphttp.Client.Connect: connecting to https://brazil.dev.coder.com/derp",
+              ],
+              [
+                "derphttp.Client.Connect: connecting to https://brazil.dev.coder.com/derp",
+              ],
+            ],
+            client_errs: [[], []],
+            error: null,
+            stun: {
+              Enabled: false,
+              CanSTUN: false,
+              Error: null,
+            },
+          },
+        ],
+        error: null,
+      },
+    },
+    netcheck: {
+      UDP: true,
+      IPv6: false,
+      IPv4: true,
+      IPv6CanSend: false,
+      IPv4CanSend: true,
+      OSHasIPv6: true,
+      ICMPv4: false,
+      MappingVariesByDestIP: false,
+      HairPinning: null,
+      UPnP: false,
+      PMP: false,
+      PCP: false,
+      PreferredDERP: 999,
+      RegionLatency: {
+        "999": 1638180,
+        "10007": 174853022,
+        "10008": 112142029,
+        "10009": 138855606,
+      },
+      RegionV4Latency: {
+        "999": 1638180,
+        "10007": 174853022,
+        "10008": 112142029,
+        "10009": 138855606,
+      },
+      RegionV6Latency: {},
+      GlobalV4: "34.71.26.24:55368",
+      GlobalV6: "",
+      CaptivePortal: null,
+    },
+    netcheck_err: null,
+    netcheck_logs: [
+      "netcheck: netcheck.runProbe: got STUN response for 10007stun0 from 34.71.26.24:55368 (9b07930007da49dd7df79bc7) in 1.791799ms",
+      "netcheck: netcheck.runProbe: got STUN response for 999stun0 from 34.71.26.24:55368 (7397fec097f1d5b01364566b) in 1.791529ms",
+      "netcheck: netcheck.runProbe: got STUN response for 10008stun0 from 34.71.26.24:55368 (1fdaaa016ca386485f097f68) in 2.192899ms",
+      "netcheck: netcheck.runProbe: got STUN response for 10009stun0 from 34.71.26.24:55368 (2596fe60895fbd9542823a76) in 2.146459ms",
+      "netcheck: netcheck.runProbe: got STUN response for 10007stun0 from 34.71.26.24:55368 (19ec320f3b76e8b027b06d3e) in 2.139619ms",
+      "netcheck: netcheck.runProbe: got STUN response for 999stun0 from 34.71.26.24:55368 (a17973bc57c35e606c0f46f5) in 2.131089ms",
+      "netcheck: netcheck.runProbe: got STUN response for 10008stun0 from 34.71.26.24:55368 (c958e15209d139a6e410f13a) in 2.127549ms",
+      "netcheck: netcheck.runProbe: got STUN response for 10009stun0 from 34.71.26.24:55368 (284a1b64dff22f40a3514524) in 2.107549ms",
+      "netcheck: [v1] measureAllICMPLatency: listen ip4:icmp 0.0.0.0: socket: operation not permitted",
+      "netcheck: [v1] report: udp=true v6=false v6os=true mapvarydest=false hair= portmap= v4a=34.71.26.24:55368 derp=999 derpdist=999v4:2ms,10007v4:175ms,10008v4:112ms,10009v4:139ms",
+    ],
+    error: null,
+  },
+  access_url: {
+    access_url: "https://dev.coder.com",
+    healthy: true,
+    reachable: true,
+    status_code: 200,
+    healthz_response: "OK",
+    error: null,
+  },
+  websocket: {
+    healthy: true,
+    response: {
+      body: "",
+      code: 101,
+    },
+    error: null,
+  },
+  database: {
+    healthy: true,
+    reachable: true,
+    latency: 92570,
+    error: null,
+  },
+  coder_version: "v0.27.1-devel+c575292",
+}
+
+export const MockListeningPortsResponse: TypesGen.WorkspaceAgentListeningPortsResponse =
+  {
+    ports: [
+      { process_name: "web", network: "", port: 3000 },
+      { process_name: "go", network: "", port: 8080 },
+      { process_name: "", network: "", port: 8081 },
+    ],
+  }

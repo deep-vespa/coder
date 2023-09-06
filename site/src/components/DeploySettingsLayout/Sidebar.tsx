@@ -4,12 +4,15 @@ import LaunchOutlined from "@mui/icons-material/LaunchOutlined"
 import ApprovalIcon from "@mui/icons-material/VerifiedUserOutlined"
 import LockRounded from "@mui/icons-material/LockOutlined"
 import Globe from "@mui/icons-material/PublicOutlined"
+import HubOutlinedIcon from "@mui/icons-material/HubOutlined"
 import VpnKeyOutlined from "@mui/icons-material/VpnKeyOutlined"
+import MonitorHeartOutlined from "@mui/icons-material/MonitorHeartOutlined"
 import { GitIcon } from "components/Icons/GitIcon"
 import { Stack } from "components/Stack/Stack"
 import { ElementType, PropsWithChildren, ReactNode, FC } from "react"
 import { NavLink } from "react-router-dom"
 import { combineClasses } from "utils/combineClasses"
+import { useDashboard } from "components/Dashboard/DashboardProvider"
 
 const SidebarNavItem: FC<
   PropsWithChildren<{ href: string; icon: ReactNode }>
@@ -40,6 +43,7 @@ const SidebarNavItemIcon: FC<{ icon: ElementType }> = ({ icon: Icon }) => {
 
 export const Sidebar: React.FC = () => {
   const styles = useStyles()
+  const dashboard = useDashboard()
 
   return (
     <nav className={styles.sidebar}>
@@ -76,12 +80,28 @@ export const Sidebar: React.FC = () => {
       <SidebarNavItem href="network" icon={<SidebarNavItemIcon icon={Globe} />}>
         Network
       </SidebarNavItem>
+      {dashboard.experiments.includes("moons") && (
+        <SidebarNavItem
+          href="workspace-proxies"
+          icon={<SidebarNavItemIcon icon={HubOutlinedIcon} />}
+        >
+          Workspace Proxies
+        </SidebarNavItem>
+      )}
       <SidebarNavItem
         href="security"
         icon={<SidebarNavItemIcon icon={LockRounded} />}
       >
         Security
       </SidebarNavItem>
+      {dashboard.experiments.includes("deployment_health_page") && (
+        <SidebarNavItem
+          href="/health"
+          icon={<SidebarNavItemIcon icon={MonitorHeartOutlined} />}
+        >
+          Health
+        </SidebarNavItem>
+      )}
     </nav>
   )
 }

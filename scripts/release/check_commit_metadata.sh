@@ -40,12 +40,12 @@ ignore_missing_metadata=${CODER_IGNORE_MISSING_COMMIT_METADATA:-0}
 
 main() {
 	# Match a commit prefix pattern, e.g. feat: or feat(site):.
-	prefix_pattern="^([a-z]+)(\([a-z]*\))?:"
+	prefix_pattern="^([a-z]+)(\([^)]+\))?:"
 
 	# If a commit contains this title prefix or the source PR contains the
 	# label, patch releases will not be allowed.
 	# This regex matches both `feat!:` and `feat(site)!:`.
-	breaking_title="^[a-z]+(\([a-z]*\))?!:"
+	breaking_title="^[a-z]+(\([^)]+\))?!:"
 	breaking_label=release/breaking
 	breaking_category=breaking
 	experimental_label=release/experimental
@@ -82,16 +82,20 @@ main() {
 			--json mergeCommit,labels,author \
 			--jq '.[] | "\( .mergeCommit.oid ) author:\( .author.login ) labels:\(["label:\( .labels[].name )"] | join(" "))"'
 	)"
-	mapfile -t pr_metadata_raw <<<"$pr_list_out"
+
 	declare -A authors labels
-	for entry in "${pr_metadata_raw[@]}"; do
-		commit_sha_long=${entry%% *}
-		commit_author=${entry#* author:}
-		commit_author=${commit_author%% *}
-		authors[$commit_sha_long]=$commit_author
-		all_labels=${entry#* labels:}
-		labels[$commit_sha_long]=$all_labels
-	done
+	if [[ -n $pr_list_out ]]; then
+		mapfile -t pr_metadata_raw <<<"$pr_list_out"
+
+		for entry in "${pr_metadata_raw[@]}"; do
+			commit_sha_long=${entry%% *}
+			commit_author=${entry#* author:}
+			commit_author=${commit_author%% *}
+			authors[$commit_sha_long]=$commit_author
+			all_labels=${entry#* labels:}
+			labels[$commit_sha_long]=$all_labels
+		done
+	fi
 
 	for commit in "${commits[@]}"; do
 		mapfile -d ' ' -t parts <<<"$commit"

@@ -39,9 +39,11 @@ curl -X GET http://coder-server:8080/api/v2/users/{user}/workspace/{workspacenam
     "completed_at": "2019-08-24T14:15:22Z",
     "created_at": "2019-08-24T14:15:22Z",
     "error": "string",
-    "error_code": "MISSING_TEMPLATE_PARAMETER",
+    "error_code": "REQUIRED_TEMPLATE_VARIABLES",
     "file_id": "8a0cfb4f-ddc9-436d-91bb-75133c583767",
     "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
+    "queue_position": 0,
+    "queue_size": 0,
     "started_at": "2019-08-24T14:15:22Z",
     "status": "pending",
     "tags": {
@@ -80,12 +82,17 @@ curl -X GET http://coder-server:8080/api/v2/users/{user}/workspace/{workspacenam
           "created_at": "2019-08-24T14:15:22Z",
           "directory": "string",
           "disconnected_at": "2019-08-24T14:15:22Z",
+          "display_apps": ["vscode"],
           "environment_variables": {
             "property1": "string",
             "property2": "string"
           },
           "expanded_directory": "string",
           "first_connected_at": "2019-08-24T14:15:22Z",
+          "health": {
+            "healthy": false,
+            "reason": "agent has lost connection"
+          },
           "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
           "instance_id": "string",
           "last_connected_at": "2019-08-24T14:15:22Z",
@@ -101,18 +108,20 @@ curl -X GET http://coder-server:8080/api/v2/users/{user}/workspace/{workspacenam
           },
           "lifecycle_state": "created",
           "login_before_ready": true,
+          "logs_length": 0,
+          "logs_overflowed": true,
           "name": "string",
           "operating_system": "string",
+          "ready_at": "2019-08-24T14:15:22Z",
           "resource_id": "4d5215ed-38bb-48ed-879a-fdb9ca58522f",
           "shutdown_script": "string",
           "shutdown_script_timeout_seconds": 0,
-          "startup_logs_length": 0,
-          "startup_logs_overflowed": true,
+          "started_at": "2019-08-24T14:15:22Z",
           "startup_script": "string",
           "startup_script_behavior": "blocking",
           "startup_script_timeout_seconds": 0,
           "status": "connecting",
-          "subsystem": "envbox",
+          "subsystems": ["envbox"],
           "troubleshooting_url": "string",
           "updated_at": "2019-08-24T14:15:22Z",
           "version": "string"
@@ -193,9 +202,11 @@ curl -X GET http://coder-server:8080/api/v2/workspacebuilds/{workspacebuild} \
     "completed_at": "2019-08-24T14:15:22Z",
     "created_at": "2019-08-24T14:15:22Z",
     "error": "string",
-    "error_code": "MISSING_TEMPLATE_PARAMETER",
+    "error_code": "REQUIRED_TEMPLATE_VARIABLES",
     "file_id": "8a0cfb4f-ddc9-436d-91bb-75133c583767",
     "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
+    "queue_position": 0,
+    "queue_size": 0,
     "started_at": "2019-08-24T14:15:22Z",
     "status": "pending",
     "tags": {
@@ -234,12 +245,17 @@ curl -X GET http://coder-server:8080/api/v2/workspacebuilds/{workspacebuild} \
           "created_at": "2019-08-24T14:15:22Z",
           "directory": "string",
           "disconnected_at": "2019-08-24T14:15:22Z",
+          "display_apps": ["vscode"],
           "environment_variables": {
             "property1": "string",
             "property2": "string"
           },
           "expanded_directory": "string",
           "first_connected_at": "2019-08-24T14:15:22Z",
+          "health": {
+            "healthy": false,
+            "reason": "agent has lost connection"
+          },
           "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
           "instance_id": "string",
           "last_connected_at": "2019-08-24T14:15:22Z",
@@ -255,18 +271,20 @@ curl -X GET http://coder-server:8080/api/v2/workspacebuilds/{workspacebuild} \
           },
           "lifecycle_state": "created",
           "login_before_ready": true,
+          "logs_length": 0,
+          "logs_overflowed": true,
           "name": "string",
           "operating_system": "string",
+          "ready_at": "2019-08-24T14:15:22Z",
           "resource_id": "4d5215ed-38bb-48ed-879a-fdb9ca58522f",
           "shutdown_script": "string",
           "shutdown_script_timeout_seconds": 0,
-          "startup_logs_length": 0,
-          "startup_logs_overflowed": true,
+          "started_at": "2019-08-24T14:15:22Z",
           "startup_script": "string",
           "startup_script_behavior": "blocking",
           "startup_script_timeout_seconds": 0,
           "status": "connecting",
-          "subsystem": "envbox",
+          "subsystems": ["envbox"],
           "troubleshooting_url": "string",
           "updated_at": "2019-08-24T14:15:22Z",
           "version": "string"
@@ -529,12 +547,17 @@ curl -X GET http://coder-server:8080/api/v2/workspacebuilds/{workspacebuild}/res
         "created_at": "2019-08-24T14:15:22Z",
         "directory": "string",
         "disconnected_at": "2019-08-24T14:15:22Z",
+        "display_apps": ["vscode"],
         "environment_variables": {
           "property1": "string",
           "property2": "string"
         },
         "expanded_directory": "string",
         "first_connected_at": "2019-08-24T14:15:22Z",
+        "health": {
+          "healthy": false,
+          "reason": "agent has lost connection"
+        },
         "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
         "instance_id": "string",
         "last_connected_at": "2019-08-24T14:15:22Z",
@@ -550,18 +573,20 @@ curl -X GET http://coder-server:8080/api/v2/workspacebuilds/{workspacebuild}/res
         },
         "lifecycle_state": "created",
         "login_before_ready": true,
+        "logs_length": 0,
+        "logs_overflowed": true,
         "name": "string",
         "operating_system": "string",
+        "ready_at": "2019-08-24T14:15:22Z",
         "resource_id": "4d5215ed-38bb-48ed-879a-fdb9ca58522f",
         "shutdown_script": "string",
         "shutdown_script_timeout_seconds": 0,
-        "startup_logs_length": 0,
-        "startup_logs_overflowed": true,
+        "started_at": "2019-08-24T14:15:22Z",
         "startup_script": "string",
         "startup_script_behavior": "blocking",
         "startup_script_timeout_seconds": 0,
         "status": "connecting",
-        "subsystem": "envbox",
+        "subsystems": ["envbox"],
         "troubleshooting_url": "string",
         "updated_at": "2019-08-24T14:15:22Z",
         "version": "string"
@@ -621,10 +646,14 @@ Status Code **200**
 | `»» created_at`                      | string(date-time)                                                                                      | false    |              |                                                                                                                                                                                                                                                |
 | `»» directory`                       | string                                                                                                 | false    |              |                                                                                                                                                                                                                                                |
 | `»» disconnected_at`                 | string(date-time)                                                                                      | false    |              |                                                                                                                                                                                                                                                |
+| `»» display_apps`                    | array                                                                                                  | false    |              |                                                                                                                                                                                                                                                |
 | `»» environment_variables`           | object                                                                                                 | false    |              |                                                                                                                                                                                                                                                |
 | `»»» [any property]`                 | string                                                                                                 | false    |              |                                                                                                                                                                                                                                                |
 | `»» expanded_directory`              | string                                                                                                 | false    |              |                                                                                                                                                                                                                                                |
 | `»» first_connected_at`              | string(date-time)                                                                                      | false    |              |                                                                                                                                                                                                                                                |
+| `»» health`                          | [codersdk.WorkspaceAgentHealth](schemas.md#codersdkworkspaceagenthealth)                               | false    |              | Health reports the health of the agent.                                                                                                                                                                                                        |
+| `»»» healthy`                        | boolean                                                                                                | false    |              | Healthy is true if the agent is healthy.                                                                                                                                                                                                       |
+| `»»» reason`                         | string                                                                                                 | false    |              | Reason is a human-readable explanation of the agent's health. It is empty if Healthy is true.                                                                                                                                                  |
 | `»» id`                              | string(uuid)                                                                                           | false    |              |                                                                                                                                                                                                                                                |
 | `»» instance_id`                     | string                                                                                                 | false    |              |                                                                                                                                                                                                                                                |
 | `»» last_connected_at`               | string(date-time)                                                                                      | false    |              |                                                                                                                                                                                                                                                |
@@ -634,18 +663,20 @@ Status Code **200**
 | `»»»» preferred`                     | boolean                                                                                                | false    |              |                                                                                                                                                                                                                                                |
 | `»» lifecycle_state`                 | [codersdk.WorkspaceAgentLifecycle](schemas.md#codersdkworkspaceagentlifecycle)                         | false    |              |                                                                                                                                                                                                                                                |
 | `»» login_before_ready`              | boolean                                                                                                | false    |              | Deprecated: Use StartupScriptBehavior instead.                                                                                                                                                                                                 |
+| `»» logs_length`                     | integer                                                                                                | false    |              |                                                                                                                                                                                                                                                |
+| `»» logs_overflowed`                 | boolean                                                                                                | false    |              |                                                                                                                                                                                                                                                |
 | `»» name`                            | string                                                                                                 | false    |              |                                                                                                                                                                                                                                                |
 | `»» operating_system`                | string                                                                                                 | false    |              |                                                                                                                                                                                                                                                |
+| `»» ready_at`                        | string(date-time)                                                                                      | false    |              |                                                                                                                                                                                                                                                |
 | `»» resource_id`                     | string(uuid)                                                                                           | false    |              |                                                                                                                                                                                                                                                |
 | `»» shutdown_script`                 | string                                                                                                 | false    |              |                                                                                                                                                                                                                                                |
 | `»» shutdown_script_timeout_seconds` | integer                                                                                                | false    |              |                                                                                                                                                                                                                                                |
-| `»» startup_logs_length`             | integer                                                                                                | false    |              |                                                                                                                                                                                                                                                |
-| `»» startup_logs_overflowed`         | boolean                                                                                                | false    |              |                                                                                                                                                                                                                                                |
+| `»» started_at`                      | string(date-time)                                                                                      | false    |              |                                                                                                                                                                                                                                                |
 | `»» startup_script`                  | string                                                                                                 | false    |              |                                                                                                                                                                                                                                                |
 | `»» startup_script_behavior`         | [codersdk.WorkspaceAgentStartupScriptBehavior](schemas.md#codersdkworkspaceagentstartupscriptbehavior) | false    |              |                                                                                                                                                                                                                                                |
 | `»» startup_script_timeout_seconds`  | integer                                                                                                | false    |              | »startup script timeout seconds is the number of seconds to wait for the startup script to complete. If the script does not complete within this time, the agent lifecycle will be marked as start_timeout.                                    |
 | `»» status`                          | [codersdk.WorkspaceAgentStatus](schemas.md#codersdkworkspaceagentstatus)                               | false    |              |                                                                                                                                                                                                                                                |
-| `»» subsystem`                       | [codersdk.AgentSubsystem](schemas.md#codersdkagentsubsystem)                                           | false    |              |                                                                                                                                                                                                                                                |
+| `»» subsystems`                      | array                                                                                                  | false    |              |                                                                                                                                                                                                                                                |
 | `»» troubleshooting_url`             | string                                                                                                 | false    |              |                                                                                                                                                                                                                                                |
 | `»» updated_at`                      | string(date-time)                                                                                      | false    |              |                                                                                                                                                                                                                                                |
 | `»» version`                         | string                                                                                                 | false    |              |                                                                                                                                                                                                                                                |
@@ -689,7 +720,6 @@ Status Code **200**
 | `status`                  | `connected`        |
 | `status`                  | `disconnected`     |
 | `status`                  | `timeout`          |
-| `subsystem`               | `envbox`           |
 | `workspace_transition`    | `start`            |
 | `workspace_transition`    | `stop`             |
 | `workspace_transition`    | `delete`           |
@@ -733,9 +763,11 @@ curl -X GET http://coder-server:8080/api/v2/workspacebuilds/{workspacebuild}/sta
     "completed_at": "2019-08-24T14:15:22Z",
     "created_at": "2019-08-24T14:15:22Z",
     "error": "string",
-    "error_code": "MISSING_TEMPLATE_PARAMETER",
+    "error_code": "REQUIRED_TEMPLATE_VARIABLES",
     "file_id": "8a0cfb4f-ddc9-436d-91bb-75133c583767",
     "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
+    "queue_position": 0,
+    "queue_size": 0,
     "started_at": "2019-08-24T14:15:22Z",
     "status": "pending",
     "tags": {
@@ -774,12 +806,17 @@ curl -X GET http://coder-server:8080/api/v2/workspacebuilds/{workspacebuild}/sta
           "created_at": "2019-08-24T14:15:22Z",
           "directory": "string",
           "disconnected_at": "2019-08-24T14:15:22Z",
+          "display_apps": ["vscode"],
           "environment_variables": {
             "property1": "string",
             "property2": "string"
           },
           "expanded_directory": "string",
           "first_connected_at": "2019-08-24T14:15:22Z",
+          "health": {
+            "healthy": false,
+            "reason": "agent has lost connection"
+          },
           "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
           "instance_id": "string",
           "last_connected_at": "2019-08-24T14:15:22Z",
@@ -795,18 +832,20 @@ curl -X GET http://coder-server:8080/api/v2/workspacebuilds/{workspacebuild}/sta
           },
           "lifecycle_state": "created",
           "login_before_ready": true,
+          "logs_length": 0,
+          "logs_overflowed": true,
           "name": "string",
           "operating_system": "string",
+          "ready_at": "2019-08-24T14:15:22Z",
           "resource_id": "4d5215ed-38bb-48ed-879a-fdb9ca58522f",
           "shutdown_script": "string",
           "shutdown_script_timeout_seconds": 0,
-          "startup_logs_length": 0,
-          "startup_logs_overflowed": true,
+          "started_at": "2019-08-24T14:15:22Z",
           "startup_script": "string",
           "startup_script_behavior": "blocking",
           "startup_script_timeout_seconds": 0,
           "status": "connecting",
-          "subsystem": "envbox",
+          "subsystems": ["envbox"],
           "troubleshooting_url": "string",
           "updated_at": "2019-08-24T14:15:22Z",
           "version": "string"
@@ -892,9 +931,11 @@ curl -X GET http://coder-server:8080/api/v2/workspaces/{workspace}/builds \
       "completed_at": "2019-08-24T14:15:22Z",
       "created_at": "2019-08-24T14:15:22Z",
       "error": "string",
-      "error_code": "MISSING_TEMPLATE_PARAMETER",
+      "error_code": "REQUIRED_TEMPLATE_VARIABLES",
       "file_id": "8a0cfb4f-ddc9-436d-91bb-75133c583767",
       "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
+      "queue_position": 0,
+      "queue_size": 0,
       "started_at": "2019-08-24T14:15:22Z",
       "status": "pending",
       "tags": {
@@ -933,12 +974,17 @@ curl -X GET http://coder-server:8080/api/v2/workspaces/{workspace}/builds \
             "created_at": "2019-08-24T14:15:22Z",
             "directory": "string",
             "disconnected_at": "2019-08-24T14:15:22Z",
+            "display_apps": ["vscode"],
             "environment_variables": {
               "property1": "string",
               "property2": "string"
             },
             "expanded_directory": "string",
             "first_connected_at": "2019-08-24T14:15:22Z",
+            "health": {
+              "healthy": false,
+              "reason": "agent has lost connection"
+            },
             "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
             "instance_id": "string",
             "last_connected_at": "2019-08-24T14:15:22Z",
@@ -954,18 +1000,20 @@ curl -X GET http://coder-server:8080/api/v2/workspaces/{workspace}/builds \
             },
             "lifecycle_state": "created",
             "login_before_ready": true,
+            "logs_length": 0,
+            "logs_overflowed": true,
             "name": "string",
             "operating_system": "string",
+            "ready_at": "2019-08-24T14:15:22Z",
             "resource_id": "4d5215ed-38bb-48ed-879a-fdb9ca58522f",
             "shutdown_script": "string",
             "shutdown_script_timeout_seconds": 0,
-            "startup_logs_length": 0,
-            "startup_logs_overflowed": true,
+            "started_at": "2019-08-24T14:15:22Z",
             "startup_script": "string",
             "startup_script_behavior": "blocking",
             "startup_script_timeout_seconds": 0,
             "status": "connecting",
-            "subsystem": "envbox",
+            "subsystems": ["envbox"],
             "troubleshooting_url": "string",
             "updated_at": "2019-08-24T14:15:22Z",
             "version": "string"
@@ -1030,6 +1078,8 @@ Status Code **200**
 | `»» error_code`                       | [codersdk.JobErrorCode](schemas.md#codersdkjoberrorcode)                                               | false    |              |                                                                                                                                                                                                                                                |
 | `»» file_id`                          | string(uuid)                                                                                           | false    |              |                                                                                                                                                                                                                                                |
 | `»» id`                               | string(uuid)                                                                                           | false    |              |                                                                                                                                                                                                                                                |
+| `»» queue_position`                   | integer                                                                                                | false    |              |                                                                                                                                                                                                                                                |
+| `»» queue_size`                       | integer                                                                                                | false    |              |                                                                                                                                                                                                                                                |
 | `»» started_at`                       | string(date-time)                                                                                      | false    |              |                                                                                                                                                                                                                                                |
 | `»» status`                           | [codersdk.ProvisionerJobStatus](schemas.md#codersdkprovisionerjobstatus)                               | false    |              |                                                                                                                                                                                                                                                |
 | `»» tags`                             | object                                                                                                 | false    |              |                                                                                                                                                                                                                                                |
@@ -1059,10 +1109,14 @@ Status Code **200**
 | `»»» created_at`                      | string(date-time)                                                                                      | false    |              |                                                                                                                                                                                                                                                |
 | `»»» directory`                       | string                                                                                                 | false    |              |                                                                                                                                                                                                                                                |
 | `»»» disconnected_at`                 | string(date-time)                                                                                      | false    |              |                                                                                                                                                                                                                                                |
+| `»»» display_apps`                    | array                                                                                                  | false    |              |                                                                                                                                                                                                                                                |
 | `»»» environment_variables`           | object                                                                                                 | false    |              |                                                                                                                                                                                                                                                |
 | `»»»» [any property]`                 | string                                                                                                 | false    |              |                                                                                                                                                                                                                                                |
 | `»»» expanded_directory`              | string                                                                                                 | false    |              |                                                                                                                                                                                                                                                |
 | `»»» first_connected_at`              | string(date-time)                                                                                      | false    |              |                                                                                                                                                                                                                                                |
+| `»»» health`                          | [codersdk.WorkspaceAgentHealth](schemas.md#codersdkworkspaceagenthealth)                               | false    |              | Health reports the health of the agent.                                                                                                                                                                                                        |
+| `»»»» healthy`                        | boolean                                                                                                | false    |              | Healthy is true if the agent is healthy.                                                                                                                                                                                                       |
+| `»»»» reason`                         | string                                                                                                 | false    |              | Reason is a human-readable explanation of the agent's health. It is empty if Healthy is true.                                                                                                                                                  |
 | `»»» id`                              | string(uuid)                                                                                           | false    |              |                                                                                                                                                                                                                                                |
 | `»»» instance_id`                     | string                                                                                                 | false    |              |                                                                                                                                                                                                                                                |
 | `»»» last_connected_at`               | string(date-time)                                                                                      | false    |              |                                                                                                                                                                                                                                                |
@@ -1072,18 +1126,20 @@ Status Code **200**
 | `»»»»» preferred`                     | boolean                                                                                                | false    |              |                                                                                                                                                                                                                                                |
 | `»»» lifecycle_state`                 | [codersdk.WorkspaceAgentLifecycle](schemas.md#codersdkworkspaceagentlifecycle)                         | false    |              |                                                                                                                                                                                                                                                |
 | `»»» login_before_ready`              | boolean                                                                                                | false    |              | Deprecated: Use StartupScriptBehavior instead.                                                                                                                                                                                                 |
+| `»»» logs_length`                     | integer                                                                                                | false    |              |                                                                                                                                                                                                                                                |
+| `»»» logs_overflowed`                 | boolean                                                                                                | false    |              |                                                                                                                                                                                                                                                |
 | `»»» name`                            | string                                                                                                 | false    |              |                                                                                                                                                                                                                                                |
 | `»»» operating_system`                | string                                                                                                 | false    |              |                                                                                                                                                                                                                                                |
+| `»»» ready_at`                        | string(date-time)                                                                                      | false    |              |                                                                                                                                                                                                                                                |
 | `»»» resource_id`                     | string(uuid)                                                                                           | false    |              |                                                                                                                                                                                                                                                |
 | `»»» shutdown_script`                 | string                                                                                                 | false    |              |                                                                                                                                                                                                                                                |
 | `»»» shutdown_script_timeout_seconds` | integer                                                                                                | false    |              |                                                                                                                                                                                                                                                |
-| `»»» startup_logs_length`             | integer                                                                                                | false    |              |                                                                                                                                                                                                                                                |
-| `»»» startup_logs_overflowed`         | boolean                                                                                                | false    |              |                                                                                                                                                                                                                                                |
+| `»»» started_at`                      | string(date-time)                                                                                      | false    |              |                                                                                                                                                                                                                                                |
 | `»»» startup_script`                  | string                                                                                                 | false    |              |                                                                                                                                                                                                                                                |
 | `»»» startup_script_behavior`         | [codersdk.WorkspaceAgentStartupScriptBehavior](schemas.md#codersdkworkspaceagentstartupscriptbehavior) | false    |              |                                                                                                                                                                                                                                                |
 | `»»» startup_script_timeout_seconds`  | integer                                                                                                | false    |              | »»startup script timeout seconds is the number of seconds to wait for the startup script to complete. If the script does not complete within this time, the agent lifecycle will be marked as start_timeout.                                   |
 | `»»» status`                          | [codersdk.WorkspaceAgentStatus](schemas.md#codersdkworkspaceagentstatus)                               | false    |              |                                                                                                                                                                                                                                                |
-| `»»» subsystem`                       | [codersdk.AgentSubsystem](schemas.md#codersdkagentsubsystem)                                           | false    |              |                                                                                                                                                                                                                                                |
+| `»»» subsystems`                      | array                                                                                                  | false    |              |                                                                                                                                                                                                                                                |
 | `»»» troubleshooting_url`             | string                                                                                                 | false    |              |                                                                                                                                                                                                                                                |
 | `»»» updated_at`                      | string(date-time)                                                                                      | false    |              |                                                                                                                                                                                                                                                |
 | `»»» version`                         | string                                                                                                 | false    |              |                                                                                                                                                                                                                                                |
@@ -1114,7 +1170,6 @@ Status Code **200**
 
 | Property                  | Value                         |
 | ------------------------- | ----------------------------- |
-| `error_code`              | `MISSING_TEMPLATE_PARAMETER`  |
 | `error_code`              | `REQUIRED_TEMPLATE_VARIABLES` |
 | `status`                  | `pending`                     |
 | `status`                  | `running`                     |
@@ -1147,7 +1202,6 @@ Status Code **200**
 | `status`                  | `connected`                   |
 | `status`                  | `disconnected`                |
 | `status`                  | `timeout`                     |
-| `subsystem`               | `envbox`                      |
 | `workspace_transition`    | `start`                       |
 | `workspace_transition`    | `stop`                        |
 | `workspace_transition`    | `delete`                      |
@@ -1225,9 +1279,11 @@ curl -X POST http://coder-server:8080/api/v2/workspaces/{workspace}/builds \
     "completed_at": "2019-08-24T14:15:22Z",
     "created_at": "2019-08-24T14:15:22Z",
     "error": "string",
-    "error_code": "MISSING_TEMPLATE_PARAMETER",
+    "error_code": "REQUIRED_TEMPLATE_VARIABLES",
     "file_id": "8a0cfb4f-ddc9-436d-91bb-75133c583767",
     "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
+    "queue_position": 0,
+    "queue_size": 0,
     "started_at": "2019-08-24T14:15:22Z",
     "status": "pending",
     "tags": {
@@ -1266,12 +1322,17 @@ curl -X POST http://coder-server:8080/api/v2/workspaces/{workspace}/builds \
           "created_at": "2019-08-24T14:15:22Z",
           "directory": "string",
           "disconnected_at": "2019-08-24T14:15:22Z",
+          "display_apps": ["vscode"],
           "environment_variables": {
             "property1": "string",
             "property2": "string"
           },
           "expanded_directory": "string",
           "first_connected_at": "2019-08-24T14:15:22Z",
+          "health": {
+            "healthy": false,
+            "reason": "agent has lost connection"
+          },
           "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
           "instance_id": "string",
           "last_connected_at": "2019-08-24T14:15:22Z",
@@ -1287,18 +1348,20 @@ curl -X POST http://coder-server:8080/api/v2/workspaces/{workspace}/builds \
           },
           "lifecycle_state": "created",
           "login_before_ready": true,
+          "logs_length": 0,
+          "logs_overflowed": true,
           "name": "string",
           "operating_system": "string",
+          "ready_at": "2019-08-24T14:15:22Z",
           "resource_id": "4d5215ed-38bb-48ed-879a-fdb9ca58522f",
           "shutdown_script": "string",
           "shutdown_script_timeout_seconds": 0,
-          "startup_logs_length": 0,
-          "startup_logs_overflowed": true,
+          "started_at": "2019-08-24T14:15:22Z",
           "startup_script": "string",
           "startup_script_behavior": "blocking",
           "startup_script_timeout_seconds": 0,
           "status": "connecting",
-          "subsystem": "envbox",
+          "subsystems": ["envbox"],
           "troubleshooting_url": "string",
           "updated_at": "2019-08-24T14:15:22Z",
           "version": "string"

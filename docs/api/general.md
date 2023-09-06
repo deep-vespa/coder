@@ -167,6 +167,8 @@ curl -X GET http://coder-server:8080/api/v2/deployment/config \
     },
     "derp": {
       "config": {
+        "block_direct": true,
+        "force_websockets": true,
         "path": "string",
         "url": "string"
       },
@@ -195,12 +197,30 @@ curl -X GET http://coder-server:8080/api/v2/deployment/config \
     "disable_password_auth": true,
     "disable_path_apps": true,
     "disable_session_expiry_refresh": true,
+    "docs_url": {
+      "forceQuery": true,
+      "fragment": "string",
+      "host": "string",
+      "omitHost": true,
+      "opaque": "string",
+      "path": "string",
+      "rawFragment": "string",
+      "rawPath": "string",
+      "rawQuery": "string",
+      "scheme": "string",
+      "user": {}
+    },
+    "enable_terraform_debug_mode": true,
     "experiments": ["string"],
     "git_auth": {
       "value": [
         {
+          "app_install_url": "string",
+          "app_installations_url": "string",
           "auth_url": "string",
           "client_id": "string",
+          "device_code_url": "string",
+          "device_flow": true,
           "id": "string",
           "no_refresh": true,
           "regex": "string",
@@ -213,9 +233,11 @@ curl -X GET http://coder-server:8080/api/v2/deployment/config \
     },
     "http_address": "string",
     "in_memory_database": true,
+    "job_hang_detector_interval": 0,
     "logging": {
       "human": "string",
       "json": "string",
+      "log_filter": ["string"],
       "stackdriver": "string"
     },
     "max_session_expiry": 0,
@@ -235,11 +257,15 @@ curl -X GET http://coder-server:8080/api/v2/deployment/config \
     "oidc": {
       "allow_signups": true,
       "auth_url_params": {},
+      "client_cert_file": "string",
       "client_id": "string",
+      "client_key_file": "string",
       "client_secret": "string",
       "email_domain": ["string"],
       "email_field": "string",
+      "group_auto_create": true,
       "group_mapping": {},
+      "group_regex_filter": {},
       "groups_field": "string",
       "icon_url": {
         "forceQuery": true,
@@ -259,6 +285,9 @@ curl -X GET http://coder-server:8080/api/v2/deployment/config \
       "issuer_url": "string",
       "scopes": ["string"],
       "sign_in_text": "string",
+      "user_role_field": "string",
+      "user_role_mapping": {},
+      "user_roles_default": ["string"],
       "username_field": "string"
     },
     "pg_connection_url": "string",
@@ -275,12 +304,15 @@ curl -X GET http://coder-server:8080/api/v2/deployment/config \
         "port": "string"
       },
       "collect_agent_stats": true,
+      "collect_db_metrics": true,
       "enable": true
     },
     "provisioner": {
       "daemon_poll_interval": 0,
       "daemon_poll_jitter": 0,
+      "daemon_psk": "string",
       "daemons": 0,
+      "daemons_echo": true,
       "force_cancel_interval": 0
     },
     "proxy_health_status_interval": 0,
@@ -344,10 +376,14 @@ curl -X GET http://coder-server:8080/api/v2/deployment/config \
     },
     "trace": {
       "capture_logs": true,
+      "data_dog": true,
       "enable": true,
       "honeycomb_api_key": "string"
     },
     "update_check": true,
+    "user_quiet_hours_schedule": {
+      "default_schedule": "string"
+    },
     "verbose": true,
     "wgtunnel_host": "string",
     "wildcard_access_url": {
@@ -389,6 +425,7 @@ curl -X GET http://coder-server:8080/api/v2/deployment/config \
       },
       "hidden": true,
       "name": "string",
+      "required": true,
       "use_instead": [{}],
       "value": null,
       "value_source": "",

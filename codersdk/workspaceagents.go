@@ -11,6 +11,7 @@ import (
 	"net/http/cookiejar"
 	"net/netip"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,8 +20,8 @@ import (
 	"tailscale.com/tailcfg"
 
 	"cdr.dev/slog"
-	"github.com/coder/coder/coderd/tracing"
-	"github.com/coder/coder/tailnet"
+	"github.com/coder/coder/v2/coderd/tracing"
+	"github.com/coder/coder/v2/tailnet"
 	"github.com/coder/retry"
 )
 
@@ -39,10 +40,6 @@ const (
 // The agent lifecycle starts in the "created" state, and transitions to
 // "starting" when the agent reports it has begun preparing (e.g. started
 // executing the startup script).
-//
-// Note that states are not guaranteed to be reported, for instance the agent
-// may go from "created" to "ready" without reporting "starting", if it had
-// trouble connecting on startup.
 type WorkspaceAgentLifecycle string
 
 // WorkspaceAgentLifecycle enums.
@@ -57,6 +54,27 @@ const (
 	WorkspaceAgentLifecycleShutdownError   WorkspaceAgentLifecycle = "shutdown_error"
 	WorkspaceAgentLifecycleOff             WorkspaceAgentLifecycle = "off"
 )
+
+// Starting returns true if the agent is in the process of starting.
+func (l WorkspaceAgentLifecycle) Starting() bool {
+	switch l {
+	case WorkspaceAgentLifecycleCreated, WorkspaceAgentLifecycleStarting, WorkspaceAgentLifecycleStartTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
+// ShuttingDown returns true if the agent is in the process of shutting
+// down or has shut down.
+func (l WorkspaceAgentLifecycle) ShuttingDown() bool {
+	switch l {
+	case WorkspaceAgentLifecycleShuttingDown, WorkspaceAgentLifecycleShutdownTimeout, WorkspaceAgentLifecycleShutdownError, WorkspaceAgentLifecycleOff:
+		return true
+	default:
+		return false
+	}
+}
 
 // WorkspaceAgentLifecycleOrder is the order in which workspace agent
 // lifecycle states are expected to be reported during the lifetime of
@@ -115,40 +133,58 @@ type WorkspaceAgentMetadata struct {
 	Description WorkspaceAgentMetadataDescription `json:"description"`
 }
 
+type DisplayApp string
+
+const (
+	DisplayAppVSCodeDesktop  DisplayApp = "vscode"
+	DisplayAppVSCodeInsiders DisplayApp = "vscode_insiders"
+	DisplayAppWebTerminal    DisplayApp = "web_terminal"
+	DisplayAppPortForward    DisplayApp = "port_forwarding_helper"
+	DisplayAppSSH            DisplayApp = "ssh_helper"
+)
+
 type WorkspaceAgent struct {
-	ID                    uuid.UUID               `json:"id" format:"uuid"`
-	CreatedAt             time.Time               `json:"created_at" format:"date-time"`
-	UpdatedAt             time.Time               `json:"updated_at" format:"date-time"`
-	FirstConnectedAt      *time.Time              `json:"first_connected_at,omitempty" format:"date-time"`
-	LastConnectedAt       *time.Time              `json:"last_connected_at,omitempty" format:"date-time"`
-	DisconnectedAt        *time.Time              `json:"disconnected_at,omitempty" format:"date-time"`
-	Status                WorkspaceAgentStatus    `json:"status"`
-	LifecycleState        WorkspaceAgentLifecycle `json:"lifecycle_state"`
-	Name                  string                  `json:"name"`
-	ResourceID            uuid.UUID               `json:"resource_id" format:"uuid"`
-	InstanceID            string                  `json:"instance_id,omitempty"`
-	Architecture          string                  `json:"architecture"`
-	EnvironmentVariables  map[string]string       `json:"environment_variables"`
-	OperatingSystem       string                  `json:"operating_system"`
-	StartupScript         string                  `json:"startup_script,omitempty"`
-	StartupLogsLength     int32                   `json:"startup_logs_length"`
-	StartupLogsOverflowed bool                    `json:"startup_logs_overflowed"`
-	Directory             string                  `json:"directory,omitempty"`
-	ExpandedDirectory     string                  `json:"expanded_directory,omitempty"`
-	Version               string                  `json:"version"`
-	Apps                  []WorkspaceApp          `json:"apps"`
+	ID                          uuid.UUID                           `json:"id" format:"uuid"`
+	CreatedAt                   time.Time                           `json:"created_at" format:"date-time"`
+	UpdatedAt                   time.Time                           `json:"updated_at" format:"date-time"`
+	FirstConnectedAt            *time.Time                          `json:"first_connected_at,omitempty" format:"date-time"`
+	LastConnectedAt             *time.Time                          `json:"last_connected_at,omitempty" format:"date-time"`
+	DisconnectedAt              *time.Time                          `json:"disconnected_at,omitempty" format:"date-time"`
+	StartedAt                   *time.Time                          `json:"started_at,omitempty" format:"date-time"`
+	ReadyAt                     *time.Time                          `json:"ready_at,omitempty" format:"date-time"`
+	Status                      WorkspaceAgentStatus                `json:"status"`
+	LifecycleState              WorkspaceAgentLifecycle             `json:"lifecycle_state"`
+	Name                        string                              `json:"name"`
+	ResourceID                  uuid.UUID                           `json:"resource_id" format:"uuid"`
+	InstanceID                  string                              `json:"instance_id,omitempty"`
+	Architecture                string                              `json:"architecture"`
+	EnvironmentVariables        map[string]string                   `json:"environment_variables"`
+	OperatingSystem             string                              `json:"operating_system"`
+	StartupScript               string                              `json:"startup_script,omitempty"`
+	StartupScriptBehavior       WorkspaceAgentStartupScriptBehavior `json:"startup_script_behavior"`
+	StartupScriptTimeoutSeconds int32                               `json:"startup_script_timeout_seconds"` // StartupScriptTimeoutSeconds is the number of seconds to wait for the startup script to complete. If the script does not complete within this time, the agent lifecycle will be marked as start_timeout.
+	LogsLength                  int32                               `json:"logs_length"`
+	LogsOverflowed              bool                                `json:"logs_overflowed"`
+	Directory                   string                              `json:"directory,omitempty"`
+	ExpandedDirectory           string                              `json:"expanded_directory,omitempty"`
+	Version                     string                              `json:"version"`
+	Apps                        []WorkspaceApp                      `json:"apps"`
 	// DERPLatency is mapped by region name (e.g. "New York City", "Seattle").
 	DERPLatency              map[string]DERPRegion `json:"latency,omitempty"`
 	ConnectionTimeoutSeconds int32                 `json:"connection_timeout_seconds"`
 	TroubleshootingURL       string                `json:"troubleshooting_url"`
 	// Deprecated: Use StartupScriptBehavior instead.
-	LoginBeforeReady      bool                                `json:"login_before_ready"`
-	StartupScriptBehavior WorkspaceAgentStartupScriptBehavior `json:"startup_script_behavior"`
-	// StartupScriptTimeoutSeconds is the number of seconds to wait for the startup script to complete. If the script does not complete within this time, the agent lifecycle will be marked as start_timeout.
-	StartupScriptTimeoutSeconds  int32          `json:"startup_script_timeout_seconds"`
-	ShutdownScript               string         `json:"shutdown_script,omitempty"`
-	ShutdownScriptTimeoutSeconds int32          `json:"shutdown_script_timeout_seconds"`
-	Subsystem                    AgentSubsystem `json:"subsystem"`
+	LoginBeforeReady             bool                 `json:"login_before_ready"`
+	ShutdownScript               string               `json:"shutdown_script,omitempty"`
+	ShutdownScriptTimeoutSeconds int32                `json:"shutdown_script_timeout_seconds"`
+	Subsystems                   []AgentSubsystem     `json:"subsystems"`
+	Health                       WorkspaceAgentHealth `json:"health"` // Health reports the health of the agent.
+	DisplayApps                  []DisplayApp         `json:"display_apps"`
+}
+
+type WorkspaceAgentHealth struct {
+	Healthy bool   `json:"healthy" example:"false"`                              // Healthy is true if the agent is healthy.
+	Reason  string `json:"reason,omitempty" example:"agent has lost connection"` // Reason is a human-readable explanation of the agent's health. It is empty if Healthy is true.
 }
 
 type DERPRegion struct {
@@ -160,13 +196,44 @@ type DERPRegion struct {
 // a connection with a workspace.
 // @typescript-ignore WorkspaceAgentConnectionInfo
 type WorkspaceAgentConnectionInfo struct {
-	DERPMap *tailcfg.DERPMap `json:"derp_map"`
+	DERPMap                  *tailcfg.DERPMap `json:"derp_map"`
+	DERPForceWebSockets      bool             `json:"derp_force_websockets"`
+	DisableDirectConnections bool             `json:"disable_direct_connections"`
+}
+
+func (c *Client) WorkspaceAgentConnectionInfoGeneric(ctx context.Context) (WorkspaceAgentConnectionInfo, error) {
+	res, err := c.Request(ctx, http.MethodGet, "/api/v2/workspaceagents/connection", nil)
+	if err != nil {
+		return WorkspaceAgentConnectionInfo{}, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return WorkspaceAgentConnectionInfo{}, ReadBodyAsError(res)
+	}
+
+	var connInfo WorkspaceAgentConnectionInfo
+	return connInfo, json.NewDecoder(res.Body).Decode(&connInfo)
+}
+
+func (c *Client) WorkspaceAgentConnectionInfo(ctx context.Context, agentID uuid.UUID) (WorkspaceAgentConnectionInfo, error) {
+	res, err := c.Request(ctx, http.MethodGet, fmt.Sprintf("/api/v2/workspaceagents/%s/connection", agentID), nil)
+	if err != nil {
+		return WorkspaceAgentConnectionInfo{}, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return WorkspaceAgentConnectionInfo{}, ReadBodyAsError(res)
+	}
+
+	var connInfo WorkspaceAgentConnectionInfo
+	return connInfo, json.NewDecoder(res.Body).Decode(&connInfo)
 }
 
 // @typescript-ignore DialWorkspaceAgentOptions
 type DialWorkspaceAgentOptions struct {
 	Logger slog.Logger
-	// BlockEndpoints forced a direct connection through DERP.
+	// BlockEndpoints forced a direct connection through DERP. The Client may
+	// have DisableDirect set which will override this value.
 	BlockEndpoints bool
 }
 
@@ -174,18 +241,13 @@ func (c *Client) DialWorkspaceAgent(ctx context.Context, agentID uuid.UUID, opti
 	if options == nil {
 		options = &DialWorkspaceAgentOptions{}
 	}
-	res, err := c.Request(ctx, http.MethodGet, fmt.Sprintf("/api/v2/workspaceagents/%s/connection", agentID), nil)
+
+	connInfo, err := c.WorkspaceAgentConnectionInfo(ctx, agentID)
 	if err != nil {
-		return nil, err
+		return nil, xerrors.Errorf("get connection info: %w", err)
 	}
-	defer res.Body.Close()
-	if res.StatusCode != http.StatusOK {
-		return nil, ReadBodyAsError(res)
-	}
-	var connInfo WorkspaceAgentConnectionInfo
-	err = json.NewDecoder(res.Body).Decode(&connInfo)
-	if err != nil {
-		return nil, xerrors.Errorf("decode conn info: %w", err)
+	if connInfo.DisableDirectConnections {
+		options.BlockEndpoints = true
 	}
 
 	ip := tailnet.IP()
@@ -197,11 +259,12 @@ func (c *Client) DialWorkspaceAgent(ctx context.Context, agentID uuid.UUID, opti
 		header = headerTransport.Header()
 	}
 	conn, err := tailnet.NewConn(&tailnet.Options{
-		Addresses:      []netip.Prefix{netip.PrefixFrom(ip, 128)},
-		DERPMap:        connInfo.DERPMap,
-		DERPHeader:     &header,
-		Logger:         options.Logger,
-		BlockEndpoints: options.BlockEndpoints,
+		Addresses:           []netip.Prefix{netip.PrefixFrom(ip, 128)},
+		DERPMap:             connInfo.DERPMap,
+		DERPHeader:          &header,
+		DERPForceWebSockets: connInfo.DERPForceWebSockets,
+		Logger:              options.Logger,
+		BlockEndpoints:      c.DisableDirectConnections || options.BlockEndpoints,
 	})
 	if err != nil {
 		return nil, xerrors.Errorf("create tailnet: %w", err)
@@ -212,43 +275,44 @@ func (c *Client) DialWorkspaceAgent(ctx context.Context, agentID uuid.UUID, opti
 		}
 	}()
 
-	coordinateURL, err := c.URL.Parse(fmt.Sprintf("/api/v2/workspaceagents/%s/coordinate", agentID))
-	if err != nil {
-		return nil, xerrors.Errorf("parse url: %w", err)
-	}
-	coordinateHeaders := make(http.Header)
+	headers := make(http.Header)
 	tokenHeader := SessionTokenHeader
 	if c.SessionTokenHeader != "" {
 		tokenHeader = c.SessionTokenHeader
 	}
-	coordinateHeaders.Set(tokenHeader, c.SessionToken())
+	headers.Set(tokenHeader, c.SessionToken())
 	ctx, cancel := context.WithCancel(ctx)
 	defer func() {
 		if err != nil {
 			cancel()
 		}
 	}()
-	closed := make(chan struct{})
-	first := make(chan error)
+
+	coordinateURL, err := c.URL.Parse(fmt.Sprintf("/api/v2/workspaceagents/%s/coordinate", agentID))
+	if err != nil {
+		return nil, xerrors.Errorf("parse url: %w", err)
+	}
+	closedCoordinator := make(chan struct{})
+	firstCoordinator := make(chan error)
 	go func() {
-		defer close(closed)
+		defer close(closedCoordinator)
 		isFirst := true
 		for retrier := retry.New(50*time.Millisecond, 10*time.Second); retrier.Wait(ctx); {
 			options.Logger.Debug(ctx, "connecting")
 			// nolint:bodyclose
 			ws, res, err := websocket.Dial(ctx, coordinateURL.String(), &websocket.DialOptions{
 				HTTPClient: c.HTTPClient,
-				HTTPHeader: coordinateHeaders,
+				HTTPHeader: headers,
 				// Need to disable compression to avoid a data-race.
 				CompressionMode: websocket.CompressionDisabled,
 			})
 			if isFirst {
 				if res != nil && res.StatusCode == http.StatusConflict {
-					first <- ReadBodyAsError(res)
+					firstCoordinator <- ReadBodyAsError(res)
 					return
 				}
 				isFirst = false
-				close(first)
+				close(firstCoordinator)
 			}
 			if err != nil {
 				if errors.Is(err, context.Canceled) {
@@ -257,8 +321,8 @@ func (c *Client) DialWorkspaceAgent(ctx context.Context, agentID uuid.UUID, opti
 				options.Logger.Debug(ctx, "failed to dial", slog.Error(err))
 				continue
 			}
-			sendNode, errChan := tailnet.ServeCoordinator(websocket.NetConn(ctx, ws, websocket.MessageBinary), func(node []*tailnet.Node) error {
-				return conn.UpdateNodes(node, false)
+			sendNode, errChan := tailnet.ServeCoordinator(websocket.NetConn(ctx, ws, websocket.MessageBinary), func(nodes []*tailnet.Node) error {
+				return conn.UpdateNodes(nodes, false)
 			})
 			conn.SetNodeCallback(sendNode)
 			options.Logger.Debug(ctx, "serving coordinator")
@@ -275,18 +339,90 @@ func (c *Client) DialWorkspaceAgent(ctx context.Context, agentID uuid.UUID, opti
 			_ = ws.Close(websocket.StatusGoingAway, "")
 		}
 	}()
-	err = <-first
+
+	derpMapURL, err := c.URL.Parse("/api/v2/derp-map")
+	if err != nil {
+		return nil, xerrors.Errorf("parse url: %w", err)
+	}
+	closedDerpMap := make(chan struct{})
+	firstDerpMap := make(chan error)
+	go func() {
+		defer close(closedDerpMap)
+		isFirst := true
+		for retrier := retry.New(50*time.Millisecond, 10*time.Second); retrier.Wait(ctx); {
+			options.Logger.Debug(ctx, "connecting to server for derp map updates")
+			// nolint:bodyclose
+			ws, res, err := websocket.Dial(ctx, derpMapURL.String(), &websocket.DialOptions{
+				HTTPClient: c.HTTPClient,
+				HTTPHeader: headers,
+				// Need to disable compression to avoid a data-race.
+				CompressionMode: websocket.CompressionDisabled,
+			})
+			if isFirst {
+				if res != nil && res.StatusCode == http.StatusConflict {
+					firstDerpMap <- ReadBodyAsError(res)
+					return
+				}
+				isFirst = false
+				close(firstDerpMap)
+			}
+			if err != nil {
+				if errors.Is(err, context.Canceled) {
+					return
+				}
+				options.Logger.Debug(ctx, "failed to dial", slog.Error(err))
+				continue
+			}
+
+			var (
+				nconn = websocket.NetConn(ctx, ws, websocket.MessageBinary)
+				dec   = json.NewDecoder(nconn)
+			)
+			for {
+				var derpMap tailcfg.DERPMap
+				err := dec.Decode(&derpMap)
+				if xerrors.Is(err, context.Canceled) {
+					_ = ws.Close(websocket.StatusGoingAway, "")
+					return
+				}
+				if err != nil {
+					options.Logger.Debug(ctx, "failed to decode derp map", slog.Error(err))
+					_ = ws.Close(websocket.StatusGoingAway, "")
+					return
+				}
+
+				if !tailnet.CompareDERPMaps(conn.DERPMap(), &derpMap) {
+					options.Logger.Debug(ctx, "updating derp map due to detected changes")
+					conn.SetDERPMap(&derpMap)
+				}
+			}
+		}
+	}()
+
+	err = <-firstCoordinator
+	if err != nil {
+		return nil, err
+	}
+	err = <-firstDerpMap
 	if err != nil {
 		return nil, err
 	}
 
-	agentConn = &WorkspaceAgentConn{
-		Conn: conn,
-		CloseFunc: func() {
+	agentConn = NewWorkspaceAgentConn(conn, WorkspaceAgentConnOptions{
+		AgentID: agentID,
+		// Newer agents will listen on two IPs: WorkspaceAgentIP and an IP
+		// derived from the agents UUID. We need to use the legacy
+		// WorkspaceAgentIP here since we don't know if the agent is listening
+		// on the new IP.
+		AgentIP: WorkspaceAgentIP,
+		CloseFunc: func() error {
 			cancel()
-			<-closed
+			<-closedCoordinator
+			<-closedDerpMap
+			return conn.Close()
 		},
-	}
+	})
+
 	if !agentConn.AwaitReachable(ctx) {
 		_ = agentConn.Close()
 		return nil, xerrors.Errorf("timed out waiting for agent to become reachable: %w", ctx.Err())
@@ -504,20 +640,52 @@ func (c *Client) WorkspaceAgentListeningPorts(ctx context.Context, agentID uuid.
 	return listeningPorts, json.NewDecoder(res.Body).Decode(&listeningPorts)
 }
 
-func (c *Client) WorkspaceAgentStartupLogsAfter(ctx context.Context, agentID uuid.UUID, after int64) (<-chan []WorkspaceAgentStartupLog, io.Closer, error) {
-	afterQuery := ""
+//nolint:revive // Follow is a control flag on the server as well.
+func (c *Client) WorkspaceAgentLogsAfter(ctx context.Context, agentID uuid.UUID, after int64, follow bool) (<-chan []WorkspaceAgentLog, io.Closer, error) {
+	var queryParams []string
 	if after != 0 {
-		afterQuery = fmt.Sprintf("&after=%d", after)
+		queryParams = append(queryParams, fmt.Sprintf("after=%d", after))
 	}
-	followURL, err := c.URL.Parse(fmt.Sprintf("/api/v2/workspaceagents/%s/startup-logs?follow%s", agentID, afterQuery))
+	if follow {
+		queryParams = append(queryParams, "follow")
+	}
+	var query string
+	if len(queryParams) > 0 {
+		query = "?" + strings.Join(queryParams, "&")
+	}
+	reqURL, err := c.URL.Parse(fmt.Sprintf("/api/v2/workspaceagents/%s/logs%s", agentID, query))
 	if err != nil {
 		return nil, nil, err
 	}
+
+	if !follow {
+		resp, err := c.Request(ctx, http.MethodGet, reqURL.String(), nil)
+		if err != nil {
+			return nil, nil, xerrors.Errorf("execute request: %w", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, nil, ReadBodyAsError(resp)
+		}
+
+		var logs []WorkspaceAgentLog
+		err = json.NewDecoder(resp.Body).Decode(&logs)
+		if err != nil {
+			return nil, nil, xerrors.Errorf("decode startup logs: %w", err)
+		}
+
+		ch := make(chan []WorkspaceAgentLog, 1)
+		ch <- logs
+		close(ch)
+		return ch, closeFunc(func() error { return nil }), nil
+	}
+
 	jar, err := cookiejar.New(nil)
 	if err != nil {
 		return nil, nil, xerrors.Errorf("create cookie jar: %w", err)
 	}
-	jar.SetCookies(followURL, []*http.Cookie{{
+	jar.SetCookies(reqURL, []*http.Cookie{{
 		Name:  SessionTokenCookie,
 		Value: c.SessionToken(),
 	}})
@@ -525,7 +693,7 @@ func (c *Client) WorkspaceAgentStartupLogsAfter(ctx context.Context, agentID uui
 		Jar:       jar,
 		Transport: c.HTTPClient.Transport,
 	}
-	conn, res, err := websocket.Dial(ctx, followURL.String(), &websocket.DialOptions{
+	conn, res, err := websocket.Dial(ctx, reqURL.String(), &websocket.DialOptions{
 		HTTPClient:      httpClient,
 		CompressionMode: websocket.CompressionDisabled,
 	})
@@ -535,7 +703,7 @@ func (c *Client) WorkspaceAgentStartupLogsAfter(ctx context.Context, agentID uui
 		}
 		return nil, nil, ReadBodyAsError(res)
 	}
-	logChunks := make(chan []WorkspaceAgentStartupLog)
+	logChunks := make(chan []WorkspaceAgentLog)
 	closed := make(chan struct{})
 	ctx, wsNetConn := websocketNetConn(ctx, conn, websocket.MessageText)
 	decoder := json.NewDecoder(wsNetConn)
@@ -543,8 +711,8 @@ func (c *Client) WorkspaceAgentStartupLogsAfter(ctx context.Context, agentID uui
 		defer close(closed)
 		defer close(logChunks)
 		defer conn.Close(websocket.StatusGoingAway, "")
-		var logs []WorkspaceAgentStartupLog
 		for {
+			var logs []WorkspaceAgentLog
 			err = decoder.Decode(&logs)
 			if err != nil {
 				return
@@ -589,7 +757,7 @@ const (
 	GitProviderBitBucket   GitProvider = "bitbucket"
 )
 
-type WorkspaceAgentStartupLog struct {
+type WorkspaceAgentLog struct {
 	ID        int64     `json:"id"`
 	CreatedAt time.Time `json:"created_at" format:"date-time"`
 	Output    string    `json:"output"`
@@ -599,5 +767,27 @@ type WorkspaceAgentStartupLog struct {
 type AgentSubsystem string
 
 const (
-	AgentSubsystemEnvbox AgentSubsystem = "envbox"
+	AgentSubsystemEnvbox     AgentSubsystem = "envbox"
+	AgentSubsystemEnvbuilder AgentSubsystem = "envbuilder"
+	AgentSubsystemExectrace  AgentSubsystem = "exectrace"
+)
+
+func (s AgentSubsystem) Valid() bool {
+	switch s {
+	case AgentSubsystemEnvbox, AgentSubsystemEnvbuilder, AgentSubsystemExectrace:
+		return true
+	default:
+		return false
+	}
+}
+
+type WorkspaceAgentLogSource string
+
+const (
+	WorkspaceAgentLogSourceStartupScript  WorkspaceAgentLogSource = "startup_script"
+	WorkspaceAgentLogSourceShutdownScript WorkspaceAgentLogSource = "shutdown_script"
+	WorkspaceAgentLogSourceKubernetes     WorkspaceAgentLogSource = "kubernetes"
+	WorkspaceAgentLogSourceEnvbox         WorkspaceAgentLogSource = "envbox"
+	WorkspaceAgentLogSourceEnvbuilder     WorkspaceAgentLogSource = "envbuilder"
+	WorkspaceAgentLogSourceExternal       WorkspaceAgentLogSource = "external"
 )

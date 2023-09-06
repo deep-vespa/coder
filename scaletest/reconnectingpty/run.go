@@ -13,10 +13,10 @@ import (
 
 	"cdr.dev/slog"
 	"cdr.dev/slog/sloggers/sloghuman"
-	"github.com/coder/coder/coderd/tracing"
-	"github.com/coder/coder/codersdk"
-	"github.com/coder/coder/scaletest/harness"
-	"github.com/coder/coder/scaletest/loadtestutil"
+	"github.com/coder/coder/v2/coderd/tracing"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/scaletest/harness"
+	"github.com/coder/coder/v2/scaletest/loadtestutil"
 )
 
 type Runner struct {
@@ -40,8 +40,8 @@ func (r *Runner) Run(ctx context.Context, _ string, logs io.Writer) error {
 
 	logs = loadtestutil.NewSyncWriter(logs)
 	logger := slog.Make(sloghuman.Sink(logs)).Leveled(slog.LevelDebug)
-	r.client.Logger = logger
-	r.client.LogBodies = true
+	r.client.SetLogger(logger)
+	r.client.SetLogBodies(true)
 
 	var (
 		id     = r.cfg.Init.ID

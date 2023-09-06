@@ -17,10 +17,10 @@ import (
 	"golang.org/x/xerrors"
 
 	"cdr.dev/slog"
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/coderd/database/dbauthz"
-	"github.com/coder/coder/coderd/prometheusmetrics"
-	"github.com/coder/coder/codersdk"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/database/dbauthz"
+	"github.com/coder/coder/v2/coderd/prometheusmetrics"
+	"github.com/coder/coder/v2/codersdk"
 )
 
 type Status string
@@ -171,6 +171,11 @@ func (p *ProxyHealth) ForceUpdate(ctx context.Context) error {
 // HealthStatus returns the current health status of all proxies stored in the
 // cache.
 func (p *ProxyHealth) HealthStatus() map[uuid.UUID]ProxyStatus {
+	if p == nil {
+		// This can happen because workspace proxies are still an experiment.
+		// For the /regions endpoint, this will be nil in those cases.
+		return map[uuid.UUID]ProxyStatus{}
+	}
 	ptr := p.cache.Load()
 	if ptr == nil {
 		return map[uuid.UUID]ProxyStatus{}
