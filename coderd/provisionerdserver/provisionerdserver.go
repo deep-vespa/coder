@@ -11,7 +11,6 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -32,7 +31,7 @@ import (
 	"github.com/coder/coder/v2/coderd/database/dbauthz"
 	"github.com/coder/coder/v2/coderd/database/dbtime"
 	"github.com/coder/coder/v2/coderd/database/pubsub"
-	"github.com/coder/coder/v2/coderd/gitauth"
+	"github.com/coder/coder/v2/coderd/externalauth"
 	"github.com/coder/coder/v2/coderd/httpmw"
 	"github.com/coder/coder/v2/coderd/schedule"
 	"github.com/coder/coder/v2/coderd/telemetry"
@@ -44,27 +43,34 @@ import (
 	sdkproto "github.com/coder/coder/v2/provisionersdk/proto"
 )
 
-var (
-	lastAcquire      time.Time
-	lastAcquireMutex sync.RWMutex
-)
+// DefaultAcquireJobLongPollDur is the time the (deprecated) AcquireJob rpc waits to try to obtain a job before
+// canceling and returning an empty job.
+const DefaultAcquireJobLongPollDur = time.Second * 5
 
 type Options struct {
-	OIDCConfig     httpmw.OAuth2Config
-	GitAuthConfigs []*gitauth.Config
+	OIDCConfig          httpmw.OAuth2Config
+	ExternalAuthConfigs []*externalauth.Config
 	// TimeNowFn is only used in tests
 	TimeNowFn func() time.Time
+
+	// AcquireJobLongPollDur is used in tests
+	AcquireJobLongPollDur time.Duration
 }
 
 type server struct {
+	// lifecycleCtx must be tied to the API server's lifecycle
+	// as when the API server shuts down, we want to cancel any
+	// long-running operations.
+	lifecycleCtx                context.Context
 	AccessURL                   *url.URL
 	ID                          uuid.UUID
 	Logger                      slog.Logger
 	Provisioners                []database.ProvisionerType
-	GitAuthConfigs              []*gitauth.Config
-	Tags                        json.RawMessage
+	ExternalAuthConfigs         []*externalauth.Config
+	Tags                        Tags
 	Database                    database.Store
 	Pubsub                      pubsub.Pubsub
+	Acquirer                    *Acquirer
 	Telemetry                   telemetry.Reporter
 	Tracer                      trace.Tracer
 	QuotaCommitter              *atomic.Pointer[proto.QuotaCommitter]
@@ -73,20 +79,47 @@ type server struct {
 	UserQuietHoursScheduleStore *atomic.Pointer[schedule.UserQuietHoursScheduleStore]
 	DeploymentValues            *codersdk.DeploymentValues
 
-	AcquireJobDebounce time.Duration
-	OIDCConfig         httpmw.OAuth2Config
+	OIDCConfig httpmw.OAuth2Config
 
 	TimeNowFn func() time.Time
+
+	acquireJobLongPollDur time.Duration
+}
+
+// We use the null byte (0x00) in generating a canonical map key for tags, so
+// it cannot be used in the tag keys or values.
+
+var ErrorTagsContainNullByte = xerrors.New("tags cannot contain the null byte (0x00)")
+
+type Tags map[string]string
+
+func (t Tags) ToJSON() (json.RawMessage, error) {
+	r, err := json.Marshal(t)
+	if err != nil {
+		return nil, err
+	}
+	return r, err
+}
+
+func (t Tags) Valid() error {
+	for k, v := range t {
+		if slices.Contains([]byte(k), 0x00) || slices.Contains([]byte(v), 0x00) {
+			return ErrorTagsContainNullByte
+		}
+	}
+	return nil
 }
 
 func NewServer(
+	lifecycleCtx context.Context,
 	accessURL *url.URL,
 	id uuid.UUID,
 	logger slog.Logger,
 	provisioners []database.ProvisionerType,
-	tags json.RawMessage,
+	tags Tags,
 	db database.Store,
 	ps pubsub.Pubsub,
+	acquirer *Acquirer,
 	tel telemetry.Reporter,
 	tracer trace.Tracer,
 	quotaCommitter *atomic.Pointer[proto.QuotaCommitter],
@@ -94,10 +127,12 @@ func NewServer(
 	templateScheduleStore *atomic.Pointer[schedule.TemplateScheduleStore],
 	userQuietHoursScheduleStore *atomic.Pointer[schedule.UserQuietHoursScheduleStore],
 	deploymentValues *codersdk.DeploymentValues,
-	acquireJobDebounce time.Duration,
 	options Options,
 ) (proto.DRPCProvisionerDaemonServer, error) {
-	// Panic early if pointers are nil
+	// Fail-fast if pointers are nil
+	if lifecycleCtx == nil {
+		return nil, xerrors.New("ctx is nil")
+	}
 	if quotaCommitter == nil {
 		return nil, xerrors.New("quotaCommitter is nil")
 	}
@@ -113,15 +148,29 @@ func NewServer(
 	if deploymentValues == nil {
 		return nil, xerrors.New("deploymentValues is nil")
 	}
+	if acquirer == nil {
+		return nil, xerrors.New("acquirer is nil")
+	}
+	if tags == nil {
+		return nil, xerrors.Errorf("tags is nil")
+	}
+	if err := tags.Valid(); err != nil {
+		return nil, xerrors.Errorf("invalid tags: %w", err)
+	}
+	if options.AcquireJobLongPollDur == 0 {
+		options.AcquireJobLongPollDur = DefaultAcquireJobLongPollDur
+	}
 	return &server{
+		lifecycleCtx:                lifecycleCtx,
 		AccessURL:                   accessURL,
 		ID:                          id,
 		Logger:                      logger,
 		Provisioners:                provisioners,
-		GitAuthConfigs:              options.GitAuthConfigs,
+		ExternalAuthConfigs:         options.ExternalAuthConfigs,
 		Tags:                        tags,
 		Database:                    db,
 		Pubsub:                      ps,
+		Acquirer:                    acquirer,
 		Telemetry:                   tel,
 		Tracer:                      tracer,
 		QuotaCommitter:              quotaCommitter,
@@ -129,9 +178,9 @@ func NewServer(
 		TemplateScheduleStore:       templateScheduleStore,
 		UserQuietHoursScheduleStore: userQuietHoursScheduleStore,
 		DeploymentValues:            deploymentValues,
-		AcquireJobDebounce:          acquireJobDebounce,
 		OIDCConfig:                  options.OIDCConfig,
 		TimeNowFn:                   options.TimeNowFn,
+		acquireJobLongPollDur:       options.AcquireJobLongPollDur,
 	}, nil
 }
 
@@ -145,50 +194,122 @@ func (s *server) timeNow() time.Time {
 }
 
 // AcquireJob queries the database to lock a job.
+//
+// Deprecated: This method is only available for back-level provisioner daemons.
 func (s *server) AcquireJob(ctx context.Context, _ *proto.Empty) (*proto.AcquiredJob, error) {
 	//nolint:gocritic // Provisionerd has specific authz rules.
 	ctx = dbauthz.AsProvisionerd(ctx)
-	// This prevents loads of provisioner daemons from consistently
-	// querying the database when no jobs are available.
-	//
-	// The debounce only occurs when no job is returned, so if loads of
-	// jobs are added at once, they will start after at most this duration.
-	lastAcquireMutex.RLock()
-	if !lastAcquire.IsZero() && time.Since(lastAcquire) < s.AcquireJobDebounce {
-		s.Logger.Debug(ctx, "debounce acquire job", slog.F("debounce", s.AcquireJobDebounce), slog.F("last_acquire", lastAcquire))
-		lastAcquireMutex.RUnlock()
-		return &proto.AcquiredJob{}, nil
-	}
-	lastAcquireMutex.RUnlock()
-	// This marks the job as locked in the database.
-	job, err := s.Database.AcquireProvisionerJob(ctx, database.AcquireProvisionerJobParams{
-		StartedAt: sql.NullTime{
-			Time:  dbtime.Now(),
-			Valid: true,
-		},
-		WorkerID: uuid.NullUUID{
-			UUID:  s.ID,
-			Valid: true,
-		},
-		Types: s.Provisioners,
-		Tags:  s.Tags,
-	})
-	if errors.Is(err, sql.ErrNoRows) {
-		// The provisioner daemon assumes no jobs are available if
-		// an empty struct is returned.
-		lastAcquireMutex.Lock()
-		lastAcquire = dbtime.Now()
-		lastAcquireMutex.Unlock()
+	// Since AcquireJob blocks until a job is available, we set a long (5s by default) timeout.  This allows back-level
+	// provisioner daemons to gracefully shut down within a few seconds, but keeps them from rapidly polling the
+	// database.
+	acqCtx, acqCancel := context.WithTimeout(ctx, s.acquireJobLongPollDur)
+	defer acqCancel()
+	job, err := s.Acquirer.AcquireJob(acqCtx, s.ID, s.Provisioners, s.Tags)
+	if xerrors.Is(err, context.DeadlineExceeded) {
+		s.Logger.Debug(ctx, "successful cancel")
 		return &proto.AcquiredJob{}, nil
 	}
 	if err != nil {
 		return nil, xerrors.Errorf("acquire job: %w", err)
 	}
 	s.Logger.Debug(ctx, "locked job from database", slog.F("job_id", job.ID))
+	return s.acquireProtoJob(ctx, job)
+}
 
+type jobAndErr struct {
+	job database.ProvisionerJob
+	err error
+}
+
+// AcquireJobWithCancel queries the database to lock a job.
+func (s *server) AcquireJobWithCancel(stream proto.DRPCProvisionerDaemon_AcquireJobWithCancelStream) (retErr error) {
+	//nolint:gocritic // Provisionerd has specific authz rules.
+	streamCtx := dbauthz.AsProvisionerd(stream.Context())
+	defer func() {
+		closeErr := stream.Close()
+		s.Logger.Debug(streamCtx, "closed stream", slog.Error(closeErr))
+		if retErr == nil {
+			retErr = closeErr
+		}
+	}()
+	acqCtx, acqCancel := context.WithCancel(streamCtx)
+	defer acqCancel()
+	recvCh := make(chan error, 1)
+	go func() {
+		_, err := stream.Recv() // cancel is the only message
+		recvCh <- err
+	}()
+	jec := make(chan jobAndErr, 1)
+	go func() {
+		job, err := s.Acquirer.AcquireJob(acqCtx, s.ID, s.Provisioners, s.Tags)
+		jec <- jobAndErr{job: job, err: err}
+	}()
+	var recvErr error
+	var je jobAndErr
+	select {
+	case recvErr = <-recvCh:
+		acqCancel()
+		je = <-jec
+	case je = <-jec:
+	}
+	if xerrors.Is(je.err, context.Canceled) {
+		s.Logger.Debug(streamCtx, "successful cancel")
+		err := stream.Send(&proto.AcquiredJob{})
+		if err != nil {
+			// often this is just because the other side hangs up and doesn't wait for the cancel, so log at INFO
+			s.Logger.Info(streamCtx, "failed to send empty job", slog.Error(err))
+			return err
+		}
+		return nil
+	}
+	if je.err != nil {
+		return xerrors.Errorf("acquire job: %w", je.err)
+	}
+	logger := s.Logger.With(slog.F("job_id", je.job.ID))
+	logger.Debug(streamCtx, "locked job from database")
+
+	if recvErr != nil {
+		logger.Error(streamCtx, "recv error and failed to cancel acquire job", slog.Error(recvErr))
+		// Well, this is awkward.  We hit an error receiving from the stream, but didn't cancel before we locked a job
+		// in the database.  We need to mark this job as failed so the end user can retry if they want to.
+		now := dbtime.Now()
+		err := s.Database.UpdateProvisionerJobWithCompleteByID(
+			context.Background(),
+			database.UpdateProvisionerJobWithCompleteByIDParams{
+				ID: je.job.ID,
+				CompletedAt: sql.NullTime{
+					Time:  now,
+					Valid: true,
+				},
+				UpdatedAt: now,
+				Error: sql.NullString{
+					String: "connection to provisioner daemon broken",
+					Valid:  true,
+				},
+				ErrorCode: sql.NullString{},
+			})
+		if err != nil {
+			logger.Error(streamCtx, "error updating failed job", slog.Error(err))
+		}
+		return recvErr
+	}
+
+	pj, err := s.acquireProtoJob(streamCtx, je.job)
+	if err != nil {
+		return err
+	}
+	err = stream.Send(pj)
+	if err != nil {
+		s.Logger.Error(streamCtx, "failed to send job", slog.Error(err))
+		return err
+	}
+	return nil
+}
+
+func (s *server) acquireProtoJob(ctx context.Context, job database.ProvisionerJob) (*proto.AcquiredJob, error) {
 	// Marks the acquired job as failed with the error message provided.
 	failJob := func(errorMessage string) error {
-		err = s.Database.UpdateProvisionerJobWithCompleteByID(ctx, database.UpdateProvisionerJobWithCompleteByIDParams{
+		err := s.Database.UpdateProvisionerJobWithCompleteByID(ctx, database.UpdateProvisionerJobWithCompleteByIDParams{
 			ID: job.ID,
 			CompletedAt: sql.NullTime{
 				Time:  dbtime.Now(),
@@ -199,6 +320,7 @@ func (s *server) AcquireJob(ctx context.Context, _ *proto.Empty) (*proto.Acquire
 				Valid:  true,
 			},
 			ErrorCode: job.ErrorCode,
+			UpdatedAt: dbtime.Now(),
 		})
 		if err != nil {
 			return xerrors.Errorf("update provisioner job: %w", err)
@@ -295,9 +417,9 @@ func (s *server) AcquireJob(ctx context.Context, _ *proto.Empty) (*proto.Acquire
 			return nil, failJob(fmt.Sprintf("get workspace build parameters: %s", err))
 		}
 
-		gitAuthProviders := []*sdkproto.GitAuthProvider{}
-		for _, p := range templateVersion.GitAuthProviders {
-			link, err := s.Database.GetGitAuthLink(ctx, database.GetGitAuthLinkParams{
+		externalAuthProviders := []*sdkproto.ExternalAuthProvider{}
+		for _, p := range templateVersion.ExternalAuthProviders {
+			link, err := s.Database.GetExternalAuthLink(ctx, database.GetExternalAuthLinkParams{
 				ProviderID: p,
 				UserID:     owner.ID,
 			})
@@ -305,10 +427,10 @@ func (s *server) AcquireJob(ctx context.Context, _ *proto.Empty) (*proto.Acquire
 				continue
 			}
 			if err != nil {
-				return nil, failJob(fmt.Sprintf("acquire git auth link: %s", err))
+				return nil, failJob(fmt.Sprintf("acquire external auth link: %s", err))
 			}
-			var config *gitauth.Config
-			for _, c := range s.GitAuthConfigs {
+			var config *externalauth.Config
+			for _, c := range s.ExternalAuthConfigs {
 				if c.ID != p {
 					continue
 				}
@@ -317,8 +439,8 @@ func (s *server) AcquireJob(ctx context.Context, _ *proto.Empty) (*proto.Acquire
 			}
 			// We weren't able to find a matching config for the ID!
 			if config == nil {
-				s.Logger.Warn(ctx, "workspace build job is missing git provider",
-					slog.F("git_provider_id", p),
+				s.Logger.Warn(ctx, "workspace build job is missing external auth provider",
+					slog.F("provider_id", p),
 					slog.F("template_version_id", templateVersion.ID),
 					slog.F("workspace_id", workspaceBuild.WorkspaceID))
 				continue
@@ -326,12 +448,12 @@ func (s *server) AcquireJob(ctx context.Context, _ *proto.Empty) (*proto.Acquire
 
 			link, valid, err := config.RefreshToken(ctx, s.Database, link)
 			if err != nil {
-				return nil, failJob(fmt.Sprintf("refresh git auth link %q: %s", p, err))
+				return nil, failJob(fmt.Sprintf("refresh external auth link %q: %s", p, err))
 			}
 			if !valid {
 				continue
 			}
-			gitAuthProviders = append(gitAuthProviders, &sdkproto.GitAuthProvider{
+			externalAuthProviders = append(externalAuthProviders, &sdkproto.ExternalAuthProvider{
 				Id:          p,
 				AccessToken: link.OAuthAccessToken,
 			})
@@ -339,12 +461,12 @@ func (s *server) AcquireJob(ctx context.Context, _ *proto.Empty) (*proto.Acquire
 
 		protoJob.Type = &proto.AcquiredJob_WorkspaceBuild_{
 			WorkspaceBuild: &proto.AcquiredJob_WorkspaceBuild{
-				WorkspaceBuildId:    workspaceBuild.ID.String(),
-				WorkspaceName:       workspace.Name,
-				State:               workspaceBuild.ProvisionerState,
-				RichParameterValues: convertRichParameterValues(workspaceBuildParameters),
-				VariableValues:      asVariableValues(templateVariables),
-				GitAuthProviders:    gitAuthProviders,
+				WorkspaceBuildId:      workspaceBuild.ID.String(),
+				WorkspaceName:         workspace.Name,
+				State:                 workspaceBuild.ProvisionerState,
+				RichParameterValues:   convertRichParameterValues(workspaceBuildParameters),
+				VariableValues:        asVariableValues(templateVariables),
+				ExternalAuthProviders: externalAuthProviders,
 				Metadata: &sdkproto.Metadata{
 					CoderUrl:                      s.AccessURL.String(),
 					WorkspaceTransition:           transition,
@@ -354,6 +476,7 @@ func (s *server) AcquireJob(ctx context.Context, _ *proto.Empty) (*proto.Acquire
 					WorkspaceOwnerOidcAccessToken: workspaceOwnerOIDCAccessToken,
 					WorkspaceId:                   workspace.ID.String(),
 					WorkspaceOwnerId:              owner.ID.String(),
+					TemplateId:                    template.ID.String(),
 					TemplateName:                  template.Name,
 					TemplateVersion:               templateVersion.Name,
 					WorkspaceOwnerSessionToken:    sessionToken,
@@ -541,6 +664,7 @@ func (s *server) UpdateJob(ctx context.Context, request *proto.UpdateJobRequest)
 	}
 
 	if len(request.Logs) > 0 {
+		//nolint:exhaustruct // We append to the additional fields below.
 		insertParams := database.InsertProvisionerJobLogsParams{
 			JobID: parsedID,
 		}
@@ -722,15 +846,22 @@ func (s *server) FailJob(ctx context.Context, failJob *proto.FailedJob) (*proto.
 			}
 
 			if jobType.WorkspaceBuild.State != nil {
-				err = db.UpdateWorkspaceBuildByID(ctx, database.UpdateWorkspaceBuildByIDParams{
+				err = db.UpdateWorkspaceBuildProvisionerStateByID(ctx, database.UpdateWorkspaceBuildProvisionerStateByIDParams{
 					ID:               input.WorkspaceBuildID,
 					UpdatedAt:        dbtime.Now(),
 					ProvisionerState: jobType.WorkspaceBuild.State,
-					Deadline:         build.Deadline,
-					MaxDeadline:      build.MaxDeadline,
 				})
 				if err != nil {
 					return xerrors.Errorf("update workspace build state: %w", err)
+				}
+				err = db.UpdateWorkspaceBuildDeadlineByID(ctx, database.UpdateWorkspaceBuildDeadlineByIDParams{
+					ID:          input.WorkspaceBuildID,
+					UpdatedAt:   dbtime.Now(),
+					Deadline:    build.Deadline,
+					MaxDeadline: build.MaxDeadline,
+				})
+				if err != nil {
+					return xerrors.Errorf("update workspace build deadline: %w", err)
 				}
 			}
 
@@ -781,11 +912,15 @@ func (s *server) FailJob(ctx context.Context, failJob *proto.FailedJob) (*proto.
 					s.Logger.Error(ctx, "marshal workspace resource info for failed job", slog.Error(err))
 				}
 
-				audit.BuildAudit(ctx, &audit.BuildAuditParams[database.WorkspaceBuild]{
+				bag := audit.BaggageFromContext(ctx)
+
+				audit.WorkspaceBuildAudit(ctx, &audit.BuildAuditParams[database.WorkspaceBuild]{
 					Audit:            *auditor,
 					Log:              s.Logger,
 					UserID:           job.InitiatorID,
+					OrganizationID:   workspace.OrganizationID,
 					JobID:            job.ID,
+					IP:               bag.IP,
 					Action:           auditAction,
 					Old:              previousBuild,
 					New:              build,
@@ -910,30 +1045,30 @@ func (s *server) CompleteJob(ctx context.Context, completed *proto.CompletedJob)
 
 		var completedError sql.NullString
 
-		for _, gitAuthProvider := range jobType.TemplateImport.GitAuthProviders {
+		for _, externalAuthProvider := range jobType.TemplateImport.ExternalAuthProviders {
 			contains := false
-			for _, configuredProvider := range s.GitAuthConfigs {
-				if configuredProvider.ID == gitAuthProvider {
+			for _, configuredProvider := range s.ExternalAuthConfigs {
+				if configuredProvider.ID == externalAuthProvider {
 					contains = true
 					break
 				}
 			}
 			if !contains {
 				completedError = sql.NullString{
-					String: fmt.Sprintf("git auth provider %q is not configured", gitAuthProvider),
+					String: fmt.Sprintf("external auth provider %q is not configured", externalAuthProvider),
 					Valid:  true,
 				}
 				break
 			}
 		}
 
-		err = s.Database.UpdateTemplateVersionGitAuthProvidersByJobID(ctx, database.UpdateTemplateVersionGitAuthProvidersByJobIDParams{
-			JobID:            jobID,
-			GitAuthProviders: jobType.TemplateImport.GitAuthProviders,
-			UpdatedAt:        dbtime.Now(),
+		err = s.Database.UpdateTemplateVersionExternalAuthProvidersByJobID(ctx, database.UpdateTemplateVersionExternalAuthProvidersByJobIDParams{
+			JobID:                 jobID,
+			ExternalAuthProviders: jobType.TemplateImport.ExternalAuthProviders,
+			UpdatedAt:             dbtime.Now(),
 		})
 		if err != nil {
-			return nil, xerrors.Errorf("update template version git auth providers: %w", err)
+			return nil, xerrors.Errorf("update template version external auth providers: %w", err)
 		}
 
 		err = s.Database.UpdateProvisionerJobWithCompleteByID(ctx, database.UpdateProvisionerJobWithCompleteByIDParams{
@@ -943,7 +1078,8 @@ func (s *server) CompleteJob(ctx context.Context, completed *proto.CompletedJob)
 				Time:  dbtime.Now(),
 				Valid: true,
 			},
-			Error: completedError,
+			Error:     completedError,
+			ErrorCode: sql.NullString{},
 		})
 		if err != nil {
 			return nil, xerrors.Errorf("update provisioner job: %w", err)
@@ -1000,19 +1136,28 @@ func (s *server) CompleteJob(ctx context.Context, completed *proto.CompletedJob)
 					Time:  dbtime.Now(),
 					Valid: true,
 				},
+				Error:     sql.NullString{},
+				ErrorCode: sql.NullString{},
 			})
 			if err != nil {
 				return xerrors.Errorf("update provisioner job: %w", err)
 			}
-			err = db.UpdateWorkspaceBuildByID(ctx, database.UpdateWorkspaceBuildByIDParams{
+			err = db.UpdateWorkspaceBuildProvisionerStateByID(ctx, database.UpdateWorkspaceBuildProvisionerStateByIDParams{
 				ID:               workspaceBuild.ID,
-				Deadline:         autoStop.Deadline,
-				MaxDeadline:      autoStop.MaxDeadline,
 				ProvisionerState: jobType.WorkspaceBuild.State,
 				UpdatedAt:        now,
 			})
 			if err != nil {
-				return xerrors.Errorf("update workspace build: %w", err)
+				return xerrors.Errorf("update workspace build provisioner state: %w", err)
+			}
+			err = db.UpdateWorkspaceBuildDeadlineByID(ctx, database.UpdateWorkspaceBuildDeadlineByIDParams{
+				ID:          workspaceBuild.ID,
+				Deadline:    autoStop.Deadline,
+				MaxDeadline: autoStop.MaxDeadline,
+				UpdatedAt:   now,
+			})
+			if err != nil {
+				return xerrors.Errorf("update workspace build deadline: %w", err)
 			}
 
 			agentTimeouts := make(map[time.Duration]bool) // A set of agent timeouts.
@@ -1051,16 +1196,28 @@ func (s *server) CompleteJob(ctx context.Context, completed *proto.CompletedJob)
 				}
 				go func() {
 					for _, wait := range updates {
-						// Wait for the next potential timeout to occur. Note that we
-						// can't listen on the context here because we will hang around
-						// after this function has returned. The s also doesn't
-						// have a shutdown signal we can listen to.
-						<-wait
-						if err := s.Pubsub.Publish(codersdk.WorkspaceNotifyChannel(workspaceBuild.WorkspaceID), []byte{}); err != nil {
-							s.Logger.Error(ctx, "workspace notification after agent timeout failed",
+						select {
+						case <-s.lifecycleCtx.Done():
+							// If the server is shutting down, we don't want to wait around.
+							s.Logger.Debug(ctx, "stopping notifications due to server shutdown",
 								slog.F("workspace_build_id", workspaceBuild.ID),
-								slog.Error(err),
 							)
+							return
+						case <-wait:
+							// Wait for the next potential timeout to occur.
+							if err := s.Pubsub.Publish(codersdk.WorkspaceNotifyChannel(workspaceBuild.WorkspaceID), []byte{}); err != nil {
+								if s.lifecycleCtx.Err() != nil {
+									// If the server is shutting down, we don't want to log this error, nor wait around.
+									s.Logger.Debug(ctx, "stopping notifications due to server shutdown",
+										slog.F("workspace_build_id", workspaceBuild.ID),
+									)
+									return
+								}
+								s.Logger.Error(ctx, "workspace notification after agent timeout failed",
+									slog.F("workspace_build_id", workspaceBuild.ID),
+									slog.Error(err),
+								)
+							}
 						}
 					}
 				}()
@@ -1112,11 +1269,15 @@ func (s *server) CompleteJob(ctx context.Context, completed *proto.CompletedJob)
 				s.Logger.Error(ctx, "marshal resource info for successful job", slog.Error(err))
 			}
 
-			audit.BuildAudit(ctx, &audit.BuildAuditParams[database.WorkspaceBuild]{
+			bag := audit.BaggageFromContext(ctx)
+
+			audit.WorkspaceBuildAudit(ctx, &audit.BuildAuditParams[database.WorkspaceBuild]{
 				Audit:            *auditor,
 				Log:              s.Logger,
 				UserID:           job.InitiatorID,
+				OrganizationID:   workspace.OrganizationID,
 				JobID:            job.ID,
+				IP:               bag.IP,
 				Action:           auditAction,
 				Old:              previousBuild,
 				New:              workspaceBuild,
@@ -1149,6 +1310,8 @@ func (s *server) CompleteJob(ctx context.Context, completed *proto.CompletedJob)
 				Time:  dbtime.Now(),
 				Valid: true,
 			},
+			Error:     sql.NullString{},
+			ErrorCode: sql.NullString{},
 		})
 		if err != nil {
 			return nil, xerrors.Errorf("update provisioner job: %w", err)
@@ -1243,39 +1406,25 @@ func InsertWorkspaceResource(ctx context.Context, db database.Store, jobID uuid.
 			}
 		}
 
-		// Set the default in case it was not provided (e.g. echo provider).
-		if prAgent.GetStartupScriptBehavior() == "" {
-			prAgent.StartupScriptBehavior = string(codersdk.WorkspaceAgentStartupScriptBehaviorNonBlocking)
-		}
-
 		agentID := uuid.New()
 		dbAgent, err := db.InsertWorkspaceAgent(ctx, database.InsertWorkspaceAgentParams{
-			ID:                   agentID,
-			CreatedAt:            dbtime.Now(),
-			UpdatedAt:            dbtime.Now(),
-			ResourceID:           resource.ID,
-			Name:                 prAgent.Name,
-			AuthToken:            authToken,
-			AuthInstanceID:       instanceID,
-			Architecture:         prAgent.Architecture,
-			EnvironmentVariables: env,
-			Directory:            prAgent.Directory,
-			OperatingSystem:      prAgent.OperatingSystem,
-			StartupScript: sql.NullString{
-				String: prAgent.StartupScript,
-				Valid:  prAgent.StartupScript != "",
-			},
-			ConnectionTimeoutSeconds:    prAgent.GetConnectionTimeoutSeconds(),
-			TroubleshootingURL:          prAgent.GetTroubleshootingUrl(),
-			MOTDFile:                    prAgent.GetMotdFile(),
-			StartupScriptBehavior:       database.StartupScriptBehavior(prAgent.GetStartupScriptBehavior()),
-			StartupScriptTimeoutSeconds: prAgent.GetStartupScriptTimeoutSeconds(),
-			ShutdownScript: sql.NullString{
-				String: prAgent.ShutdownScript,
-				Valid:  prAgent.ShutdownScript != "",
-			},
-			ShutdownScriptTimeoutSeconds: prAgent.GetShutdownScriptTimeoutSeconds(),
-			DisplayApps:                  convertDisplayApps(prAgent.GetDisplayApps()),
+			ID:                       agentID,
+			CreatedAt:                dbtime.Now(),
+			UpdatedAt:                dbtime.Now(),
+			ResourceID:               resource.ID,
+			Name:                     prAgent.Name,
+			AuthToken:                authToken,
+			AuthInstanceID:           instanceID,
+			Architecture:             prAgent.Architecture,
+			EnvironmentVariables:     env,
+			Directory:                prAgent.Directory,
+			OperatingSystem:          prAgent.OperatingSystem,
+			ConnectionTimeoutSeconds: prAgent.GetConnectionTimeoutSeconds(),
+			TroubleshootingURL:       prAgent.GetTroubleshootingUrl(),
+			MOTDFile:                 prAgent.GetMotdFile(),
+			DisplayApps:              convertDisplayApps(prAgent.GetDisplayApps()),
+			InstanceMetadata:         pqtype.NullRawMessage{},
+			ResourceMetadata:         pqtype.NullRawMessage{},
 		})
 		if err != nil {
 			return xerrors.Errorf("insert agent: %w", err)
@@ -1295,6 +1444,57 @@ func InsertWorkspaceResource(ctx context.Context, db database.Store, jobID uuid.
 			if err != nil {
 				return xerrors.Errorf("insert agent metadata: %w, params: %+v", err, p)
 			}
+		}
+
+		logSourceIDs := make([]uuid.UUID, 0, len(prAgent.Scripts))
+		logSourceDisplayNames := make([]string, 0, len(prAgent.Scripts))
+		logSourceIcons := make([]string, 0, len(prAgent.Scripts))
+		scriptLogPaths := make([]string, 0, len(prAgent.Scripts))
+		scriptSources := make([]string, 0, len(prAgent.Scripts))
+		scriptCron := make([]string, 0, len(prAgent.Scripts))
+		scriptTimeout := make([]int32, 0, len(prAgent.Scripts))
+		scriptStartBlocksLogin := make([]bool, 0, len(prAgent.Scripts))
+		scriptRunOnStart := make([]bool, 0, len(prAgent.Scripts))
+		scriptRunOnStop := make([]bool, 0, len(prAgent.Scripts))
+
+		for _, script := range prAgent.Scripts {
+			logSourceIDs = append(logSourceIDs, uuid.New())
+			logSourceDisplayNames = append(logSourceDisplayNames, script.DisplayName)
+			logSourceIcons = append(logSourceIcons, script.Icon)
+			scriptLogPaths = append(scriptLogPaths, script.LogPath)
+			scriptSources = append(scriptSources, script.Script)
+			scriptCron = append(scriptCron, script.Cron)
+			scriptTimeout = append(scriptTimeout, script.TimeoutSeconds)
+			scriptStartBlocksLogin = append(scriptStartBlocksLogin, script.StartBlocksLogin)
+			scriptRunOnStart = append(scriptRunOnStart, script.RunOnStart)
+			scriptRunOnStop = append(scriptRunOnStop, script.RunOnStop)
+		}
+
+		_, err = db.InsertWorkspaceAgentLogSources(ctx, database.InsertWorkspaceAgentLogSourcesParams{
+			WorkspaceAgentID: agentID,
+			ID:               logSourceIDs,
+			CreatedAt:        dbtime.Now(),
+			DisplayName:      logSourceDisplayNames,
+			Icon:             logSourceIcons,
+		})
+		if err != nil {
+			return xerrors.Errorf("insert agent log sources: %w", err)
+		}
+
+		_, err = db.InsertWorkspaceAgentScripts(ctx, database.InsertWorkspaceAgentScriptsParams{
+			WorkspaceAgentID: agentID,
+			LogSourceID:      logSourceIDs,
+			LogPath:          scriptLogPaths,
+			CreatedAt:        dbtime.Now(),
+			Script:           scriptSources,
+			Cron:             scriptCron,
+			TimeoutSeconds:   scriptTimeout,
+			StartBlocksLogin: scriptStartBlocksLogin,
+			RunOnStart:       scriptRunOnStart,
+			RunOnStop:        scriptRunOnStop,
+		})
+		if err != nil {
+			return xerrors.Errorf("insert agent scripts: %w", err)
 		}
 
 		for _, app := range prAgent.Apps {
@@ -1467,11 +1667,13 @@ func obtainOIDCAccessToken(ctx context.Context, db database.Store, oidcConfig ht
 		link.OAuthExpiry = token.Expiry
 
 		link, err = db.UpdateUserLink(ctx, database.UpdateUserLinkParams{
-			UserID:            userID,
-			LoginType:         database.LoginTypeOIDC,
-			OAuthAccessToken:  link.OAuthAccessToken,
-			OAuthRefreshToken: link.OAuthRefreshToken,
-			OAuthExpiry:       link.OAuthExpiry,
+			UserID:                 userID,
+			LoginType:              database.LoginTypeOIDC,
+			OAuthAccessToken:       link.OAuthAccessToken,
+			OAuthAccessTokenKeyID:  sql.NullString{}, // set by dbcrypt if required
+			OAuthRefreshToken:      link.OAuthRefreshToken,
+			OAuthRefreshTokenKeyID: sql.NullString{}, // set by dbcrypt if required
+			OAuthExpiry:            link.OAuthExpiry,
 		})
 		if err != nil {
 			return "", xerrors.Errorf("update user link: %w", err)

@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/subtle"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -25,11 +24,12 @@ import (
 	"cdr.dev/slog"
 	"github.com/coder/coder/v2/coderd"
 	"github.com/coder/coder/v2/coderd/database"
-	"github.com/coder/coder/v2/coderd/database/dbtime"
 	"github.com/coder/coder/v2/coderd/httpapi"
 	"github.com/coder/coder/v2/coderd/httpmw"
 	"github.com/coder/coder/v2/coderd/provisionerdserver"
 	"github.com/coder/coder/v2/coderd/rbac"
+	"github.com/coder/coder/v2/coderd/telemetry"
+	"github.com/coder/coder/v2/coderd/util/ptr"
 	"github.com/coder/coder/v2/codersdk"
 	"github.com/coder/coder/v2/provisionerd/proto"
 )
@@ -158,6 +158,11 @@ func (api *API) provisionerDaemonServe(rw http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	id, _ := uuid.Parse(r.URL.Query().Get("id"))
+	if id == uuid.Nil {
+		id = uuid.New()
+	}
+
 	provisionersMap := map[codersdk.ProvisionerType]struct{}{}
 	for _, provisioner := range r.URL.Query()["provisioner"] {
 		switch provisioner {
@@ -181,6 +186,15 @@ func (api *API) provisionerDaemonServe(rw http.ResponseWriter, r *http.Request) 
 		return
 	}
 	api.Logger.Debug(ctx, "provisioner authorized", slog.F("tags", tags))
+	if err := provisionerdserver.Tags(tags).Valid(); err != nil {
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: "Given tags are not acceptable to the service",
+			Validations: []codersdk.ValidationError{
+				{Field: "tags", Detail: err.Error()},
+			},
+		})
+		return
+	}
 
 	provisioners := make([]database.ProvisionerType, 0)
 	for p := range provisionersMap {
@@ -198,40 +212,18 @@ func (api *API) provisionerDaemonServe(rw http.ResponseWriter, r *http.Request) 
 		slog.F("provisioners", provisioners),
 		slog.F("tags", tags),
 	)
-	daemon, err := api.Database.InsertProvisionerDaemon(ctx, database.InsertProvisionerDaemonParams{
-		ID:           uuid.New(),
-		CreatedAt:    dbtime.Now(),
-		Name:         name,
-		Provisioners: provisioners,
-		Tags:         tags,
-	})
-	if err != nil {
-		if !xerrors.Is(err, context.Canceled) {
-			log.Error(ctx, "write provisioner daemon", slog.Error(err))
-		}
-		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
-			Message: "Internal error writing provisioner daemon.",
-			Detail:  err.Error(),
-		})
-		return
-	}
-
-	rawTags, err := json.Marshal(daemon.Tags)
-	if err != nil {
-		if !xerrors.Is(err, context.Canceled) {
-			log.Error(ctx, "marshal provisioner tags", slog.Error(err))
-		}
-		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
-			Message: "Internal error marshaling daemon tags.",
-			Detail:  err.Error(),
-		})
-		return
-	}
 
 	api.AGPL.WebsocketWaitMutex.Lock()
 	api.AGPL.WebsocketWaitGroup.Add(1)
 	api.AGPL.WebsocketWaitMutex.Unlock()
 	defer api.AGPL.WebsocketWaitGroup.Done()
+
+	tep := telemetry.ConvertExternalProvisioner(id, tags, provisioners)
+	api.Telemetry.Report(&telemetry.Snapshot{ExternalProvisioners: []telemetry.ExternalProvisioner{tep}})
+	defer func() {
+		tep.ShutdownAt = ptr.Ref(time.Now())
+		api.Telemetry.Report(&telemetry.Snapshot{ExternalProvisioners: []telemetry.ExternalProvisioner{tep}})
+	}()
 
 	conn, err := websocket.Accept(rw, r, &websocket.AcceptOptions{
 		// Need to disable compression to avoid a data-race.
@@ -263,14 +255,18 @@ func (api *API) provisionerDaemonServe(rw http.ResponseWriter, r *http.Request) 
 		return
 	}
 	mux := drpcmux.New()
+	logger := api.Logger.Named(fmt.Sprintf("ext-provisionerd-%s", name))
+	logger.Info(ctx, "starting external provisioner daemon")
 	srv, err := provisionerdserver.NewServer(
+		api.ctx,
 		api.AccessURL,
-		daemon.ID,
-		api.Logger.Named(fmt.Sprintf("provisionerd-%s", daemon.Name)),
-		daemon.Provisioners,
-		rawTags,
+		id,
+		logger,
+		provisioners,
+		tags,
 		api.Database,
 		api.Pubsub,
+		api.AGPL.Acquirer,
 		api.Telemetry,
 		trace.NewNoopTracerProvider().Tracer("noop"),
 		&api.AGPL.QuotaCommitter,
@@ -278,11 +274,9 @@ func (api *API) provisionerDaemonServe(rw http.ResponseWriter, r *http.Request) 
 		api.AGPL.TemplateScheduleStore,
 		api.AGPL.UserQuietHoursScheduleStore,
 		api.DeploymentValues,
-		// TODO(spikecurtis) - fix debounce to not cause flaky tests.
-		time.Duration(0),
 		provisionerdserver.Options{
-			GitAuthConfigs: api.GitAuthConfigs,
-			OIDCConfig:     api.OIDCConfig,
+			ExternalAuthConfigs: api.ExternalAuthConfigs,
+			OIDCConfig:          api.OIDCConfig,
 		},
 	)
 	if err != nil {
@@ -302,12 +296,12 @@ func (api *API) provisionerDaemonServe(rw http.ResponseWriter, r *http.Request) 
 			if xerrors.Is(err, io.EOF) {
 				return
 			}
-			api.Logger.Debug(ctx, "drpc server error", slog.Error(err))
+			logger.Debug(ctx, "drpc server error", slog.Error(err))
 		},
 	})
 	err = server.Serve(ctx, session)
+	logger.Info(ctx, "provisioner daemon disconnected", slog.Error(err))
 	if err != nil && !xerrors.Is(err, io.EOF) {
-		api.Logger.Debug(ctx, "provisioner daemon disconnected", slog.Error(err))
 		_ = conn.Close(websocket.StatusInternalError, httpapi.WebsocketCloseSprintf("serve: %s", err))
 		return
 	}

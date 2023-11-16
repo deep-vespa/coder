@@ -2,7 +2,10 @@
 set -eu
 
 # Coder's automatic install script.
-# See https://github.com/coder/coder#installing-coder
+# See https://github.com/coder/coder#install
+#
+# To run:
+# curl -L https://coder.com/install.sh | sh
 
 usage() {
 	arg0="$0"
@@ -61,6 +64,11 @@ Usage:
 	  just want it on your base system aswell.
 	  This supports most systems, however if you are unsure yours is supported you can check
 	  the link above.
+  --net-admin
+	  Adds \`CAP_NET_ADMIN\` to the installed binary. This allows Coder to
+	  increase network speeds, but has security implications.
+	  See: https://man7.org/linux/man-pages/man7/capabilities.7.html
+	  This only works on Linux based systems.
 
 
 The detection method works as follows:
@@ -100,22 +108,35 @@ echo_standalone_postinstall() {
 
 	cath <<EOF
 
-Standalone release has been installed into $STANDALONE_INSTALL_PREFIX/bin/$STANDALONE_BINARY_NAME
+Coder has been installed to
+
+  $STANDALONE_INSTALL_PREFIX/bin/$STANDALONE_BINARY_NAME
 
 EOF
 
-	if [ "$STANDALONE_INSTALL_PREFIX" != /usr/local ]; then
+	CODER_COMMAND="$(command -v "$STANDALONE_BINARY_NAME" || true)"
+
+	if [ -z "${CODER_COMMAND}" ]; then
 		cath <<EOF
 Extend your path to use Coder:
-PATH="$STANDALONE_INSTALL_PREFIX/bin:\$PATH"
+
+  $ PATH="$STANDALONE_INSTALL_PREFIX/bin:\$PATH"
+
+EOF
+	elif [ "$CODER_COMMAND" != "$STANDALONE_BINARY_LOCATION" ]; then
+		echo_path_conflict "$CODER_COMMAND"
+	else
+		cath <<EOF
+To run a Coder server:
+
+  $ $STANDALONE_BINARY_NAME server
+
+To connect to a Coder deployment:
+
+  $ $STANDALONE_BINARY_NAME login <deployment url>
 
 EOF
 	fi
-	cath <<EOF
-Run Coder:
-  $STANDALONE_BINARY_NAME server
-
-EOF
 }
 
 echo_brew_postinstall() {
@@ -124,9 +145,23 @@ echo_brew_postinstall() {
 		return
 	fi
 
-	cath <<EOF
-brew formula has been installed.
+	BREW_PREFIX="$(brew --prefix)"
 
+	cath <<EOF
+
+Coder has been installed to
+
+  $BREW_PREFIX/bin/coder
+
+EOF
+
+	CODER_COMMAND="$(command -v "coder" || true)"
+
+	if [ "$CODER_COMMAND" != "$BREW_PREFIX/bin/coder" ]; then
+		echo_path_conflict "$CODER_COMMAND"
+	fi
+
+	cath <<EOF
 To run a Coder server:
 
   $ coder server
@@ -157,7 +192,6 @@ To run a Coder server:
   # Or just run the server directly
   $ coder server
 
-  Default URL: http://127.0.0.1:3000
   Configuring Coder: https://coder.com/docs/v2/latest/admin/configure
 
 To connect to a Coder deployment:
@@ -169,18 +203,33 @@ EOF
 
 echo_dryrun_postinstall() {
 	cath <<EOF
-
 Dry-run complete.
 
 To install Coder, re-run this script without the --dry-run flag.
+
+EOF
+}
+
+echo_path_conflict() {
+	cath <<EOF
+There is another binary in your PATH that conflicts with the binary we've installed.
+
+  $1
+
+This is likely because of an existing installation of Coder. See our documentation for suggestions on how to resolve this.
+
+	https://coder.com/docs/v2/latest/install/install.sh#path-conflicts
+
 EOF
 }
 
 main() {
 	TERRAFORM_VERSION="1.3.4"
+
 	if [ "${TRACE-}" ]; then
 		set -x
 	fi
+
 	unset \
 		DRY_RUN \
 		METHOD \
@@ -188,9 +237,12 @@ main() {
 		ALL_FLAGS \
 		RSH_ARGS \
 		EDGE \
-		RSH
+		RSH \
+		WITH_TERRAFORM \
+		CAP_NET_ADMIN
 
 	ALL_FLAGS=""
+
 	while [ "$#" -gt 0 ]; do
 		case "$1" in
 		-*)
@@ -245,7 +297,10 @@ main() {
 			exit 0
 			;;
 		--with-terraform)
-			METHOD=with_terraform
+			WITH_TERRAFORM=1
+			;;
+		--net-admin)
+			CAP_NET_ADMIN=1
 			;;
 		--)
 			shift
@@ -275,8 +330,29 @@ main() {
 		return
 	fi
 
+	# These can be overridden for testing but shouldn't normally be used as it can
+	# result in a broken coder.
+	OS=${OS:-$(os)}
+	ARCH=${ARCH:-$(arch)}
+	TERRAFORM_ARCH=${TERRAFORM_ARCH:-$(terraform_arch)}
+
+	# We can't reasonably support installing specific versions of Coder through
+	# Homebrew, so if we're on macOS and the `--version` flag was set, we should
+	# "detect" standalone to be the appropriate installation method. This check
+	# needs to occur before we set `VERSION` to a default of the latest release.
+	if [ "$OS" = "darwin" ] && [ "${VERSION-}" ]; then
+		METHOD=standalone
+	fi
+
+	# If we've been provided a flag which is specific to the standalone installation
+	# method, we should "detect" standalone to be the appropriate installation method.
+	# This check needs to occur before we set these variables with defaults.
+	if [ "${STANDALONE_INSTALL_PREFIX-}" ] || [ "${STANDALONE_BINARY_NAME-}" ]; then
+		METHOD=standalone
+	fi
+
 	METHOD="${METHOD-detect}"
-	if [ "$METHOD" != detect ] && [ "$METHOD" != with_terraform ] && [ "$METHOD" != standalone ]; then
+	if [ "$METHOD" != detect ] && [ "$METHOD" != standalone ]; then
 		echoerr "Unknown install method \"$METHOD\""
 		echoerr "Run with --help to see usage."
 		exit 1
@@ -285,21 +361,21 @@ main() {
 	# These are used by the various install_* functions that make use of GitHub
 	# releases in order to download and unpack the right release.
 	CACHE_DIR=$(echo_cache_dir)
-	STANDALONE_INSTALL_PREFIX=${STANDALONE_INSTALL_PREFIX:-/usr/local}
 	TERRAFORM_INSTALL_PREFIX=${TERRAFORM_INSTALL_PREFIX:-/usr/local}
+	STANDALONE_INSTALL_PREFIX=${STANDALONE_INSTALL_PREFIX:-/usr/local}
 	STANDALONE_BINARY_NAME=${STANDALONE_BINARY_NAME:-coder}
 	VERSION=${VERSION:-$(echo_latest_version)}
-	# These can be overridden for testing but shouldn't normally be used as it can
-	# result in a broken coder.
-	OS=${OS:-$(os)}
-	ARCH=${ARCH:-$(arch)}
-	TERRAFORM_ARCH=${TERRAFORM_ARCH:-$(terraform_arch)}
 
 	distro_name
 
 	if [ "${DRY_RUN-}" ]; then
 		echoh "Running with --dry-run; the following are the commands that would be run if this were a real installation:"
 		echoh
+	fi
+
+	# Start by installing Terraform, if requested
+	if [ "${WITH_TERRAFORM-}" ]; then
+		with_terraform
 	fi
 
 	# Standalone installs by pulling pre-built releases from GitHub.
@@ -312,10 +388,6 @@ main() {
 			echoerr "Please try again without '--method standalone'"
 			exit 1
 		fi
-	fi
-	if [ "$METHOD" = with_terraform ]; then
-		# Install terraform then continue the script
-		with_terraform
 	fi
 
 	# DISTRO can be overridden for testing but shouldn't normally be used as it
@@ -338,6 +410,26 @@ main() {
 		install_standalone
 		;;
 	esac
+
+	if [ "${CAP_NET_ADMIN:-}" ]; then
+		cap_net_admin
+	fi
+}
+
+cap_net_admin() {
+	if ! command_exists setcap && command_exists capsh; then
+		echo "Package 'libcap' not found. See install instructions for your distro: https://command-not-found.com/setcap"
+		return
+	fi
+
+	# Make sure we'e allowed to add CAP_NET_ADMIN.
+	if sudo_sh_c capsh --has-p=CAP_NET_ADMIN; then
+		sudo_sh_c setcap CAP_NET_ADMIN=+ep "$(command -v coder)" || true
+
+	# Unable to escalate perms, notify the user.
+	else
+		echo "Unable to setcap agent binary. Ensure the root user has CAP_NET_ADMIN permissions."
+	fi
 }
 
 parse_arg() {
@@ -429,7 +521,7 @@ with_terraform() {
 install_macos() {
 	# If there is no `brew` binary available, just default to installing standalone
 	if command_exists brew; then
-		echoh "Installing v$VERSION of the coder formula from coder/coder."
+		echoh "Installing coder with Homebrew from the coder/coder tap."
 		echoh
 
 		sh_c brew install coder/coder/coder
@@ -505,16 +597,16 @@ install_standalone() {
 		"$sh_c" unzip -d "$CACHE_DIR" -o "$CACHE_DIR/coder_${VERSION}_${OS}_${ARCH}.zip"
 	fi
 
-	COPY_LOCATION="$STANDALONE_INSTALL_PREFIX/bin/$STANDALONE_BINARY_NAME"
+	STANDALONE_BINARY_LOCATION="$STANDALONE_INSTALL_PREFIX/bin/$STANDALONE_BINARY_NAME"
 
 	# Remove the file if it already exists to
 	# avoid https://github.com/coder/coder/issues/2086
-	if [ -f "$COPY_LOCATION" ]; then
-		"$sh_c" rm "$COPY_LOCATION"
+	if [ -f "$STANDALONE_BINARY_LOCATION" ]; then
+		"$sh_c" rm "$STANDALONE_BINARY_LOCATION"
 	fi
 
 	# Copy the binary to the correct location.
-	"$sh_c" cp "$CACHE_DIR/coder" "$COPY_LOCATION"
+	"$sh_c" cp "$CACHE_DIR/coder" "$STANDALONE_BINARY_LOCATION"
 
 	echo_standalone_postinstall
 }
@@ -637,10 +729,10 @@ sh_c() {
 sudo_sh_c() {
 	if [ "$(id -u)" = 0 ]; then
 		sh_c "$@"
-	elif command_exists doas; then
-		sh_c "doas $*"
 	elif command_exists sudo; then
 		sh_c "sudo $*"
+	elif command_exists doas; then
+		sh_c "doas $*"
 	elif command_exists su; then
 		sh_c "su - -c '$*'"
 	else

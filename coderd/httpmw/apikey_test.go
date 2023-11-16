@@ -19,8 +19,8 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/coder/coder/v2/coderd/database"
-	"github.com/coder/coder/v2/coderd/database/dbfake"
 	"github.com/coder/coder/v2/coderd/database/dbgen"
+	"github.com/coder/coder/v2/coderd/database/dbmem"
 	"github.com/coder/coder/v2/coderd/database/dbtime"
 	"github.com/coder/coder/v2/coderd/httpapi"
 	"github.com/coder/coder/v2/coderd/httpmw"
@@ -48,7 +48,7 @@ func TestAPIKey(t *testing.T) {
 	t.Run("NoCookie", func(t *testing.T) {
 		t.Parallel()
 		var (
-			db = dbfake.New()
+			db = dbmem.New()
 			r  = httptest.NewRequest("GET", "/", nil)
 			rw = httptest.NewRecorder()
 		)
@@ -64,7 +64,7 @@ func TestAPIKey(t *testing.T) {
 	t.Run("NoCookieRedirects", func(t *testing.T) {
 		t.Parallel()
 		var (
-			db = dbfake.New()
+			db = dbmem.New()
 			r  = httptest.NewRequest("GET", "/", nil)
 			rw = httptest.NewRecorder()
 		)
@@ -83,7 +83,7 @@ func TestAPIKey(t *testing.T) {
 	t.Run("InvalidFormat", func(t *testing.T) {
 		t.Parallel()
 		var (
-			db = dbfake.New()
+			db = dbmem.New()
 			r  = httptest.NewRequest("GET", "/", nil)
 			rw = httptest.NewRecorder()
 		)
@@ -101,7 +101,7 @@ func TestAPIKey(t *testing.T) {
 	t.Run("InvalidIDLength", func(t *testing.T) {
 		t.Parallel()
 		var (
-			db = dbfake.New()
+			db = dbmem.New()
 			r  = httptest.NewRequest("GET", "/", nil)
 			rw = httptest.NewRecorder()
 		)
@@ -119,7 +119,7 @@ func TestAPIKey(t *testing.T) {
 	t.Run("InvalidSecretLength", func(t *testing.T) {
 		t.Parallel()
 		var (
-			db = dbfake.New()
+			db = dbmem.New()
 			r  = httptest.NewRequest("GET", "/", nil)
 			rw = httptest.NewRecorder()
 		)
@@ -137,7 +137,7 @@ func TestAPIKey(t *testing.T) {
 	t.Run("NotFound", func(t *testing.T) {
 		t.Parallel()
 		var (
-			db         = dbfake.New()
+			db         = dbmem.New()
 			id, secret = randomAPIKeyParts()
 			r          = httptest.NewRequest("GET", "/", nil)
 			rw         = httptest.NewRecorder()
@@ -153,10 +153,38 @@ func TestAPIKey(t *testing.T) {
 		require.Equal(t, http.StatusUnauthorized, res.StatusCode)
 	})
 
+	t.Run("UserLinkNotFound", func(t *testing.T) {
+		t.Parallel()
+		var (
+			db   = dbmem.New()
+			r    = httptest.NewRequest("GET", "/", nil)
+			rw   = httptest.NewRecorder()
+			user = dbgen.User(t, db, database.User{
+				LoginType: database.LoginTypeGithub,
+			})
+			// Intentionally not inserting any user link
+			_, token = dbgen.APIKey(t, db, database.APIKey{
+				UserID:    user.ID,
+				LoginType: user.LoginType,
+			})
+		)
+		r.Header.Set(codersdk.SessionTokenHeader, token)
+		httpmw.ExtractAPIKeyMW(httpmw.ExtractAPIKeyConfig{
+			DB:              db,
+			RedirectToLogin: false,
+		})(successHandler).ServeHTTP(rw, r)
+		res := rw.Result()
+		defer res.Body.Close()
+		require.Equal(t, http.StatusUnauthorized, res.StatusCode)
+		var resp codersdk.Response
+		require.NoError(t, json.NewDecoder(res.Body).Decode(&resp))
+		require.Equal(t, resp.Message, httpmw.SignedOutErrorMessage)
+	})
+
 	t.Run("InvalidSecret", func(t *testing.T) {
 		t.Parallel()
 		var (
-			db   = dbfake.New()
+			db   = dbmem.New()
 			r    = httptest.NewRequest("GET", "/", nil)
 			rw   = httptest.NewRecorder()
 			user = dbgen.User(t, db, database.User{})
@@ -181,7 +209,7 @@ func TestAPIKey(t *testing.T) {
 	t.Run("Expired", func(t *testing.T) {
 		t.Parallel()
 		var (
-			db       = dbfake.New()
+			db       = dbmem.New()
 			user     = dbgen.User(t, db, database.User{})
 			_, token = dbgen.APIKey(t, db, database.APIKey{
 				UserID:    user.ID,
@@ -210,7 +238,7 @@ func TestAPIKey(t *testing.T) {
 	t.Run("Valid", func(t *testing.T) {
 		t.Parallel()
 		var (
-			db                = dbfake.New()
+			db                = dbmem.New()
 			user              = dbgen.User(t, db, database.User{})
 			sentAPIKey, token = dbgen.APIKey(t, db, database.APIKey{
 				UserID:    user.ID,
@@ -245,7 +273,7 @@ func TestAPIKey(t *testing.T) {
 	t.Run("ValidWithScope", func(t *testing.T) {
 		t.Parallel()
 		var (
-			db       = dbfake.New()
+			db       = dbmem.New()
 			user     = dbgen.User(t, db, database.User{})
 			_, token = dbgen.APIKey(t, db, database.APIKey{
 				UserID:    user.ID,
@@ -282,7 +310,7 @@ func TestAPIKey(t *testing.T) {
 	t.Run("QueryParameter", func(t *testing.T) {
 		t.Parallel()
 		var (
-			db       = dbfake.New()
+			db       = dbmem.New()
 			user     = dbgen.User(t, db, database.User{})
 			_, token = dbgen.APIKey(t, db, database.APIKey{
 				UserID:    user.ID,
@@ -314,7 +342,7 @@ func TestAPIKey(t *testing.T) {
 	t.Run("ValidUpdateLastUsed", func(t *testing.T) {
 		t.Parallel()
 		var (
-			db                = dbfake.New()
+			db                = dbmem.New()
 			user              = dbgen.User(t, db, database.User{})
 			sentAPIKey, token = dbgen.APIKey(t, db, database.APIKey{
 				UserID:    user.ID,
@@ -345,7 +373,7 @@ func TestAPIKey(t *testing.T) {
 	t.Run("ValidUpdateExpiry", func(t *testing.T) {
 		t.Parallel()
 		var (
-			db                = dbfake.New()
+			db                = dbmem.New()
 			user              = dbgen.User(t, db, database.User{})
 			sentAPIKey, token = dbgen.APIKey(t, db, database.APIKey{
 				UserID:    user.ID,
@@ -376,7 +404,7 @@ func TestAPIKey(t *testing.T) {
 	t.Run("NoRefresh", func(t *testing.T) {
 		t.Parallel()
 		var (
-			db                = dbfake.New()
+			db                = dbmem.New()
 			user              = dbgen.User(t, db, database.User{})
 			sentAPIKey, token = dbgen.APIKey(t, db, database.APIKey{
 				UserID:    user.ID,
@@ -408,7 +436,7 @@ func TestAPIKey(t *testing.T) {
 	t.Run("OAuthNotExpired", func(t *testing.T) {
 		t.Parallel()
 		var (
-			db                = dbfake.New()
+			db                = dbmem.New()
 			user              = dbgen.User(t, db, database.User{})
 			sentAPIKey, token = dbgen.APIKey(t, db, database.APIKey{
 				UserID:    user.ID,
@@ -444,7 +472,7 @@ func TestAPIKey(t *testing.T) {
 	t.Run("OAuthRefresh", func(t *testing.T) {
 		t.Parallel()
 		var (
-			db                = dbfake.New()
+			db                = dbmem.New()
 			user              = dbgen.User(t, db, database.User{})
 			sentAPIKey, token = dbgen.APIKey(t, db, database.APIKey{
 				UserID:    user.ID,
@@ -492,7 +520,7 @@ func TestAPIKey(t *testing.T) {
 	t.Run("RemoteIPUpdates", func(t *testing.T) {
 		t.Parallel()
 		var (
-			db                = dbfake.New()
+			db                = dbmem.New()
 			user              = dbgen.User(t, db, database.User{})
 			sentAPIKey, token = dbgen.APIKey(t, db, database.APIKey{
 				UserID:    user.ID,
@@ -523,7 +551,7 @@ func TestAPIKey(t *testing.T) {
 	t.Run("RedirectToLogin", func(t *testing.T) {
 		t.Parallel()
 		var (
-			db = dbfake.New()
+			db = dbmem.New()
 			r  = httptest.NewRequest("GET", "/", nil)
 			rw = httptest.NewRecorder()
 		)
@@ -544,7 +572,7 @@ func TestAPIKey(t *testing.T) {
 	t.Run("Optional", func(t *testing.T) {
 		t.Parallel()
 		var (
-			db = dbfake.New()
+			db = dbmem.New()
 			r  = httptest.NewRequest("GET", "/", nil)
 			rw = httptest.NewRecorder()
 
@@ -575,7 +603,7 @@ func TestAPIKey(t *testing.T) {
 	t.Run("Tokens", func(t *testing.T) {
 		t.Parallel()
 		var (
-			db                = dbfake.New()
+			db                = dbmem.New()
 			user              = dbgen.User(t, db, database.User{})
 			sentAPIKey, token = dbgen.APIKey(t, db, database.APIKey{
 				UserID:    user.ID,
@@ -608,7 +636,7 @@ func TestAPIKey(t *testing.T) {
 	t.Run("MissongConfig", func(t *testing.T) {
 		t.Parallel()
 		var (
-			db       = dbfake.New()
+			db       = dbmem.New()
 			user     = dbgen.User(t, db, database.User{})
 			_, token = dbgen.APIKey(t, db, database.APIKey{
 				UserID:    user.ID,

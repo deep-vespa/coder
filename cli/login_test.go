@@ -3,10 +3,13 @@ package cli_test
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/coder/pretty"
 
 	"github.com/coder/coder/v2/cli/clitest"
 	"github.com/coder/coder/v2/cli/cliui"
@@ -141,7 +144,7 @@ func TestLogin(t *testing.T) {
 
 		// Validate that we reprompt for matching passwords.
 		pty.ExpectMatch("Passwords do not match")
-		pty.ExpectMatch("Enter a " + cliui.DefaultStyles.Field.Render("password"))
+		pty.ExpectMatch("Enter a " + pretty.Sprint(cliui.DefaultStyles.Field, "password"))
 
 		pty.WriteLine("SomeSecurePassword!")
 		pty.ExpectMatch("Confirm")
@@ -168,6 +171,10 @@ func TestLogin(t *testing.T) {
 
 		pty.ExpectMatch("Paste your token here:")
 		pty.WriteLine(client.SessionToken())
+		if runtime.GOOS != "windows" {
+			// For some reason, the match does not show up on Windows.
+			pty.ExpectMatch(client.SessionToken())
+		}
 		pty.ExpectMatch("Welcome to Coder")
 		<-doneChan
 	})
@@ -191,6 +198,10 @@ func TestLogin(t *testing.T) {
 
 		pty.ExpectMatch("Paste your token here:")
 		pty.WriteLine("an-invalid-token")
+		if runtime.GOOS != "windows" {
+			// For some reason, the match does not show up on Windows.
+			pty.ExpectMatch("an-invalid-token")
+		}
 		pty.ExpectMatch("That's not a valid token!")
 		cancelFunc()
 		<-doneChan

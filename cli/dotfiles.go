@@ -13,6 +13,8 @@ import (
 
 	"golang.org/x/xerrors"
 
+	"github.com/coder/pretty"
+
 	"github.com/coder/coder/v2/cli/clibase"
 	"github.com/coder/coder/v2/cli/cliui"
 )
@@ -20,6 +22,7 @@ import (
 func (r *RootCmd) dotfiles() *clibase.Cmd {
 	var symlinkDir string
 	var gitbranch string
+	var dotfilesRepoDir string
 
 	cmd := &clibase.Cmd{
 		Use:        "dotfiles <git_repo_url>",
@@ -33,11 +36,10 @@ func (r *RootCmd) dotfiles() *clibase.Cmd {
 		),
 		Handler: func(inv *clibase.Invocation) error {
 			var (
-				dotfilesRepoDir = "dotfiles"
-				gitRepo         = inv.Args[0]
-				cfg             = r.createConfig()
-				cfgDir          = string(cfg)
-				dotfilesDir     = filepath.Join(cfgDir, dotfilesRepoDir)
+				gitRepo     = inv.Args[0]
+				cfg         = r.createConfig()
+				cfgDir      = string(cfg)
+				dotfilesDir = filepath.Join(cfgDir, dotfilesRepoDir)
 				// This follows the same pattern outlined by others in the market:
 				// https://github.com/coder/coder/pull/1696#issue-1245742312
 				installScriptSet = []string{
@@ -143,7 +145,7 @@ func (r *RootCmd) dotfiles() *clibase.Cmd {
 					return err
 				}
 				// if the repo exists we soft fail the update operation and try to continue
-				_, _ = fmt.Fprintln(inv.Stdout, cliui.DefaultStyles.Error.Render("Failed to update repo, continuing..."))
+				_, _ = fmt.Fprintln(inv.Stdout, pretty.Sprint(cliui.DefaultStyles.Error, "Failed to update repo, continuing..."))
 			}
 
 			if dotfilesExists && gitbranch != "" {
@@ -159,7 +161,7 @@ func (r *RootCmd) dotfiles() *clibase.Cmd {
 				if err != nil {
 					// Do not block on this error, just log it and continue
 					_, _ = fmt.Fprintln(inv.Stdout,
-						cliui.DefaultStyles.Error.Render(fmt.Sprintf("Failed to use branch %q (%s), continuing...", err.Error(), gitbranch)))
+						pretty.Sprint(cliui.DefaultStyles.Error, fmt.Sprintf("Failed to use branch %q (%s), continuing...", err.Error(), gitbranch)))
 				}
 			}
 
@@ -287,6 +289,13 @@ func (r *RootCmd) dotfiles() *clibase.Cmd {
 			Description: "Specifies which branch to clone. " +
 				"If empty, will default to cloning the default branch or using the existing branch in the cloned repo on disk.",
 			Value: clibase.StringOf(&gitbranch),
+		},
+		{
+			Flag:        "repo-dir",
+			Default:     "dotfiles",
+			Env:         "CODER_DOTFILES_REPO_DIR",
+			Description: "Specifies the directory for the dotfiles repository, relative to global config directory.",
+			Value:       clibase.StringOf(&dotfilesRepoDir),
 		},
 		cliui.SkipPromptOption(),
 	}

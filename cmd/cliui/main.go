@@ -22,16 +22,26 @@ import (
 )
 
 func main() {
-	root := &clibase.Cmd{
+	var root *clibase.Cmd
+	root = &clibase.Cmd{
 		Use:   "cliui",
 		Short: "Used for visually testing UI components for the CLI.",
+		HelpHandler: func(inv *clibase.Invocation) error {
+			_, _ = fmt.Fprintln(inv.Stdout, "This command is used for visually testing UI components for the CLI.")
+			_, _ = fmt.Fprintln(inv.Stdout, "It is not intended to be used by end users.")
+			_, _ = fmt.Fprintln(inv.Stdout, "Subcommands: ")
+			for _, child := range root.Children {
+				_, _ = fmt.Fprintf(inv.Stdout, "- %s\n", child.Use)
+			}
+			return nil
+		},
 	}
 
 	root.Children = append(root.Children, &clibase.Cmd{
 		Use: "prompt",
 		Handler: func(inv *clibase.Invocation) error {
 			_, err := cliui.Prompt(inv, cliui.PromptOptions{
-				Text:    "What is our " + cliui.DefaultStyles.Field.Render("company name") + "?",
+				Text:    "What is our " + cliui.Field("company name") + "?",
 				Default: "acme-corp",
 				Validate: func(s string) error {
 					if !strings.EqualFold(s, "coder") {
@@ -321,17 +331,17 @@ func main() {
 				// Complete the auth!
 				gitlabAuthed.Store(true)
 			}()
-			return cliui.GitAuth(inv.Context(), inv.Stdout, cliui.GitAuthOptions{
-				Fetch: func(ctx context.Context) ([]codersdk.TemplateVersionGitAuth, error) {
+			return cliui.ExternalAuth(inv.Context(), inv.Stdout, cliui.ExternalAuthOptions{
+				Fetch: func(ctx context.Context) ([]codersdk.TemplateVersionExternalAuth, error) {
 					count.Add(1)
-					return []codersdk.TemplateVersionGitAuth{{
+					return []codersdk.TemplateVersionExternalAuth{{
 						ID:              "github",
-						Type:            codersdk.GitProviderGitHub,
+						Type:            codersdk.EnhancedExternalAuthProviderGitHub.String(),
 						Authenticated:   githubAuthed.Load(),
 						AuthenticateURL: "https://example.com/gitauth/github?redirect=" + url.QueryEscape("/gitauth?notify"),
 					}, {
 						ID:              "gitlab",
-						Type:            codersdk.GitProviderGitLab,
+						Type:            codersdk.EnhancedExternalAuthProviderGitLab.String(),
 						Authenticated:   gitlabAuthed.Load(),
 						AuthenticateURL: "https://example.com/gitauth/gitlab?redirect=" + url.QueryEscape("/gitauth?notify"),
 					}}, nil

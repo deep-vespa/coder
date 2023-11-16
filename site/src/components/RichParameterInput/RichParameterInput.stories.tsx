@@ -1,14 +1,14 @@
-import { TemplateVersionParameter } from "api/typesGenerated"
-import { RichParameterInput } from "./RichParameterInput"
-import type { Meta, StoryObj } from "@storybook/react"
+import { TemplateVersionParameter } from "api/typesGenerated";
+import { RichParameterInput } from "./RichParameterInput";
+import type { Meta, StoryObj } from "@storybook/react";
 
 const meta: Meta<typeof RichParameterInput> = {
   title: "components/RichParameterInput",
   component: RichParameterInput,
-}
+};
 
-export default meta
-type Story = StoryObj<typeof RichParameterInput>
+export default meta;
+type Story = StoryObj<typeof RichParameterInput>;
 
 const createTemplateVersionParameter = (
   partial: Partial<TemplateVersionParameter>,
@@ -30,8 +30,8 @@ const createTemplateVersionParameter = (
     required: true,
     ephemeral: false,
     ...partial,
-  }
-}
+  };
+};
 
 export const Basic: Story = {
   args: {
@@ -43,7 +43,7 @@ export const Basic: Story = {
         "Customize the name of a Google Cloud project that will be created!",
     }),
   },
-}
+};
 
 export const NumberType: Story = {
   args: {
@@ -55,7 +55,7 @@ export const NumberType: Story = {
       description: "Numeric parameter",
     }),
   },
-}
+};
 
 export const BooleanType: Story = {
   args: {
@@ -67,9 +67,9 @@ export const BooleanType: Story = {
       description: "Boolean parameter",
     }),
   },
-}
+};
 
-export const OptionsType: Story = {
+export const Options: Story = {
   args: {
     value: "first_option",
     id: "options_parameter",
@@ -81,25 +81,67 @@ export const OptionsType: Story = {
         {
           name: "First option",
           value: "first_option",
-          description: "This is option 1",
-          icon: "",
+          description: "",
+          icon: "/icon/fedora.svg",
         },
         {
           name: "Second option",
           value: "second_option",
-          description: "This is option 2",
+          description: "",
           icon: "/icon/database.svg",
         },
         {
           name: "Third option",
           value: "third_option",
-          description: "This is option 3",
+          description: "",
           icon: "/icon/aws.png",
         },
       ],
     }),
   },
-}
+};
+
+export const OptionsWithDescriptions: Story = {
+  args: {
+    value: "first_option",
+    id: "options_parameter",
+    parameter: createTemplateVersionParameter({
+      name: "options_parameter",
+      type: "string",
+      description: "Parameter with options",
+      options: [
+        {
+          name: "First option",
+          value: "first_option",
+          description: "This is a short description.",
+          icon: "/icon/fedora.svg",
+        },
+        {
+          name: "Second option",
+          value: "second_option",
+          description:
+            "This description is a little bit longer, but still not very long.",
+          icon: "/icon/database.svg",
+        },
+        {
+          name: "Third option",
+          value: "third_option",
+          description: `
+In this description, we will explore the various ways in which this description
+is a big long boy. We'll discuss such things as, lots of words wow it's long, and
+boy howdy that's a number of sentences that this description contains. By the conclusion
+of this essay, I hope to reveal to you, the reader, that this description is just an
+absolute chonker. Just way longer than it actually needs to be. Absolutely massive.
+Very big.
+
+> Wow, that description is straight up large. –Some guy, probably
+`,
+          icon: "/icon/aws.png",
+        },
+      ],
+    }),
+  },
+};
 
 export const ListStringType: Story = {
   args: {
@@ -111,7 +153,7 @@ export const ListStringType: Story = {
       description: "List string parameter",
     }),
   },
-}
+};
 
 export const IconLabel: Story = {
   args: {
@@ -124,7 +166,7 @@ export const IconLabel: Story = {
       icon: "/emojis/1f30e.png",
     }),
   },
-}
+};
 
 export const NoDescription: Story = {
   args: {
@@ -160,7 +202,7 @@ export const NoDescription: Story = {
       ],
     }),
   },
-}
+};
 
 export const DescriptionWithLinks: Story = {
   args: {
@@ -179,7 +221,7 @@ export const DescriptionWithLinks: Story = {
       options: [],
     }),
   },
-}
+};
 
 export const BasicWithDisplayName: Story = {
   args: {
@@ -192,7 +234,7 @@ export const BasicWithDisplayName: Story = {
         "Customize the name of a Google Cloud project that will be created!",
     }),
   },
-}
+};
 
 // Smaller version of the components. Used in popovers.
 
@@ -201,53 +243,60 @@ export const SmallBasic: Story = {
     ...Basic.args,
     size: "small",
   },
-}
+};
 
 export const SmallNumberType: Story = {
   args: {
     ...NumberType.args,
     size: "small",
   },
-}
+};
 
 export const SmallBooleanType: Story = {
   args: {
     ...BooleanType.args,
     size: "small",
   },
-}
+};
 
-export const SmallOptionsType: Story = {
+export const SmallOptions: Story = {
   args: {
-    ...OptionsType.args,
+    ...Options.args,
     size: "small",
   },
-}
+};
+
+export const SmallOptionsWithDescriptions: Story = {
+  args: {
+    ...OptionsWithDescriptions.args,
+    size: "small",
+  },
+};
 
 export const SmallListStringType: Story = {
   args: {
     ...ListStringType.args,
     size: "small",
   },
-}
+};
 
 export const SmallIconLabel: Story = {
   args: {
     ...IconLabel.args,
     size: "small",
   },
-}
+};
 
 export const SmallNoDescription: Story = {
   args: {
     ...NoDescription.args,
     size: "small",
   },
-}
+};
 
 export const SmallBasicWithDisplayName: Story = {
   args: {
     ...BasicWithDisplayName.args,
     size: "small",
   },
-}
+};

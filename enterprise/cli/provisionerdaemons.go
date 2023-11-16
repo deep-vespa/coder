@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"time"
 
+	"github.com/google/uuid"
 	"golang.org/x/xerrors"
 
 	"cdr.dev/slog"
@@ -124,11 +125,13 @@ func (r *RootCmd) provisionerDaemonStart() *clibase.Cmd {
 
 			logger.Info(ctx, "starting provisioner daemon", slog.F("tags", tags))
 
-			provisioners := provisionerd.Provisioners{
+			connector := provisionerd.LocalProvisioners{
 				string(database.ProvisionerTypeTerraform): proto.NewDRPCProvisionerClient(terraformClient),
 			}
+			id := uuid.New()
 			srv := provisionerd.New(func(ctx context.Context) (provisionerdproto.DRPCProvisionerDaemonClient, error) {
 				return client.ServeProvisionerDaemon(ctx, codersdk.ServeProvisionerDaemonRequest{
+					ID: id,
 					Provisioners: []codersdk.ProvisionerType{
 						codersdk.ProvisionerTypeTerraform,
 					},
@@ -136,18 +139,16 @@ func (r *RootCmd) provisionerDaemonStart() *clibase.Cmd {
 					PreSharedKey: preSharedKey,
 				})
 			}, &provisionerd.Options{
-				Logger:          logger,
-				JobPollInterval: pollInterval,
-				JobPollJitter:   pollJitter,
-				UpdateInterval:  500 * time.Millisecond,
-				Provisioners:    provisioners,
+				Logger:         logger,
+				UpdateInterval: 500 * time.Millisecond,
+				Connector:      connector,
 			})
 
 			var exitErr error
 			select {
 			case <-notifyCtx.Done():
 				exitErr = notifyCtx.Err()
-				_, _ = fmt.Fprintln(inv.Stdout, cliui.DefaultStyles.Bold.Render(
+				_, _ = fmt.Fprintln(inv.Stdout, cliui.Bold(
 					"Interrupt caught, gracefully exiting. Use ctrl+\\ to force quit",
 				))
 			case exitErr = <-errCh:
@@ -189,13 +190,13 @@ func (r *RootCmd) provisionerDaemonStart() *clibase.Cmd {
 			Flag:        "poll-interval",
 			Env:         "CODER_PROVISIONERD_POLL_INTERVAL",
 			Default:     time.Second.String(),
-			Description: "How often to poll for provisioner jobs.",
+			Description: "Deprecated and ignored.",
 			Value:       clibase.DurationOf(&pollInterval),
 		},
 		{
 			Flag:        "poll-jitter",
 			Env:         "CODER_PROVISIONERD_POLL_JITTER",
-			Description: "How much to jitter the poll interval by.",
+			Description: "Deprecated and ignored.",
 			Default:     (100 * time.Millisecond).String(),
 			Value:       clibase.DurationOf(&pollJitter),
 		},

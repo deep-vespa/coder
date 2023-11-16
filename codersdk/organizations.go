@@ -89,6 +89,9 @@ type CreateTemplateRequest struct {
 	// AutostopRequirement allows optionally specifying the autostop requirement
 	// for workspaces created from this template. This is an enterprise feature.
 	AutostopRequirement *TemplateAutostopRequirement `json:"autostop_requirement,omitempty"`
+	// AutostartRequirement allows optionally specifying the autostart allowed days
+	// for workspaces created from this template. This is an enterprise feature.
+	AutostartRequirement *TemplateAutostartRequirement `json:"autostart_requirement,omitempty"`
 
 	// Allow users to cancel in-progress workspace jobs.
 	// *bool as the default value is "true".
@@ -121,6 +124,10 @@ type CreateTemplateRequest struct {
 	// and must be explicitly granted to users or groups in the permissions settings
 	// of the template.
 	DisableEveryoneGroupAccess bool `json:"disable_everyone_group_access"`
+
+	// RequireActiveVersion mandates that workspaces are built with the active
+	// template version.
+	RequireActiveVersion bool `json:"require_active_version"`
 }
 
 // CreateWorkspaceRequest provides options for creating a new workspace.
@@ -136,6 +143,7 @@ type CreateWorkspaceRequest struct {
 	// RichParameterValues allows for additional parameters to be provided
 	// during the initial provision.
 	RichParameterValues []WorkspaceBuildParameter `json:"rich_parameter_values,omitempty"`
+	AutomaticUpdates    AutomaticUpdates          `json:"automatic_updates,omitempty"`
 }
 
 func (c *Client) Organization(ctx context.Context, id uuid.UUID) (Organization, error) {
@@ -154,6 +162,9 @@ func (c *Client) Organization(ctx context.Context, id uuid.UUID) (Organization, 
 }
 
 // ProvisionerDaemons returns provisioner daemons available.
+//
+// Deprecated: We no longer track provisioner daemons as they connect.  This function may return historical data
+// but new provisioner daemons will not appear.
 func (c *Client) ProvisionerDaemons(ctx context.Context) ([]ProvisionerDaemon, error) {
 	res, err := c.Request(ctx, http.MethodGet,
 		// TODO: the organization path parameter is currently ignored.

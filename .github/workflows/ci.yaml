@@ -39,7 +39,7 @@ jobs:
       offlinedocs: ${{ steps.filter.outputs.offlinedocs }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 1
       # For pull requests it's not necessary to checkout the code
@@ -53,7 +53,6 @@ jobs:
             docs:
               - "docs/**"
               - "README.md"
-              - "examples/templates/**"
               - "examples/web-server/**"
               - "examples/monitoring/**"
               - "examples/lima/**"
@@ -110,7 +109,7 @@ jobs:
     runs-on: ${{ github.repository_owner == 'coder' && 'buildjet-8vcpu-ubuntu-2204' || 'ubuntu-latest' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
@@ -137,7 +136,7 @@ jobs:
 
       # Check for any typos
       - name: Check for typos
-        uses: crate-ci/typos@v1.16.10
+        uses: crate-ci/typos@v1.16.21
         with:
           config: .github/workflows/typos.toml
 
@@ -165,7 +164,7 @@ jobs:
     if: needs.changes.outputs.docs-only == 'false' || needs.changes.outputs.ci == 'true' || github.ref == 'refs/heads/main'
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
@@ -209,7 +208,7 @@ jobs:
     timeout-minutes: 7
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
@@ -221,10 +220,10 @@ jobs:
         with:
           # This doesn't need caching. It's super fast anyways!
           cache: false
-          go-version: 1.20.7
+          go-version: 1.20.10
 
       - name: Install shfmt
-        run: go install mvdan.cc/sh/v3/cmd/shfmt@v3.5.0
+        run: go install mvdan.cc/sh/v3/cmd/shfmt@v3.7.0
 
       - name: make fmt
         run: |
@@ -235,7 +234,7 @@ jobs:
         run: ./scripts/check_unstaged.sh
 
   test-go:
-    runs-on: ${{ matrix.os == 'ubuntu-latest' && github.repository_owner == 'coder' && 'buildjet-4vcpu-ubuntu-2204' || matrix.os == 'macos-latest' && github.repository_owner == 'coder' && 'macos-latest-xl' || matrix.os == 'windows-2019' && github.repository_owner == 'coder' && 'windows-latest-8-cores' || matrix.os }}
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && github.repository_owner == 'coder' && 'buildjet-4vcpu-ubuntu-2204' || matrix.os == 'macos-latest' && github.repository_owner == 'coder' && 'macos-latest-xlarge' || matrix.os == 'windows-2022' && github.repository_owner == 'coder' && 'windows-latest-16-cores' || matrix.os }}
     needs: changes
     if: needs.changes.outputs.go == 'true' || needs.changes.outputs.ci == 'true' || github.ref == 'refs/heads/main'
     timeout-minutes: 20
@@ -245,10 +244,10 @@ jobs:
         os:
           - ubuntu-latest
           - macos-latest
-          - windows-2019
+          - windows-2022
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
@@ -272,22 +271,29 @@ jobs:
             echo "cover=false" >> $GITHUB_OUTPUT
           fi
 
+          # if macOS, install google-chrome for scaletests. As another concern,
+          # should we really have this kind of external dependency requirement
+          # on standard CI?
+          if [ "${{ matrix.os }}" == "macos-latest" ]; then
+            brew install google-chrome
+          fi
+
           # By default Go will use the number of logical CPUs, which
           # is a fine default.
           PARALLEL_FLAG=""
 
+          # macOS will output "The default interactive shell is now zsh"
+          # intermittently in CI...
+          if [ "${{ matrix.os }}" == "macos-latest" ]; then
+            touch ~/.bash_profile && echo "export BASH_SILENCE_DEPRECATION_WARNING=1" >> ~/.bash_profile
+          fi
           export TS_DEBUG_DISCO=true
           gotestsum --junitfile="gotests.xml" --jsonfile="gotests.json" \
             --packages="./..." -- $PARALLEL_FLAG -short -failfast $COVERAGE_FLAGS
 
-      - name: Print test stats
-        if: success() || failure()
-        run: |
-          # Artifacts are not available after rerunning a job,
-          # so we need to print the test stats to the log.
-          go run ./scripts/ci-report/main.go gotests.json | tee gotests_stats.json
-
       - name: Upload test stats to Datadog
+        timeout-minutes: 1
+        continue-on-error: true
         uses: ./.github/actions/upload-datadog
         if: success() || failure()
         with:
@@ -317,7 +323,7 @@ jobs:
     timeout-minutes: 25
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
@@ -332,14 +338,9 @@ jobs:
           export TS_DEBUG_DISCO=true
           make test-postgres
 
-      - name: Print test stats
-        if: success() || failure()
-        run: |
-          # Artifacts are not available after rerunning a job,
-          # so we need to print the test stats to the log.
-          go run ./scripts/ci-report/main.go gotests.json | tee gotests_stats.json
-
       - name: Upload test stats to Datadog
+        timeout-minutes: 1
+        continue-on-error: true
         uses: ./.github/actions/upload-datadog
         if: success() || failure()
         with:
@@ -365,7 +366,7 @@ jobs:
     timeout-minutes: 25
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
@@ -380,6 +381,8 @@ jobs:
           gotestsum --junitfile="gotests.xml" -- -race ./...
 
       - name: Upload test stats to Datadog
+        timeout-minutes: 1
+        continue-on-error: true
         uses: ./.github/actions/upload-datadog
         if: always()
         with:
@@ -387,7 +390,7 @@ jobs:
 
   deploy:
     name: "deploy"
-    runs-on: ${{ github.repository_owner == 'coder' && 'buildjet-8vcpu-ubuntu-2204' || 'ubuntu-latest' }}
+    runs-on: ${{ github.repository_owner == 'coder' && 'buildjet-16vcpu-ubuntu-2204' || 'ubuntu-latest' }}
     timeout-minutes: 30
     needs: changes
     if: |
@@ -398,7 +401,7 @@ jobs:
       id-token: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -486,7 +489,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
@@ -510,13 +513,13 @@ jobs:
           flags: unittest-js
 
   test-e2e:
-    runs-on: ${{ github.repository_owner == 'coder' && 'buildjet-8vcpu-ubuntu-2204' || 'ubuntu-latest' }}
+    runs-on: ${{ github.repository_owner == 'coder' && 'buildjet-16vcpu-ubuntu-2204' || 'ubuntu-latest' }}
     needs: changes
     if: needs.changes.outputs.go == 'true' || needs.changes.outputs.ts == 'true' || needs.changes.outputs.ci == 'true' || github.ref == 'refs/heads/main'
     timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
@@ -582,7 +585,7 @@ jobs:
     if: needs.changes.outputs.ts == 'true' || needs.changes.outputs.ci == 'true'
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           # Required by Chromatic for build-over-build history, otherwise we
           # only get 1 commit on shallow checkout.
@@ -647,7 +650,7 @@ jobs:
     if: needs.changes.outputs.offlinedocs == 'true' || needs.changes.outputs.ci == 'true'
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           # 0 is required here for version.sh to work.
           fetch-depth: 0
@@ -727,7 +730,7 @@ jobs:
       DOCKER_CLI_EXPERIMENTAL: "enabled"
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -741,7 +744,7 @@ jobs:
         uses: ./.github/actions/setup-sqlc
 
       - name: GHCR Login
-        uses: docker/login-action@v2
+        uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
