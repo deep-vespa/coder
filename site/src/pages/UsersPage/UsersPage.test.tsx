@@ -1,17 +1,17 @@
 import { fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { rest } from "msw";
+import { HttpResponse, http } from "msw";
+import * as API from "api/api";
+import type { Role } from "api/typesGenerated";
 import {
   MockUser,
   MockUser2,
   SuspendedMockUser,
   MockAuditorRole,
 } from "testHelpers/entities";
-import * as API from "api/api";
-import { Role } from "api/typesGenerated";
-import { Language as ResetPasswordDialogLanguage } from "./ResetPasswordDialog";
 import { renderWithAuth } from "testHelpers/renderHelpers";
 import { server } from "testHelpers/server";
+import { Language as ResetPasswordDialogLanguage } from "./ResetPasswordDialog";
 import { UsersPage } from "./UsersPage";
 
 const renderPage = () => {
@@ -21,12 +21,11 @@ const renderPage = () => {
 const suspendUser = async () => {
   const user = userEvent.setup();
   // Get the first user in the table
-  const moreButtons = await screen.findAllByLabelText("more");
+  const moreButtons = await screen.findAllByLabelText("More options");
   const firstMoreButton = moreButtons[0];
   await user.click(firstMoreButton);
 
-  const menu = await screen.findByRole("menu");
-  const suspendButton = within(menu).getByText(/Suspend/);
+  const suspendButton = screen.getByTestId("suspend-button");
   await user.click(suspendButton);
 
   // Check if the confirm message is displayed
@@ -39,22 +38,16 @@ const suspendUser = async () => {
 
 const deleteUser = async () => {
   const user = userEvent.setup();
-  // Click on the "more" button to display the "Delete" option
+  // Click on the "More options" button to display the "Delete" option
   // Needs to await fetching users and fetching permissions, because they're needed to see the more button
-  const moreButtons = await screen.findAllByLabelText("more");
+  const moreButtons = await screen.findAllByLabelText("More options");
   // get MockUser2
   const selectedMoreButton = moreButtons[1];
 
   await user.click(selectedMoreButton);
 
-  const menu = await screen.findByRole("menu");
-  const deleteButton = within(menu).getByText(/Delete/);
-
+  const deleteButton = screen.getByText(/Delete/);
   await user.click(deleteButton);
-
-  // Check if the confirm message is displayed
-  const confirmDialog = await screen.findByRole("dialog");
-  expect(confirmDialog).toHaveTextContent(`Are you sure you want to proceed?`);
 
   // Confirm with text input
   const textField = screen.getByLabelText("Name of the user to delete");
@@ -67,12 +60,11 @@ const deleteUser = async () => {
 };
 
 const activateUser = async () => {
-  const moreButtons = await screen.findAllByLabelText("more");
+  const moreButtons = await screen.findAllByLabelText("More options");
   const suspendedMoreButton = moreButtons[2];
   fireEvent.click(suspendedMoreButton);
 
-  const menu = screen.getByRole("menu");
-  const activateButton = within(menu).getByText(/Activate/);
+  const activateButton = screen.getByText(/Activate/);
   fireEvent.click(activateButton);
 
   // Check if the confirm message is displayed
@@ -86,14 +78,11 @@ const activateUser = async () => {
 };
 
 const resetUserPassword = async (setupActionSpies: () => void) => {
-  const moreButtons = await screen.findAllByLabelText("more");
+  const moreButtons = await screen.findAllByLabelText("More options");
   const firstMoreButton = moreButtons[0];
-
   fireEvent.click(firstMoreButton);
 
-  const menu = screen.getByRole("menu");
-  const resetPasswordButton = within(menu).getByText(/Reset password/);
-
+  const resetPasswordButton = screen.getByText(/Reset password/);
   fireEvent.click(resetPasswordButton);
 
   // Check if the confirm message is displayed
@@ -135,6 +124,8 @@ const updateUserRole = async (role: Role) => {
   };
 };
 
+jest.spyOn(console, "error").mockImplementation(() => {});
+
 describe("UsersPage", () => {
   describe("suspend user", () => {
     describe("when it is success", () => {
@@ -142,12 +133,9 @@ describe("UsersPage", () => {
         renderPage();
 
         server.use(
-          rest.put(
-            `/api/v2/users/${MockUser.id}/status/suspend`,
-            async (req, res, ctx) => {
-              return res(ctx.status(200), ctx.json(SuspendedMockUser));
-            },
-          ),
+          http.put(`/api/v2/users/${MockUser.id}/status/suspend`, async () => {
+            return HttpResponse.json(SuspendedMockUser);
+          }),
         );
 
         await suspendUser();
@@ -162,17 +150,14 @@ describe("UsersPage", () => {
         renderPage();
 
         server.use(
-          rest.put(
-            `/api/v2/users/${MockUser.id}/status/suspend`,
-            async (req, res, ctx) => {
-              return res(
-                ctx.status(400),
-                ctx.json({
-                  message: "Error suspending user.",
-                }),
-              );
-            },
-          ),
+          http.put(`/api/v2/users/${MockUser.id}/status/suspend`, async () => {
+            return HttpResponse.json(
+              {
+                message: "Error suspending user.",
+              },
+              { status: 400 },
+            );
+          }),
         );
 
         await suspendUser();
@@ -189,12 +174,9 @@ describe("UsersPage", () => {
         renderPage();
 
         server.use(
-          rest.delete(
-            `/api/v2/users/${MockUser2.id}`,
-            async (req, res, ctx) => {
-              return res(ctx.status(200), ctx.json(MockUser2));
-            },
-          ),
+          http.delete(`/api/v2/users/${MockUser2.id}`, async () => {
+            return HttpResponse.json(MockUser2);
+          }),
         );
 
         await deleteUser();
@@ -208,17 +190,14 @@ describe("UsersPage", () => {
         renderPage();
 
         server.use(
-          rest.delete(
-            `/api/v2/users/${MockUser2.id}`,
-            async (req, res, ctx) => {
-              return res(
-                ctx.status(400),
-                ctx.json({
-                  message: "Error deleting user.",
-                }),
-              );
-            },
-          ),
+          http.delete(`/api/v2/users/${MockUser2.id}`, async () => {
+            return HttpResponse.json(
+              {
+                message: "Error deleting user.",
+              },
+              { status: 400 },
+            );
+          }),
         );
 
         await deleteUser();
@@ -235,10 +214,10 @@ describe("UsersPage", () => {
         renderPage();
 
         server.use(
-          rest.put(
+          http.put(
             `/api/v2/users/${SuspendedMockUser.id}/status/activate`,
-            async (req, res, ctx) => {
-              return res(ctx.status(200), ctx.json(MockUser));
+            async () => {
+              return HttpResponse.json(MockUser);
             },
           ),
         );
@@ -254,14 +233,14 @@ describe("UsersPage", () => {
         renderPage();
 
         server.use(
-          rest.put(
+          http.put(
             `/api/v2/users/${SuspendedMockUser.id}/status/activate`,
-            async (req, res, ctx) => {
-              return res(
-                ctx.status(400),
-                ctx.json({
+            async () => {
+              return HttpResponse.json(
+                {
                   message: "Error activating user.",
-                }),
+                },
+                { status: 400 },
               );
             },
           ),
@@ -324,18 +303,12 @@ describe("UsersPage", () => {
         renderPage();
 
         server.use(
-          rest.put(
-            `/api/v2/users/${MockUser.id}/roles`,
-            async (req, res, ctx) => {
-              return res(
-                ctx.status(200),
-                ctx.json({
-                  ...MockUser,
-                  roles: [...MockUser.roles, MockAuditorRole],
-                }),
-              );
-            },
-          ),
+          http.put(`/api/v2/users/${MockUser.id}/roles`, async () => {
+            return HttpResponse.json({
+              ...MockUser,
+              roles: [...MockUser.roles, MockAuditorRole],
+            });
+          }),
         );
 
         await updateUserRole(MockAuditorRole);
@@ -349,10 +322,10 @@ describe("UsersPage", () => {
         renderPage();
 
         server.use(
-          rest.put(`/api/v2/users/${MockUser.id}/roles`, (req, res, ctx) => {
-            return res(
-              ctx.status(400),
-              ctx.json({ message: "Error on updating the user roles." }),
+          http.put(`/api/v2/users/${MockUser.id}/roles`, () => {
+            return HttpResponse.json(
+              { message: "Error on updating the user roles." },
+              { status: 400 },
             );
           }),
         );

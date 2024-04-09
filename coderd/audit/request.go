@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"net"
 	"net/http"
@@ -25,6 +26,9 @@ type RequestParams struct {
 	Audit Auditor
 	Log   slog.Logger
 
+	// OrganizationID is only provided when possible. If an audit resource extends
+	// beyond the org scope, leave this as the nil uuid.
+	OrganizationID   uuid.UUID
 	Request          *http.Request
 	Action           database.AuditAction
 	AdditionalFields json.RawMessage
@@ -47,12 +51,12 @@ type Request[T Auditable] struct {
 	Action database.AuditAction
 }
 
-type BuildAuditParams[T Auditable] struct {
+type BackgroundAuditParams[T Auditable] struct {
 	Audit Auditor
 	Log   slog.Logger
 
 	UserID           uuid.UUID
-	JobID            uuid.UUID
+	RequestID        uuid.UUID
 	Status           int
 	Action           database.AuditAction
 	OrganizationID   uuid.UUID
@@ -93,8 +97,14 @@ func ResourceTarget[T Auditable](tgt T) string {
 		return typed.Name
 	case database.AuditOAuthConvertState:
 		return string(typed.ToLoginType)
+	case database.HealthSettings:
+		return "" // no target?
+	case database.OAuth2ProviderApp:
+		return typed.Name
+	case database.OAuth2ProviderAppSecret:
+		return typed.DisplaySecret
 	default:
-		panic(fmt.Sprintf("unknown resource %T", tgt))
+		panic(fmt.Sprintf("unknown resource %T for ResourceTarget", tgt))
 	}
 }
 
@@ -123,8 +133,15 @@ func ResourceID[T Auditable](tgt T) uuid.UUID {
 	case database.AuditOAuthConvertState:
 		// The merge state is for the given user
 		return typed.UserID
+	case database.HealthSettings:
+		// Artificial ID for auditing purposes
+		return typed.ID
+	case database.OAuth2ProviderApp:
+		return typed.ID
+	case database.OAuth2ProviderAppSecret:
+		return typed.ID
 	default:
-		panic(fmt.Sprintf("unknown resource %T", tgt))
+		panic(fmt.Sprintf("unknown resource %T for ResourceID", tgt))
 	}
 }
 
@@ -152,9 +169,68 @@ func ResourceType[T Auditable](tgt T) database.ResourceType {
 		return database.ResourceTypeWorkspaceProxy
 	case database.AuditOAuthConvertState:
 		return database.ResourceTypeConvertLogin
+	case database.HealthSettings:
+		return database.ResourceTypeHealthSettings
+	case database.OAuth2ProviderApp:
+		return database.ResourceTypeOauth2ProviderApp
+	case database.OAuth2ProviderAppSecret:
+		return database.ResourceTypeOauth2ProviderAppSecret
 	default:
-		panic(fmt.Sprintf("unknown resource %T", typed))
+		panic(fmt.Sprintf("unknown resource %T for ResourceType", typed))
 	}
+}
+
+// ResourceRequiresOrgID will ensure given resources are always audited with an
+// organization ID.
+func ResourceRequiresOrgID[T Auditable]() bool {
+	var tgt T
+	switch any(tgt).(type) {
+	case database.Template, database.TemplateVersion:
+		return true
+	case database.Workspace, database.WorkspaceBuild:
+		return true
+	case database.AuditableGroup:
+		return true
+	case database.User:
+		return false
+	case database.GitSSHKey:
+		return false
+	case database.APIKey:
+		return false
+	case database.License:
+		return false
+	case database.WorkspaceProxy:
+		return false
+	case database.AuditOAuthConvertState:
+		// The merge state is for the given user
+		return false
+	case database.HealthSettings:
+		// Artificial ID for auditing purposes
+		return false
+	case database.OAuth2ProviderApp:
+		return false
+	case database.OAuth2ProviderAppSecret:
+		return false
+	default:
+		panic(fmt.Sprintf("unknown resource %T for ResourceRequiresOrgID", tgt))
+	}
+}
+
+// requireOrgID will either panic (in unit tests) or log an error (in production)
+// if the given resource requires an organization ID and the provided ID is nil.
+func requireOrgID[T Auditable](ctx context.Context, id uuid.UUID, log slog.Logger) uuid.UUID {
+	if ResourceRequiresOrgID[T]() && id == uuid.Nil {
+		var tgt T
+		resourceName := fmt.Sprintf("%T", tgt)
+		if flag.Lookup("test.v") != nil {
+			// In unit tests we panic to fail the tests
+			panic(fmt.Sprintf("missing required organization ID for resource %q", resourceName))
+		}
+		log.Error(ctx, "missing required organization ID for resource in audit log",
+			slog.F("resource", resourceName),
+		)
+	}
+	return id
 }
 
 // InitRequest initializes an audit log for a request. It returns a function
@@ -236,6 +312,7 @@ func InitRequest[T Auditable](w http.ResponseWriter, p *RequestParams) (*Request
 			StatusCode:       int32(sw.Status),
 			RequestID:        httpmw.RequestID(p.Request),
 			AdditionalFields: p.AdditionalFields,
+			OrganizationID:   requireOrgID[T](logCtx, p.OrganizationID, p.Log),
 		}
 		err := p.Audit.Export(ctx, auditLog)
 		if err != nil {
@@ -248,9 +325,9 @@ func InitRequest[T Auditable](w http.ResponseWriter, p *RequestParams) (*Request
 	}
 }
 
-// WorkspaceBuildAudit creates an audit log for a workspace build.
+// BackgroundAudit creates an audit log for a background event.
 // The audit log is committed upon invocation.
-func WorkspaceBuildAudit[T Auditable](ctx context.Context, p *BuildAuditParams[T]) {
+func BackgroundAudit[T Auditable](ctx context.Context, p *BackgroundAuditParams[T]) {
 	ip := parseIP(p.IP)
 
 	diff := Diff(p.Audit, p.Old, p.New)
@@ -269,7 +346,7 @@ func WorkspaceBuildAudit[T Auditable](ctx context.Context, p *BuildAuditParams[T
 		ID:               uuid.New(),
 		Time:             dbtime.Now(),
 		UserID:           p.UserID,
-		OrganizationID:   p.OrganizationID,
+		OrganizationID:   requireOrgID[T](ctx, p.OrganizationID, p.Log),
 		Ip:               ip,
 		UserAgent:        sql.NullString{},
 		ResourceType:     either(p.Old, p.New, ResourceType[T], p.Action),
@@ -278,7 +355,7 @@ func WorkspaceBuildAudit[T Auditable](ctx context.Context, p *BuildAuditParams[T
 		Action:           p.Action,
 		Diff:             diffRaw,
 		StatusCode:       int32(p.Status),
-		RequestID:        p.JobID,
+		RequestID:        p.RequestID,
 		AdditionalFields: p.AdditionalFields,
 	}
 	err = p.Audit.Export(ctx, auditLog)
@@ -354,9 +431,8 @@ func either[T Auditable, R any](old, new T, fn func(T) R, auditAction database.A
 		// If the request action is a login or logout, we always want to audit it even if
 		// there is no diff. See the comment in audit.InitRequest for more detail.
 		return fn(old)
-	} else {
-		panic("both old and new are nil")
 	}
+	panic("both old and new are nil")
 }
 
 func parseIP(ipStr string) pqtype.Inet {

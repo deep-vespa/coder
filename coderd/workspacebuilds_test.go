@@ -21,6 +21,7 @@ import (
 	"github.com/coder/coder/v2/coderd/audit"
 	"github.com/coder/coder/v2/coderd/coderdtest"
 	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/database/dbauthz"
 	"github.com/coder/coder/v2/coderd/database/dbtime"
 	"github.com/coder/coder/v2/coderd/rbac"
 	"github.com/coder/coder/v2/codersdk"
@@ -37,12 +38,23 @@ func TestWorkspaceBuild(t *testing.T) {
 			propagation.Baggage{},
 		),
 	)
+	ctx := testutil.Context(t, testutil.WaitShort)
 	auditor := audit.NewMock()
-	client := coderdtest.New(t, &coderdtest.Options{
+	client, db := coderdtest.NewWithDatabase(t, &coderdtest.Options{
 		IncludeProvisionerDaemon: true,
 		Auditor:                  auditor,
 	})
 	user := coderdtest.CreateFirstUser(t, client)
+	//nolint:gocritic // testing
+	up, err := db.UpdateUserProfile(dbauthz.AsSystemRestricted(ctx), database.UpdateUserProfileParams{
+		ID:        user.UserID,
+		Email:     coderdtest.FirstUserParams.Email,
+		Username:  coderdtest.FirstUserParams.Username,
+		Name:      "Admin",
+		AvatarURL: client.URL.String(),
+		UpdatedAt: dbtime.Now(),
+	})
+	require.NoError(t, err)
 	version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, nil)
 	template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
 	coderdtest.AwaitTemplateVersionJobCompleted(t, client, version.ID)
@@ -51,9 +63,16 @@ func TestWorkspaceBuild(t *testing.T) {
 	_ = coderdtest.AwaitWorkspaceBuildJobCompleted(t, client, workspace.LatestBuild.ID)
 	// Create workspace will also start a build, so we need to wait for
 	// it to ensure all events are recorded.
-	require.Len(t, auditor.AuditLogs(), 2)
-	require.Equal(t, auditor.AuditLogs()[0].Ip.IPNet.IP.String(), "127.0.0.1")
-	require.Equal(t, auditor.AuditLogs()[1].Ip.IPNet.IP.String(), "127.0.0.1")
+	require.Eventually(t, func() bool {
+		logs := auditor.AuditLogs()
+		return len(logs) == 2 &&
+			assert.Equal(t, logs[0].Ip.IPNet.IP.String(), "127.0.0.1") &&
+			assert.Equal(t, logs[1].Ip.IPNet.IP.String(), "127.0.0.1")
+	}, testutil.WaitShort, testutil.IntervalFast)
+	wb, err := client.WorkspaceBuild(testutil.Context(t, testutil.WaitShort), workspace.LatestBuild.ID)
+	require.NoError(t, err)
+	require.Equal(t, up.Username, wb.WorkspaceOwnerName)
+	require.Equal(t, up.AvatarURL, wb.WorkspaceOwnerAvatarURL)
 }
 
 func TestWorkspaceBuildByBuildNumber(t *testing.T) {
@@ -476,15 +495,42 @@ func TestWorkspaceBuildResources(t *testing.T) {
 				Type: &proto.Response_Apply{
 					Apply: &proto.ApplyComplete{
 						Resources: []*proto.Resource{{
-							Name: "some",
+							Name: "first_resource",
 							Type: "example",
 							Agents: []*proto.Agent{{
-								Id:   "something",
-								Auth: &proto.Agent_Token{},
+								Id:    "something-1",
+								Name:  "something-1",
+								Auth:  &proto.Agent_Token{},
+								Order: 3,
 							}},
 						}, {
-							Name: "another",
+							Name: "second_resource",
 							Type: "example",
+							Agents: []*proto.Agent{{
+								Id:    "something-2",
+								Name:  "something-2",
+								Auth:  &proto.Agent_Token{},
+								Order: 1,
+							}, {
+								Id:    "something-3",
+								Name:  "something-3",
+								Auth:  &proto.Agent_Token{},
+								Order: 2,
+							}},
+						}, {
+							Name: "third_resource",
+							Type: "example",
+						}, {
+							Name: "fourth_resource",
+							Type: "example",
+						}, {
+							Name: "fifth_resource",
+							Type: "example",
+							Agents: []*proto.Agent{{
+								Id:   "something-4",
+								Name: "something-4",
+								Auth: &proto.Agent_Token{},
+							}},
 						}},
 					},
 				},
@@ -501,11 +547,19 @@ func TestWorkspaceBuildResources(t *testing.T) {
 		workspace, err := client.Workspace(ctx, workspace.ID)
 		require.NoError(t, err)
 		require.NotNil(t, workspace.LatestBuild.Resources)
-		require.Len(t, workspace.LatestBuild.Resources, 2)
-		require.Equal(t, "some", workspace.LatestBuild.Resources[0].Name)
-		require.Equal(t, "example", workspace.LatestBuild.Resources[1].Type)
-		require.Len(t, workspace.LatestBuild.Resources[0].Agents, 1)
+		require.Len(t, workspace.LatestBuild.Resources, 5)
+		assertWorkspaceResource(t, workspace.LatestBuild.Resources[0], "fifth_resource", "example", 1)  // resource has agent with implicit order = 0
+		assertWorkspaceResource(t, workspace.LatestBuild.Resources[1], "second_resource", "example", 2) // resource has 2 agents, one with low order value (2)
+		assertWorkspaceResource(t, workspace.LatestBuild.Resources[2], "first_resource", "example", 1)  // resource has 1 agent with explicit order
+		assertWorkspaceResource(t, workspace.LatestBuild.Resources[3], "fourth_resource", "example", 0) // resource has no agents, sorted by name
+		assertWorkspaceResource(t, workspace.LatestBuild.Resources[4], "third_resource", "example", 0)  // resource is the last one
 	})
+}
+
+func assertWorkspaceResource(t *testing.T, actual codersdk.WorkspaceResource, name, aType string, numAgents int) {
+	assert.Equal(t, name, actual.Name)
+	assert.Equal(t, aType, actual.Type)
+	assert.Len(t, actual.Agents, numAgents)
 }
 
 func TestWorkspaceBuildLogs(t *testing.T) {
@@ -969,8 +1023,11 @@ func TestPostWorkspaceBuild(t *testing.T) {
 		require.NoError(t, err)
 		coderdtest.AwaitWorkspaceBuildJobCompleted(t, client, build.ID)
 
-		require.Len(t, auditor.AuditLogs(), 1)
-		require.Equal(t, auditor.AuditLogs()[0].Ip.IPNet.IP.String(), "127.0.0.1")
+		require.Eventually(t, func() bool {
+			logs := auditor.AuditLogs()
+			return len(logs) > 0 &&
+				assert.Equal(t, logs[0].Ip.IPNet.IP.String(), "127.0.0.1")
+		}, testutil.WaitShort, testutil.IntervalFast)
 	})
 
 	t.Run("IncrementBuildNumber", func(t *testing.T) {

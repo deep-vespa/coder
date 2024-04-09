@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/coder/v2/coderd/database"
 	"github.com/coder/coder/v2/coderd/database/dbmem"
 	"github.com/coder/coder/v2/coderd/database/pubsub"
 
@@ -46,25 +47,29 @@ func init() {
 
 type Options struct {
 	*coderdtest.Options
-	AuditLogging                bool
-	BrowserOnly                 bool
-	EntitlementsUpdateInterval  time.Duration
-	SCIMAPIKey                  []byte
-	UserWorkspaceQuota          int
-	ProxyHealthInterval         time.Duration
-	LicenseOptions              *LicenseOptions
-	NoDefaultQuietHoursSchedule bool
-	DontAddLicense              bool
-	DontAddFirstUser            bool
-	ReplicaSyncUpdateInterval   time.Duration
-	ExternalTokenEncryption     []dbcrypt.Cipher
-	ProvisionerDaemonPSK        string
+	AuditLogging               bool
+	BrowserOnly                bool
+	EntitlementsUpdateInterval time.Duration
+	SCIMAPIKey                 []byte
+	UserWorkspaceQuota         int
+	ProxyHealthInterval        time.Duration
+	LicenseOptions             *LicenseOptions
+	DontAddLicense             bool
+	DontAddFirstUser           bool
+	ReplicaSyncUpdateInterval  time.Duration
+	ExternalTokenEncryption    []dbcrypt.Cipher
+	ProvisionerDaemonPSK       string
 }
 
 // New constructs a codersdk client connected to an in-memory Enterprise API instance.
 func New(t *testing.T, options *Options) (*codersdk.Client, codersdk.CreateFirstUserResponse) {
 	client, _, _, user := NewWithAPI(t, options)
 	return client, user
+}
+
+func NewWithDatabase(t *testing.T, options *Options) (*codersdk.Client, database.Store, codersdk.CreateFirstUserResponse) {
+	client, _, api, user := NewWithAPI(t, options)
+	return client, api.Database, user
 }
 
 func NewWithAPI(t *testing.T, options *Options) (
@@ -80,10 +85,6 @@ func NewWithAPI(t *testing.T, options *Options) (
 	}
 	require.False(t, options.DontAddFirstUser && !options.DontAddLicense, "DontAddFirstUser requires DontAddLicense")
 	setHandler, cancelFunc, serverURL, oop := coderdtest.NewOptions(t, options.Options)
-	if !options.NoDefaultQuietHoursSchedule && oop.DeploymentValues.UserQuietHoursSchedule.DefaultSchedule.Value() == "" {
-		err := oop.DeploymentValues.UserQuietHoursSchedule.DefaultSchedule.Set("0 0 * * *")
-		require.NoError(t, err)
-	}
 	coderAPI, err := coderd.New(context.Background(), &coderd.Options{
 		RBAC:                       true,
 		AuditLogging:               options.AuditLogging,

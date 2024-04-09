@@ -1,18 +1,18 @@
-import { FC } from "react";
-import { ErrorAlert } from "components/Alert/ErrorAlert";
-import { Section } from "components/SettingsLayout/Section";
-import { ScheduleForm } from "./ScheduleForm";
-import { useMe } from "hooks/useMe";
-import { Loader } from "components/Loader/Loader";
+import type { FC } from "react";
 import { useMutation, useQuery, useQueryClient } from "react-query";
 import {
   updateUserQuietHoursSchedule,
   userQuietHoursSchedule,
 } from "api/queries/settings";
+import { ErrorAlert } from "components/Alert/ErrorAlert";
 import { displaySuccess } from "components/GlobalSnackbar/utils";
+import { Loader } from "components/Loader/Loader";
+import { useAuthenticated } from "contexts/auth/RequireAuth";
+import { Section } from "../Section";
+import { ScheduleForm } from "./ScheduleForm";
 
 export const SchedulePage: FC = () => {
-  const me = useMe();
+  const { user: me } = useAuthenticated();
   const queryClient = useQueryClient();
 
   const {

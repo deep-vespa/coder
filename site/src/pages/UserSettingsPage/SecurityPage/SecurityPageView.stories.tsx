@@ -1,12 +1,12 @@
-import type { Meta, StoryObj } from "@storybook/react";
-import { SecurityPageView } from "./SecurityPage";
 import { action } from "@storybook/addon-actions";
-import {
-  MockAuthMethods,
-  MockAuthMethodsWithPasswordType,
-} from "testHelpers/entities";
-import { ComponentProps } from "react";
+import type { Meta, StoryObj } from "@storybook/react";
 import set from "lodash/fp/set";
+import type { ComponentProps } from "react";
+import {
+  MockAuthMethodsPasswordOnly,
+  MockAuthMethodsAll,
+} from "testHelpers/entities";
+import { SecurityPageView } from "./SecurityPage";
 
 const defaultArgs: ComponentProps<typeof SecurityPageView> = {
   security: {
@@ -22,7 +22,7 @@ const defaultArgs: ComponentProps<typeof SecurityPageView> = {
       userLoginType: {
         login_type: "password",
       },
-      authMethods: MockAuthMethods,
+      authMethods: MockAuthMethodsPasswordOnly,
       closeConfirmation: action("closeConfirmation"),
       confirm: action("confirm"),
       error: undefined,
@@ -52,11 +52,7 @@ export const NoOIDCAvailable: Story = {
 };
 
 export const UserLoginTypeIsPassword: Story = {
-  args: set(
-    "oidc.section.authMethods",
-    MockAuthMethodsWithPasswordType,
-    defaultArgs,
-  ),
+  args: set("oidc.section.authMethods", MockAuthMethodsAll, defaultArgs),
 };
 
 export const ConfirmingOIDCConversion: Story = {
@@ -64,7 +60,7 @@ export const ConfirmingOIDCConversion: Story = {
     "oidc.section",
     {
       ...defaultArgs.oidc?.section,
-      authMethods: MockAuthMethodsWithPasswordType,
+      authMethods: MockAuthMethodsAll,
       isConfirming: true,
     },
     defaultArgs,

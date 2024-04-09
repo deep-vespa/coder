@@ -1,18 +1,15 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import * as API from "api/api";
-import * as SecurityForm from "./SettingsSecurityForm";
+import type { OAuthConversionResponse } from "api/typesGenerated";
+import { MockAuthMethodsAll, mockApiError } from "testHelpers/entities";
 import {
   renderWithAuth,
   waitForLoaderToBeRemoved,
 } from "testHelpers/renderHelpers";
+import { Language } from "./SecurityForm";
 import { SecurityPage } from "./SecurityPage";
-import {
-  MockAuthMethodsWithPasswordType,
-  mockApiError,
-} from "testHelpers/entities";
-import userEvent from "@testing-library/user-event";
 import * as SSO from "./SingleSignOnSection";
-import { OAuthConversionResponse } from "api/typesGenerated";
 
 const renderPage = async () => {
   const utils = renderWithAuth(<SecurityPage />);
@@ -36,13 +33,11 @@ const fillAndSubmitSecurityForm = () => {
   fireEvent.change(screen.getByLabelText("Confirm Password"), {
     target: { value: newSecurityFormValues.confirm_password },
   });
-  fireEvent.click(screen.getByText(SecurityForm.Language.updatePassword));
+  fireEvent.click(screen.getByText(Language.updatePassword));
 };
 
 beforeEach(() => {
-  jest
-    .spyOn(API, "getAuthMethods")
-    .mockResolvedValue(MockAuthMethodsWithPasswordType);
+  jest.spyOn(API, "getAuthMethods").mockResolvedValue(MockAuthMethodsAll);
   jest.spyOn(API, "getUserLoginType").mockResolvedValue({
     login_type: "password",
   });

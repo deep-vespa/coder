@@ -1,5 +1,3 @@
-import { renderWithAuth } from "testHelpers/renderHelpers";
-import CreateTemplatePage from "./CreateTemplatePage";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import * as API from "api/api";
@@ -12,6 +10,8 @@ import {
   MockTemplate,
   MockOrganization,
 } from "testHelpers/entities";
+import { renderWithAuth } from "testHelpers/renderHelpers";
+import CreateTemplatePage from "./CreateTemplatePage";
 
 const renderPage = async (searchParams: URLSearchParams) => {
   // Render with the example ID so we don't need to upload a file
@@ -19,7 +19,7 @@ const renderPage = async (searchParams: URLSearchParams) => {
     route: `/templates/new?${searchParams.toString()}`,
     path: "/templates/new",
     // We need this because after creation, the user will be redirected to here
-    extraRoutes: [{ path: "templates/:template", element: <></> }],
+    extraRoutes: [{ path: "templates/:template/files", element: <></> }],
   });
   // It is lazy loaded, so we have to wait for it to be rendered to not get an
   // act error
@@ -62,6 +62,12 @@ test("Create template from starter template", async () => {
     within(form).getByRole("button", { name: /create template/i }),
   );
 
+  // Wait for the drawer error to be rendered
+  await screen.findByRole("heading", { name: /missing variables/i });
+  await userEvent.click(
+    screen.getByRole("button", { name: /fill variables/i }),
+  );
+
   // Wait for the variables form to be rendered and fill it
   await screen.findByText(/Variables/, undefined, { timeout: 5_000 });
 
@@ -88,7 +94,7 @@ test("Create template from starter template", async () => {
   );
   await waitFor(() => expect(API.createTemplate).toBeCalledTimes(1));
   expect(router.state.location.pathname).toEqual(
-    `/templates/${MockTemplate.name}`,
+    `/templates/${MockTemplate.name}/files`,
   );
   expect(API.createTemplateVersion).toHaveBeenCalledWith(MockOrganization.id, {
     example_id: "aws-windows",
@@ -138,7 +144,7 @@ test("Create template from duplicating a template", async () => {
   );
   await waitFor(() => {
     expect(router.state.location.pathname).toEqual(
-      `/templates/${MockTemplate.name}`,
+      `/templates/${MockTemplate.name}/files`,
     );
   });
 });

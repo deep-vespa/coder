@@ -1,8 +1,8 @@
-import { useDashboard } from "components/Dashboard/DashboardProvider";
-import { useDeploySettings } from "components/DeploySettingsLayout/DeploySettingsLayout";
-import { FC } from "react";
+import type { FC } from "react";
 import { Helmet } from "react-helmet-async";
+import { useDashboard } from "modules/dashboard/useDashboard";
 import { pageTitle } from "utils/page";
+import { useDeploySettings } from "../DeploySettingsLayout";
 import { SecuritySettingsPageView } from "./SecuritySettingsPageView";
 
 const SecuritySettingsPage: FC = () => {
@@ -17,7 +17,6 @@ const SecuritySettingsPage: FC = () => {
 
       <SecuritySettingsPageView
         options={deploymentValues.options}
-        featureAuditLogEnabled={entitlements.features["audit_log"].enabled}
         featureBrowserOnlyEnabled={
           entitlements.features["browser_only"].enabled
         }

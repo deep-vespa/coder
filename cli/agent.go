@@ -8,7 +8,6 @@ import (
 	"net/http/pprof"
 	"net/url"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -19,10 +18,8 @@ import (
 	"cloud.google.com/go/compute/metadata"
 	"golang.org/x/xerrors"
 	"gopkg.in/natefinch/lumberjack.v2"
-	"tailscale.com/util/clientmetric"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/common/expfmt"
 
 	"cdr.dev/slog"
 	"cdr.dev/slog/sloggers/sloghuman"
@@ -32,15 +29,16 @@ import (
 	"github.com/coder/coder/v2/agent/agentproc"
 	"github.com/coder/coder/v2/agent/reaper"
 	"github.com/coder/coder/v2/buildinfo"
-	"github.com/coder/coder/v2/cli/clibase"
 	"github.com/coder/coder/v2/codersdk"
 	"github.com/coder/coder/v2/codersdk/agentsdk"
+	"github.com/coder/serpent"
 )
 
-func (r *RootCmd) workspaceAgent() *clibase.Cmd {
+func (r *RootCmd) workspaceAgent() *serpent.Command {
 	var (
 		auth                string
 		logDir              string
+		scriptDataDir       string
 		pprofAddress        string
 		noReap              bool
 		sshMaxTimeout       time.Duration
@@ -51,12 +49,12 @@ func (r *RootCmd) workspaceAgent() *clibase.Cmd {
 		slogJSONPath        string
 		slogStackdriverPath string
 	)
-	cmd := &clibase.Cmd{
+	cmd := &serpent.Command{
 		Use:   "agent",
 		Short: `Starts the Coder workspace agent.`,
 		// This command isn't useful to manually execute.
 		Hidden: true,
-		Handler: func(inv *clibase.Invocation) error {
+		Handler: func(inv *serpent.Invocation) error {
 			ctx, cancel := context.WithCancel(inv.Context())
 			defer cancel()
 
@@ -117,7 +115,7 @@ func (r *RootCmd) workspaceAgent() *clibase.Cmd {
 				defer logWriter.Close()
 
 				sinks = append(sinks, sloghuman.Sink(logWriter))
-				logger := slog.Make(sinks...).Leveled(slog.LevelDebug)
+				logger := inv.Logger.AppendSinks(sinks...).Leveled(slog.LevelDebug)
 
 				logger.Info(ctx, "spawning reaper process")
 				// Do not start a reaper on the child process. It's important
@@ -125,7 +123,7 @@ func (r *RootCmd) workspaceAgent() *clibase.Cmd {
 				args := append(os.Args, "--no-reap")
 				err := reaper.ForkReap(
 					reaper.WithExecArgs(args...),
-					reaper.WithCatchSignals(InterruptSignals...),
+					reaper.WithCatchSignals(StopSignals...),
 				)
 				if err != nil {
 					logger.Error(ctx, "agent process reaper unable to fork", slog.Error(err))
@@ -144,23 +142,24 @@ func (r *RootCmd) workspaceAgent() *clibase.Cmd {
 			// Note that we don't want to handle these signals in the
 			// process that runs as PID 1, that's why we do this after
 			// the reaper forked.
-			ctx, stopNotify := signal.NotifyContext(ctx, InterruptSignals...)
+			ctx, stopNotify := inv.SignalNotifyContext(ctx, StopSignals...)
 			defer stopNotify()
 
 			// DumpHandler does signal handling, so we call it after the
 			// reaper.
-			go DumpHandler(ctx)
+			go DumpHandler(ctx, "agent")
 
 			logWriter := &lumberjackWriteCloseFixer{w: &lumberjack.Logger{
 				Filename: filepath.Join(logDir, "coder-agent.log"),
 				MaxSize:  5, // MB
-				// Without this, rotated logs will never be deleted.
-				MaxBackups: 1,
+				// Per customer incident on November 17th, 2023, its helpful
+				// to have the log of the last few restarts to debug a failing agent.
+				MaxBackups: 10,
 			}}
 			defer logWriter.Close()
 
 			sinks = append(sinks, sloghuman.Sink(logWriter))
-			logger := slog.Make(sinks...).Leveled(slog.LevelDebug)
+			logger := inv.Logger.AppendSinks(sinks...).Leveled(slog.LevelDebug)
 
 			version := buildinfo.Version()
 			logger.Info(ctx, "agent is starting now",
@@ -278,12 +277,21 @@ func (r *RootCmd) workspaceAgent() *clibase.Cmd {
 				subsystems = append(subsystems, subsystem)
 			}
 
-			procTicker := time.NewTicker(time.Second)
-			defer procTicker.Stop()
+			environmentVariables := map[string]string{
+				"GIT_ASKPASS": executablePath,
+			}
+			if v, ok := os.LookupEnv(agent.EnvProcPrioMgmt); ok {
+				environmentVariables[agent.EnvProcPrioMgmt] = v
+			}
+			if v, ok := os.LookupEnv(agent.EnvProcOOMScore); ok {
+				environmentVariables[agent.EnvProcOOMScore] = v
+			}
+
 			agnt := agent.New(agent.Options{
 				Client:            client,
 				Logger:            logger,
 				LogDir:            logDir,
+				ScriptDataDir:     scriptDataDir,
 				TailnetListenPort: uint16(tailnetListenPort),
 				ExchangeToken: func(ctx context.Context) (string, error) {
 					if exchangeToken == nil {
@@ -296,13 +304,10 @@ func (r *RootCmd) workspaceAgent() *clibase.Cmd {
 					client.SetSessionToken(resp.SessionToken)
 					return resp.SessionToken, nil
 				},
-				EnvironmentVariables: map[string]string{
-					"GIT_ASKPASS":         executablePath,
-					agent.EnvProcPrioMgmt: os.Getenv(agent.EnvProcPrioMgmt),
-				},
-				IgnorePorts:   ignorePorts,
-				SSHMaxTimeout: sshMaxTimeout,
-				Subsystems:    subsystems,
+				EnvironmentVariables: environmentVariables,
+				IgnorePorts:          ignorePorts,
+				SSHMaxTimeout:        sshMaxTimeout,
+				Subsystems:           subsystems,
 
 				PrometheusRegistry: prometheusRegistry,
 				Syscaller:          agentproc.NewSyscaller(),
@@ -311,7 +316,8 @@ func (r *RootCmd) workspaceAgent() *clibase.Cmd {
 				ModifiedProcesses: nil,
 			})
 
-			prometheusSrvClose := ServeHandler(ctx, logger, prometheusMetricsHandler(prometheusRegistry, logger), prometheusAddress, "prometheus")
+			promHandler := agent.PrometheusMetricsHandler(prometheusRegistry, logger)
+			prometheusSrvClose := ServeHandler(ctx, logger, promHandler, prometheusAddress, "prometheus")
 			defer prometheusSrvClose()
 
 			debugSrvClose := ServeHandler(ctx, logger, agnt.HTTPDebug(), debugAddress, "debug")
@@ -322,26 +328,33 @@ func (r *RootCmd) workspaceAgent() *clibase.Cmd {
 		},
 	}
 
-	cmd.Options = clibase.OptionSet{
+	cmd.Options = serpent.OptionSet{
 		{
 			Flag:        "auth",
 			Default:     "token",
 			Description: "Specify the authentication type to use for the agent.",
 			Env:         "CODER_AGENT_AUTH",
-			Value:       clibase.StringOf(&auth),
+			Value:       serpent.StringOf(&auth),
 		},
 		{
 			Flag:        "log-dir",
 			Default:     os.TempDir(),
 			Description: "Specify the location for the agent log files.",
 			Env:         "CODER_AGENT_LOG_DIR",
-			Value:       clibase.StringOf(&logDir),
+			Value:       serpent.StringOf(&logDir),
+		},
+		{
+			Flag:        "script-data-dir",
+			Default:     os.TempDir(),
+			Description: "Specify the location for storing script data.",
+			Env:         "CODER_AGENT_SCRIPT_DATA_DIR",
+			Value:       serpent.StringOf(&scriptDataDir),
 		},
 		{
 			Flag:        "pprof-address",
 			Default:     "127.0.0.1:6060",
 			Env:         "CODER_AGENT_PPROF_ADDRESS",
-			Value:       clibase.StringOf(&pprofAddress),
+			Value:       serpent.StringOf(&pprofAddress),
 			Description: "The address to serve pprof.",
 		},
 		{
@@ -349,7 +362,7 @@ func (r *RootCmd) workspaceAgent() *clibase.Cmd {
 
 			Env:         "",
 			Description: "Do not start a process reaper.",
-			Value:       clibase.BoolOf(&noReap),
+			Value:       serpent.BoolOf(&noReap),
 		},
 		{
 			Flag: "ssh-max-timeout",
@@ -357,27 +370,27 @@ func (r *RootCmd) workspaceAgent() *clibase.Cmd {
 			Default:     "72h",
 			Env:         "CODER_AGENT_SSH_MAX_TIMEOUT",
 			Description: "Specify the max timeout for a SSH connection, it is advisable to set it to a minimum of 60s, but no more than 72h.",
-			Value:       clibase.DurationOf(&sshMaxTimeout),
+			Value:       serpent.DurationOf(&sshMaxTimeout),
 		},
 		{
 			Flag:        "tailnet-listen-port",
 			Default:     "0",
 			Env:         "CODER_AGENT_TAILNET_LISTEN_PORT",
 			Description: "Specify a static port for Tailscale to use for listening.",
-			Value:       clibase.Int64Of(&tailnetListenPort),
+			Value:       serpent.Int64Of(&tailnetListenPort),
 		},
 		{
 			Flag:        "prometheus-address",
 			Default:     "127.0.0.1:2112",
 			Env:         "CODER_AGENT_PROMETHEUS_ADDRESS",
-			Value:       clibase.StringOf(&prometheusAddress),
+			Value:       serpent.StringOf(&prometheusAddress),
 			Description: "The bind address to serve Prometheus metrics.",
 		},
 		{
 			Flag:        "debug-address",
 			Default:     "127.0.0.1:2113",
 			Env:         "CODER_AGENT_DEBUG_ADDRESS",
-			Value:       clibase.StringOf(&debugAddress),
+			Value:       serpent.StringOf(&debugAddress),
 			Description: "The bind address to serve a debug HTTP server.",
 		},
 		{
@@ -386,7 +399,7 @@ func (r *RootCmd) workspaceAgent() *clibase.Cmd {
 			Flag:        "log-human",
 			Env:         "CODER_AGENT_LOGGING_HUMAN",
 			Default:     "/dev/stderr",
-			Value:       clibase.StringOf(&slogHumanPath),
+			Value:       serpent.StringOf(&slogHumanPath),
 		},
 		{
 			Name:        "JSON Log Location",
@@ -394,7 +407,7 @@ func (r *RootCmd) workspaceAgent() *clibase.Cmd {
 			Flag:        "log-json",
 			Env:         "CODER_AGENT_LOGGING_JSON",
 			Default:     "",
-			Value:       clibase.StringOf(&slogJSONPath),
+			Value:       serpent.StringOf(&slogJSONPath),
 		},
 		{
 			Name:        "Stackdriver Log Location",
@@ -402,7 +415,7 @@ func (r *RootCmd) workspaceAgent() *clibase.Cmd {
 			Flag:        "log-stackdriver",
 			Env:         "CODER_AGENT_LOGGING_STACKDRIVER",
 			Default:     "",
-			Value:       clibase.StringOf(&slogStackdriverPath),
+			Value:       serpent.StringOf(&slogStackdriverPath),
 		},
 	}
 
@@ -489,27 +502,4 @@ func urlPort(u string) (int, error) {
 		}
 	}
 	return -1, xerrors.Errorf("invalid port: %s", u)
-}
-
-func prometheusMetricsHandler(prometheusRegistry *prometheus.Registry, logger slog.Logger) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain")
-
-		// Based on: https://github.com/tailscale/tailscale/blob/280255acae604796a1113861f5a84e6fa2dc6121/ipn/localapi/localapi.go#L489
-		clientmetric.WritePrometheusExpositionFormat(w)
-
-		metricFamilies, err := prometheusRegistry.Gather()
-		if err != nil {
-			logger.Error(context.Background(), "Prometheus handler can't gather metric families", slog.Error(err))
-			return
-		}
-
-		for _, metricFamily := range metricFamilies {
-			_, err = expfmt.MetricFamilyToText(w, metricFamily)
-			if err != nil {
-				logger.Error(context.Background(), "expfmt.MetricFamilyToText failed", slog.Error(err))
-				return
-			}
-		}
-	})
 }

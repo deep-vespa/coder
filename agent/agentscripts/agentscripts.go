@@ -13,12 +13,15 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/robfig/cron/v3"
 	"github.com/spf13/afero"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/xerrors"
 
 	"cdr.dev/slog"
+
 	"github.com/coder/coder/v2/agent/agentssh"
 	"github.com/coder/coder/v2/codersdk"
 	"github.com/coder/coder/v2/codersdk/agentsdk"
@@ -39,13 +42,19 @@ var (
 	parser = cron.NewParser(cron.Second | cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.DowOptional)
 )
 
+type ScriptLogger interface {
+	Send(ctx context.Context, log ...agentsdk.Log) error
+	Flush(context.Context) error
+}
+
 // Options are a set of options for the runner.
 type Options struct {
-	LogDir     string
-	Logger     slog.Logger
-	SSHServer  *agentssh.Server
-	Filesystem afero.Fs
-	PatchLogs  func(ctx context.Context, req agentsdk.PatchLogs) error
+	DataDirBase     string
+	LogDir          string
+	Logger          slog.Logger
+	SSHServer       *agentssh.Server
+	Filesystem      afero.Fs
+	GetScriptLogger func(logSourceID uuid.UUID) ScriptLogger
 }
 
 // New creates a runner for the provided scripts.
@@ -57,6 +66,12 @@ func New(opts Options) *Runner {
 		cronCtxCancel: cronCtxCancel,
 		cron:          cron.New(cron.WithParser(parser)),
 		closed:        make(chan struct{}),
+		dataDir:       filepath.Join(opts.DataDirBase, "coder-script-data"),
+		scriptsExecuted: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "agent",
+			Subsystem: "scripts",
+			Name:      "executed_total",
+		}, []string{"success"}),
 	}
 }
 
@@ -71,6 +86,31 @@ type Runner struct {
 	cron          *cron.Cron
 	initialized   atomic.Bool
 	scripts       []codersdk.WorkspaceAgentScript
+	dataDir       string
+
+	// scriptsExecuted includes all scripts executed by the workspace agent. Agents
+	// execute startup scripts, and scripts on a cron schedule. Both will increment
+	// this counter.
+	scriptsExecuted *prometheus.CounterVec
+}
+
+// DataDir returns the directory where scripts data is stored.
+func (r *Runner) DataDir() string {
+	return r.dataDir
+}
+
+// ScriptBinDir returns the directory where scripts can store executable
+// binaries.
+func (r *Runner) ScriptBinDir() string {
+	return filepath.Join(r.dataDir, "bin")
+}
+
+func (r *Runner) RegisterMetrics(reg prometheus.Registerer) {
+	if reg == nil {
+		// If no registry, do nothing.
+		return
+	}
+	reg.MustRegister(r.scriptsExecuted)
 }
 
 // Init initializes the runner with the provided scripts.
@@ -84,13 +124,18 @@ func (r *Runner) Init(scripts []codersdk.WorkspaceAgentScript) error {
 	r.scripts = scripts
 	r.Logger.Info(r.cronCtx, "initializing agent scripts", slog.F("script_count", len(scripts)), slog.F("log_dir", r.LogDir))
 
+	err := r.Filesystem.MkdirAll(r.ScriptBinDir(), 0o700)
+	if err != nil {
+		return xerrors.Errorf("create script bin dir: %w", err)
+	}
+
 	for _, script := range scripts {
 		if script.Cron == "" {
 			continue
 		}
 		script := script
 		_, err := r.cron.AddFunc(script.Cron, func() {
-			err := r.run(r.cronCtx, script)
+			err := r.trackRun(r.cronCtx, script)
 			if err != nil {
 				r.Logger.Warn(context.Background(), "run agent script on schedule", slog.Error(err))
 			}
@@ -109,7 +154,18 @@ func (r *Runner) StartCron() {
 	// has exited by the time the `cron.Stop()` context returns, so we need to
 	// track it manually.
 	err := r.trackCommandGoroutine(func() {
-		r.cron.Run()
+		// Since this is run async, in quick unit tests, it is possible the
+		// Close() function gets called before we even start the cron.
+		// In these cases, the Run() will never end.
+		// So if we are closed, we just return, and skip the Run() entirely.
+		select {
+		case <-r.cronCtx.Done():
+			// The cronCtx is canceled before cron.Close() happens. So if the ctx is
+			// canceled, then Close() will be called, or it is about to be called.
+			// So do nothing!
+		default:
+			r.cron.Run()
+		}
 	})
 	if err != nil {
 		r.Logger.Warn(context.Background(), "start cron failed", slog.Error(err))
@@ -131,7 +187,7 @@ func (r *Runner) Execute(ctx context.Context, filter func(script codersdk.Worksp
 		}
 		script := script
 		eg.Go(func() error {
-			err := r.run(ctx, script)
+			err := r.trackRun(ctx, script)
 			if err != nil {
 				return xerrors.Errorf("run agent script %q: %w", script.LogSourceID, err)
 			}
@@ -139,6 +195,17 @@ func (r *Runner) Execute(ctx context.Context, filter func(script codersdk.Worksp
 		})
 	}
 	return eg.Wait()
+}
+
+// trackRun wraps "run" with metrics.
+func (r *Runner) trackRun(ctx context.Context, script codersdk.WorkspaceAgentScript) error {
+	err := r.run(ctx, script)
+	if err != nil {
+		r.scriptsExecuted.WithLabelValues("false").Add(1)
+	} else {
+		r.scriptsExecuted.WithLabelValues("true").Add(1)
+	}
+	return err
 }
 
 // run executes the provided script with the timeout.
@@ -166,7 +233,18 @@ func (r *Runner) run(ctx context.Context, script codersdk.WorkspaceAgentScript) 
 	if !filepath.IsAbs(logPath) {
 		logPath = filepath.Join(r.LogDir, logPath)
 	}
-	logger := r.Logger.With(slog.F("log_path", logPath))
+
+	scriptDataDir := filepath.Join(r.DataDir(), script.LogSourceID.String())
+	err := r.Filesystem.MkdirAll(scriptDataDir, 0o700)
+	if err != nil {
+		return xerrors.Errorf("%s script: create script temp dir: %w", scriptDataDir, err)
+	}
+
+	logger := r.Logger.With(
+		slog.F("log_source_id", script.LogSourceID),
+		slog.F("log_path", logPath),
+		slog.F("script_data_dir", scriptDataDir),
+	)
 	logger.Info(ctx, "running agent script", slog.F("script", script.Script))
 
 	fileWriter, err := r.Filesystem.OpenFile(logPath, os.O_CREATE|os.O_RDWR, 0o600)
@@ -196,20 +274,27 @@ func (r *Runner) run(ctx context.Context, script codersdk.WorkspaceAgentScript) 
 	cmd.WaitDelay = 10 * time.Second
 	cmd.Cancel = cmdCancel(cmd)
 
-	send, flushAndClose := agentsdk.LogsSender(script.LogSourceID, r.PatchLogs, logger)
+	// Expose env vars that can be used in the script for storing data
+	// and binaries. In the future, we may want to expose more env vars
+	// for the script to use, like CODER_SCRIPT_DATA_DIR for persistent
+	// storage.
+	cmd.Env = append(cmd.Env, "CODER_SCRIPT_DATA_DIR="+scriptDataDir)
+	cmd.Env = append(cmd.Env, "CODER_SCRIPT_BIN_DIR="+r.ScriptBinDir())
+
+	scriptLogger := r.GetScriptLogger(script.LogSourceID)
 	// If ctx is canceled here (or in a writer below), we may be
 	// discarding logs, but that's okay because we're shutting down
 	// anyway. We could consider creating a new context here if we
 	// want better control over flush during shutdown.
 	defer func() {
-		if err := flushAndClose(ctx); err != nil {
+		if err := scriptLogger.Flush(ctx); err != nil {
 			logger.Warn(ctx, "flush startup logs failed", slog.Error(err))
 		}
 	}()
 
-	infoW := agentsdk.LogsWriter(ctx, send, script.LogSourceID, codersdk.LogLevelInfo)
+	infoW := agentsdk.LogsWriter(ctx, scriptLogger.Send, script.LogSourceID, codersdk.LogLevelInfo)
 	defer infoW.Close()
-	errW := agentsdk.LogsWriter(ctx, send, script.LogSourceID, codersdk.LogLevelError)
+	errW := agentsdk.LogsWriter(ctx, scriptLogger.Send, script.LogSourceID, codersdk.LogLevelError)
 	defer errW.Close()
 	cmd.Stdout = io.MultiWriter(fileWriter, infoW)
 	cmd.Stderr = io.MultiWriter(fileWriter, errW)
@@ -284,6 +369,7 @@ func (r *Runner) Close() error {
 		return nil
 	}
 	close(r.closed)
+	// Must cancel the cron ctx BEFORE stopping the cron.
 	r.cronCtxCancel()
 	<-r.cron.Stop().Done()
 	r.cmdCloseWait.Wait()

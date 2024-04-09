@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"golang.org/x/exp/maps"
+	"golang.org/x/oauth2"
 
 	"github.com/coder/coder/v2/coderd/database/dbtime"
 	"github.com/coder/coder/v2/coderd/rbac"
@@ -148,6 +149,10 @@ func (g Group) RBACObject() rbac.Object {
 		InOrg(g.OrganizationID)
 }
 
+func (w GetWorkspaceByAgentIDRow) RBACObject() rbac.Object {
+	return w.Workspace.RBACObject()
+}
+
 func (w Workspace) RBACObject() rbac.Object {
 	return rbac.ResourceWorkspace.WithID(w.ID).
 		InOrg(w.OrganizationID).
@@ -251,6 +256,10 @@ func (u User) UserDataRBACObject() rbac.Object {
 	return rbac.ResourceUserData.WithID(u.ID).WithOwner(u.ID.String())
 }
 
+func (u User) UserWorkspaceBuildParametersObject() rbac.Object {
+	return rbac.ResourceUserWorkspaceBuildParameters.WithID(u.ID).WithOwner(u.ID.String())
+}
+
 func (u GetUsersRow) RBACObject() rbac.Object {
 	return rbac.ResourceUserObject(u.ID)
 }
@@ -264,6 +273,14 @@ func (u ExternalAuthLink) RBACObject() rbac.Object {
 	return rbac.ResourceUserData.WithID(u.UserID).WithOwner(u.UserID.String())
 }
 
+func (u ExternalAuthLink) OAuthToken() *oauth2.Token {
+	return &oauth2.Token{
+		AccessToken:  u.OAuthAccessToken,
+		RefreshToken: u.OAuthRefreshToken,
+		Expiry:       u.OAuthExpiry,
+	}
+}
+
 func (u UserLink) RBACObject() rbac.Object {
 	// I assume UserData is ok?
 	return rbac.ResourceUserData.WithOwner(u.UserID.String()).WithID(u.UserID)
@@ -271,6 +288,22 @@ func (u UserLink) RBACObject() rbac.Object {
 
 func (l License) RBACObject() rbac.Object {
 	return rbac.ResourceLicense.WithIDString(strconv.FormatInt(int64(l.ID), 10))
+}
+
+func (c OAuth2ProviderAppCode) RBACObject() rbac.Object {
+	return rbac.ResourceOAuth2ProviderAppCodeToken.WithOwner(c.UserID.String())
+}
+
+func (OAuth2ProviderAppSecret) RBACObject() rbac.Object {
+	return rbac.ResourceOAuth2ProviderAppSecret
+}
+
+func (OAuth2ProviderApp) RBACObject() rbac.Object {
+	return rbac.ResourceOAuth2ProviderApp
+}
+
+func (a GetOAuth2ProviderAppsByUserIDRow) RBACObject() rbac.Object {
+	return a.OAuth2ProviderApp.RBACObject()
 }
 
 type WorkspaceAgentConnectionStatus struct {
@@ -332,18 +365,19 @@ func ConvertUserRows(rows []GetUsersRow) []User {
 	users := make([]User, len(rows))
 	for i, r := range rows {
 		users[i] = User{
-			ID:             r.ID,
-			Email:          r.Email,
-			Username:       r.Username,
-			HashedPassword: r.HashedPassword,
-			CreatedAt:      r.CreatedAt,
-			UpdatedAt:      r.UpdatedAt,
-			Status:         r.Status,
-			RBACRoles:      r.RBACRoles,
-			LoginType:      r.LoginType,
-			AvatarURL:      r.AvatarURL,
-			Deleted:        r.Deleted,
-			LastSeenAt:     r.LastSeenAt,
+			ID:              r.ID,
+			Email:           r.Email,
+			Username:        r.Username,
+			HashedPassword:  r.HashedPassword,
+			CreatedAt:       r.CreatedAt,
+			UpdatedAt:       r.UpdatedAt,
+			Status:          r.Status,
+			RBACRoles:       r.RBACRoles,
+			LoginType:       r.LoginType,
+			AvatarURL:       r.AvatarURL,
+			Deleted:         r.Deleted,
+			LastSeenAt:      r.LastSeenAt,
+			ThemePreference: r.ThemePreference,
 		}
 	}
 
@@ -368,6 +402,7 @@ func ConvertWorkspaceRows(rows []GetWorkspacesRow) []Workspace {
 			DormantAt:         r.DormantAt,
 			DeletingAt:        r.DeletingAt,
 			AutomaticUpdates:  r.AutomaticUpdates,
+			Favorite:          r.Favorite,
 		}
 	}
 

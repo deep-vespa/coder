@@ -20,9 +20,10 @@ import (
 	"cdr.dev/slog"
 	"cdr.dev/slog/sloggers/slogtest"
 	"github.com/coder/coder/v2/agent"
+	agentproto "github.com/coder/coder/v2/agent/proto"
 	"github.com/coder/coder/v2/coderd/coderdtest"
-	"github.com/coder/coder/v2/coderd/httpapi"
 	"github.com/coder/coder/v2/coderd/workspaceapps"
+	"github.com/coder/coder/v2/coderd/workspaceapps/appurl"
 	"github.com/coder/coder/v2/codersdk"
 	"github.com/coder/coder/v2/codersdk/agentsdk"
 	"github.com/coder/coder/v2/cryptorand"
@@ -47,6 +48,7 @@ const (
 // DeploymentOptions are the options for creating a *Deployment with a
 // DeploymentFactory.
 type DeploymentOptions struct {
+	PrimaryAppHost                       string
 	AppHost                              string
 	DisablePathApps                      bool
 	DisableSubdomainApps                 bool
@@ -71,6 +73,7 @@ type Deployment struct {
 	SDKClient      *codersdk.Client
 	FirstUser      codersdk.CreateFirstUserResponse
 	PathAppBaseURL *url.URL
+	FlushStats     func()
 }
 
 // DeploymentFactory generates a deployment with an API client, a path base URL,
@@ -145,7 +148,7 @@ func (d *Details) PathAppURL(app App) *url.URL {
 
 // SubdomainAppURL returns the URL for the given subdomain app.
 func (d *Details) SubdomainAppURL(app App) *url.URL {
-	appHost := httpapi.ApplicationURL{
+	appHost := appurl.ApplicationURL{
 		Prefix:        app.Prefix,
 		AppSlugOrPort: app.AppSlugOrPort,
 		AgentName:     app.AgentName,
@@ -306,15 +309,31 @@ func createWorkspaceWithApps(t *testing.T, client *codersdk.Client, orgID uuid.U
 		},
 	}, workspaceMutators...)
 
+	// Intentionally going to choose a port that will never be chosen.
+	// Ports <1k will never be selected. 396 is for some old OS over IP.
+	// It will never likely be provisioned. Using quick timeout since
+	// it's all localhost
+	fakeAppURL := "http://127.1.0.1:396"
+	conn, err := net.DialTimeout("tcp", fakeAppURL, time.Millisecond*100)
+	if err == nil {
+		// In the absolute rare case someone hits this. Writing code to find a free port
+		// seems like a waste of time to program and run.
+		_ = conn.Close()
+		t.Errorf("an unused port is required for the fake app. "+
+			"The url %q happens to be an active port. If you hit this, then this test"+
+			"will need to be modified to run on your system. Or you can stop serving an"+
+			"app on that port.", fakeAppURL)
+		t.FailNow()
+	}
+
 	appURL := fmt.Sprintf("%s://127.0.0.1:%d?%s", scheme, port, proxyTestAppQuery)
 	protoApps := []*proto.App{
 		{
 			Slug:         proxyTestAppNameFake,
 			DisplayName:  proxyTestAppNameFake,
 			SharingLevel: proto.AppSharingLevel_OWNER,
-			// Hopefully this IP and port doesn't exist.
-			Url:       "http://127.1.0.1:65535",
-			Subdomain: true,
+			Url:          fakeAppURL,
+			Subdomain:    true,
 		},
 		{
 			Slug:         proxyTestAppNameOwner,
@@ -369,7 +388,7 @@ func createWorkspaceWithApps(t *testing.T, client *codersdk.Client, orgID uuid.U
 	for _, app := range workspaceBuild.Resources[0].Agents[0].Apps {
 		require.True(t, app.Subdomain)
 
-		appURL := httpapi.ApplicationURL{
+		appURL := appurl.ApplicationURL{
 			Prefix: "",
 			// findProtoApp is needed as the order of apps returned from PG database
 			// is not guaranteed.
@@ -395,10 +414,13 @@ func createWorkspaceWithApps(t *testing.T, client *codersdk.Client, orgID uuid.U
 	primaryAppHost, err := client.AppHost(appHostCtx)
 	require.NoError(t, err)
 	if primaryAppHost.Host != "" {
-		manifest, err := agentClient.Manifest(appHostCtx)
+		rpcConn, err := agentClient.ConnectRPC(appHostCtx)
+		require.NoError(t, err)
+		aAPI := agentproto.NewDRPCAgentClient(rpcConn)
+		manifest, err := aAPI.GetManifest(appHostCtx, &agentproto.GetManifestRequest{})
 		require.NoError(t, err)
 
-		appHost := httpapi.ApplicationURL{
+		appHost := appurl.ApplicationURL{
 			Prefix:        "",
 			AppSlugOrPort: "{{port}}",
 			AgentName:     proxyTestAgentName,
@@ -406,7 +428,9 @@ func createWorkspaceWithApps(t *testing.T, client *codersdk.Client, orgID uuid.U
 			Username:      me.Username,
 		}
 		proxyURL := "http://" + appHost.String() + strings.ReplaceAll(primaryAppHost.Host, "*", "")
-		require.Equal(t, proxyURL, manifest.VSCodePortProxyURI)
+		require.Equal(t, manifest.VsCodePortProxyUri, proxyURL)
+		err = rpcConn.Close()
+		require.NoError(t, err)
 	}
 	agentCloser := agent.New(agent.Options{
 		Client: agentClient,

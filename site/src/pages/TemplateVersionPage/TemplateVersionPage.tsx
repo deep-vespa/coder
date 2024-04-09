@@ -1,13 +1,16 @@
-import { usePermissions } from "hooks/usePermissions";
-import { useOrganizationId } from "hooks/useOrganizationId";
 import { type FC, useMemo } from "react";
 import { Helmet } from "react-helmet-async";
+import { useQuery } from "react-query";
 import { useParams } from "react-router-dom";
+import {
+  templateByName,
+  templateFiles,
+  templateVersion,
+  templateVersionByName,
+} from "api/queries/templates";
+import { useAuthenticated } from "contexts/auth/RequireAuth";
 import { pageTitle } from "utils/page";
 import TemplateVersionPageView from "./TemplateVersionPageView";
-import { useQuery } from "react-query";
-import { templateVersionByName } from "api/queries/templates";
-import { useFileTab, useTemplateFiles } from "components/TemplateFiles/hooks";
 
 type Params = {
   version: string;
@@ -17,17 +20,30 @@ type Params = {
 export const TemplateVersionPage: FC = () => {
   const { version: versionName, template: templateName } =
     useParams() as Params;
-  const orgId = useOrganizationId();
-  const templateVersionQuery = useQuery(
-    templateVersionByName(orgId, templateName, versionName),
+  const { organizationId } = useAuthenticated();
+
+  /**
+   * Template version files
+   */
+  const templateQuery = useQuery(templateByName(organizationId, templateName));
+  const selectedVersionQuery = useQuery(
+    templateVersionByName(organizationId, templateName, versionName),
   );
-  const { data: templateFiles, error: templateFilesError } = useTemplateFiles(
-    templateName,
-    templateVersionQuery.data,
-  );
-  const tab = useFileTab(templateFiles?.currentFiles);
-  const permissions = usePermissions();
-  const versionId = templateVersionQuery.data?.id;
+  const selectedVersionFilesQuery = useQuery({
+    ...templateFiles(selectedVersionQuery.data?.job.file_id ?? ""),
+    enabled: Boolean(selectedVersionQuery.data),
+  });
+  const activeVersionQuery = useQuery({
+    ...templateVersion(templateQuery.data?.active_version_id ?? ""),
+    enabled: Boolean(templateQuery.data),
+  });
+  const activeVersionFilesQuery = useQuery({
+    ...templateFiles(activeVersionQuery.data?.job.file_id ?? ""),
+    enabled: Boolean(activeVersionQuery.data),
+  });
+
+  const { permissions } = useAuthenticated();
+  const versionId = selectedVersionQuery.data?.id;
   const createWorkspaceUrl = useMemo(() => {
     const params = new URLSearchParams();
     if (versionId) {
@@ -44,13 +60,18 @@ export const TemplateVersionPage: FC = () => {
       </Helmet>
 
       <TemplateVersionPageView
-        error={templateVersionQuery.error || templateFilesError}
-        currentVersion={templateVersionQuery.data}
-        currentFiles={templateFiles?.currentFiles}
-        previousFiles={templateFiles?.previousFiles}
+        error={
+          templateQuery.error ||
+          selectedVersionQuery.error ||
+          selectedVersionFilesQuery.error ||
+          activeVersionQuery.error ||
+          activeVersionFilesQuery.error
+        }
+        currentVersion={selectedVersionQuery.data}
+        currentFiles={selectedVersionFilesQuery.data}
+        baseFiles={activeVersionFilesQuery.data}
         versionName={versionName}
         templateName={templateName}
-        tab={tab}
         createWorkspaceUrl={
           permissions.updateTemplates ? createWorkspaceUrl : undefined
         }

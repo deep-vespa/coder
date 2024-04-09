@@ -1,50 +1,51 @@
-import {
-  TemplateVersionParameter,
-  Workspace,
-  WorkspaceBuildParameter,
-} from "api/typesGenerated";
-import { useMe } from "hooks/useMe";
-import { useOrganizationId } from "hooks/useOrganizationId";
-import { type FC, useCallback, useState, useEffect } from "react";
+import { type FC, useCallback, useEffect, useState, useRef } from "react";
 import { Helmet } from "react-helmet-async";
-import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { pageTitle } from "utils/page";
-import { CreateWorkspacePageView } from "./CreateWorkspacePageView";
-import { Loader } from "components/Loader/Loader";
-import { ErrorAlert } from "components/Alert/ErrorAlert";
-import {
-  uniqueNamesGenerator,
-  animals,
-  colors,
-  NumberDictionary,
-} from "unique-names-generator";
 import { useMutation, useQuery, useQueryClient } from "react-query";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { getUserParameters } from "api/api";
+import type { ApiErrorResponse } from "api/errors";
+import { checkAuthorization } from "api/queries/authCheck";
 import {
+  richParameters,
   templateByName,
   templateVersionExternalAuth,
-  richParameters,
 } from "api/queries/templates";
 import { autoCreateWorkspace, createWorkspace } from "api/queries/workspaces";
-import { checkAuthorization } from "api/queries/authCheck";
-import { CreateWSPermissions, createWorkspaceChecks } from "./permissions";
-import { paramsUsedToCreateWorkspace } from "utils/workspace";
+import type {
+  TemplateVersionParameter,
+  UserParameter,
+  Workspace,
+} from "api/typesGenerated";
+import { ErrorAlert } from "components/Alert/ErrorAlert";
+import { Loader } from "components/Loader/Loader";
+import { useAuthenticated } from "contexts/auth/RequireAuth";
 import { useEffectEvent } from "hooks/hookPolyfills";
+import { useDashboard } from "modules/dashboard/useDashboard";
+import { generateWorkspaceName } from "modules/workspaces/generateWorkspaceName";
+import { pageTitle } from "utils/page";
+import type { AutofillBuildParameter } from "utils/richParameters";
+import { paramsUsedToCreateWorkspace } from "utils/workspace";
+import { CreateWorkspacePageView } from "./CreateWorkspacePageView";
+import { createWorkspaceChecks, type CreateWSPermissions } from "./permissions";
 
-type CreateWorkspaceMode = "form" | "auto";
+export const createWorkspaceModes = ["form", "auto", "duplicate"] as const;
+export type CreateWorkspaceMode = (typeof createWorkspaceModes)[number];
 
 export type ExternalAuthPollingState = "idle" | "polling" | "abandoned";
 
 const CreateWorkspacePage: FC = () => {
-  const organizationId = useOrganizationId();
   const { template: templateName } = useParams() as { template: string };
-  const me = useMe();
+  const { user: me, organizationId } = useAuthenticated();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const defaultBuildParameters = getDefaultBuildParameters(searchParams);
-  const mode = (searchParams.get("mode") ?? "form") as CreateWorkspaceMode;
+  const { experiments } = useDashboard();
+
   const customVersionId = searchParams.get("version") ?? undefined;
-  const defaultName =
-    mode === "auto" ? generateUniqueName() : searchParams.get("name") ?? "";
+  const defaultName = searchParams.get("name");
+  const disabledParams = searchParams.get("disable_params")?.split(",");
+  const [mode, setMode] = useState(() => getWorkspaceMode(searchParams));
+  const [autoCreateError, setAutoCreateError] =
+    useState<ApiErrorResponse | null>(null);
 
   const queryClient = useQueryClient();
   const autoCreateWorkspaceMutation = useMutation(
@@ -53,6 +54,7 @@ const CreateWorkspacePage: FC = () => {
   const createWorkspaceMutation = useMutation(createWorkspace(queryClient));
 
   const templateQuery = useQuery(templateByName(organizationId, templateName));
+
   const permissionsQuery = useQuery(
     checkAuthorization({
       checks: createWorkspaceChecks(organizationId),
@@ -68,8 +70,12 @@ const CreateWorkspacePage: FC = () => {
     ? richParametersQuery.data.filter(paramsUsedToCreateWorkspace)
     : undefined;
 
-  const { externalAuth, externalAuthPollingState, startPollingExternalAuth } =
-    useExternalAuth(realizedVersionId);
+  const {
+    externalAuth,
+    externalAuthPollingState,
+    startPollingExternalAuth,
+    isLoadingExternalAuth,
+  } = useExternalAuth(realizedVersionId);
 
   const isLoadingFormData =
     templateQuery.isLoading ||
@@ -89,13 +95,31 @@ const CreateWorkspacePage: FC = () => {
     [navigate],
   );
 
+  // Auto fill parameters
+  const autofillEnabled = experiments.includes("auto-fill-parameters");
+  const userParametersQuery = useQuery({
+    queryKey: ["userParameters"],
+    queryFn: () => getUserParameters(templateQuery.data!.id),
+    enabled: autofillEnabled && templateQuery.isSuccess,
+  });
+  const autofillParameters = getAutofillParameters(
+    searchParams,
+    userParametersQuery.data ? userParametersQuery.data : [],
+  );
+
+  const autoCreationStartedRef = useRef(false);
   const automateWorkspaceCreation = useEffectEvent(async () => {
+    if (autoCreationStartedRef.current) {
+      return;
+    }
+
     try {
+      autoCreationStartedRef.current = true;
       const newWorkspace = await autoCreateWorkspaceMutation.mutateAsync({
         templateName,
         organizationId,
-        defaultBuildParameters,
-        defaultName,
+        defaultBuildParameters: autofillParameters,
+        defaultName: defaultName ?? generateWorkspaceName(),
         versionId: realizedVersionId,
       });
 
@@ -106,11 +130,45 @@ const CreateWorkspacePage: FC = () => {
     }
   });
 
+  const hasAllRequiredExternalAuth = Boolean(
+    !isLoadingExternalAuth &&
+      externalAuth?.every((auth) => auth.optional || auth.authenticated),
+  );
+
+  let autoCreateReady =
+    mode === "auto" &&
+    (!autofillEnabled || userParametersQuery.isSuccess) &&
+    hasAllRequiredExternalAuth;
+
+  // `mode=auto` was set, but a prerequisite has failed, and so auto-mode should be abandoned.
+  if (
+    mode === "auto" &&
+    !isLoadingExternalAuth &&
+    !hasAllRequiredExternalAuth
+  ) {
+    // Prevent suddenly resuming auto-mode if the user connects to all of the required
+    // external auth providers.
+    setMode("form");
+    // Ensure this is always false, so that we don't ever let `automateWorkspaceCreation`
+    // fire when we're trying to disable it.
+    autoCreateReady = false;
+    // Show an error message to explain _why_ the workspace was not created automatically.
+    const subject =
+      externalAuth?.length === 1
+        ? "an external authentication provider that is"
+        : "external authentication providers that are";
+    setAutoCreateError({
+      message: `This template requires ${subject} not connected.`,
+      detail:
+        "Auto-creation has been disabled. Please connect all required external authentication providers before continuing.",
+    });
+  }
+
   useEffect(() => {
-    if (mode === "auto") {
+    if (autoCreateReady) {
       void automateWorkspaceCreation();
     }
-  }, [automateWorkspaceCreation, mode]);
+  }, [automateWorkspaceCreation, autoCreateReady]);
 
   return (
     <>
@@ -118,19 +176,23 @@ const CreateWorkspacePage: FC = () => {
         <title>{pageTitle(title)}</title>
       </Helmet>
       {loadFormDataError && <ErrorAlert error={loadFormDataError} />}
-      {isLoadingFormData || autoCreateWorkspaceMutation.isLoading ? (
+      {isLoadingFormData || isLoadingExternalAuth || autoCreateReady ? (
         <Loader />
       ) : (
         <CreateWorkspacePageView
+          mode={mode}
           defaultName={defaultName}
+          disabledParams={disabledParams}
           defaultOwner={me}
-          defaultBuildParameters={defaultBuildParameters}
-          error={createWorkspaceMutation.error}
+          autofillParameters={autofillParameters}
+          error={createWorkspaceMutation.error || autoCreateError}
+          resetMutation={createWorkspaceMutation.reset}
           template={templateQuery.data!}
           versionId={realizedVersionId}
           externalAuth={externalAuth ?? []}
           externalAuthPollingState={externalAuthPollingState}
           startPollingExternalAuth={startPollingExternalAuth}
+          hasAllRequiredExternalAuth={hasAllRequiredExternalAuth}
           permissions={permissionsQuery.data as CreateWSPermissions}
           parameters={realizedParameters as TemplateVersionParameter[]}
           creatingWorkspace={createWorkspaceMutation.isLoading}
@@ -167,7 +229,7 @@ const useExternalAuth = (versionId: string | undefined) => {
     setExternalAuthPollingState("polling");
   }, []);
 
-  const { data: externalAuth } = useQuery(
+  const { data: externalAuth, isLoading: isLoadingExternalAuth } = useQuery(
     versionId
       ? {
           ...templateVersionExternalAuth(versionId),
@@ -203,45 +265,48 @@ const useExternalAuth = (versionId: string | undefined) => {
     startPollingExternalAuth,
     externalAuth,
     externalAuthPollingState,
+    isLoadingExternalAuth,
   };
 };
 
-const getDefaultBuildParameters = (
+const getAutofillParameters = (
   urlSearchParams: URLSearchParams,
-): WorkspaceBuildParameter[] => {
-  const buildValues: WorkspaceBuildParameter[] = [];
-  Array.from(urlSearchParams.keys())
+  userParameters: UserParameter[],
+): AutofillBuildParameter[] => {
+  const userParamMap = userParameters.reduce((acc, param) => {
+    acc.set(param.name, param);
+    return acc;
+  }, new Map<string, UserParameter>());
+
+  const buildValues: AutofillBuildParameter[] = Array.from(
+    urlSearchParams.keys(),
+  )
     .filter((key) => key.startsWith("param."))
-    .forEach((key) => {
+    .map((key) => {
       const name = key.replace("param.", "");
       const value = urlSearchParams.get(key) ?? "";
-      buildValues.push({ name, value });
+      // URL should take precedence over user parameters
+      userParamMap.delete(name);
+      return { name, value, source: "url" };
     });
+
+  userParamMap.forEach((param) => {
+    buildValues.push({
+      name: param.name,
+      value: param.value,
+      source: "user_history",
+    });
+  });
   return buildValues;
 };
 
-export const orderedTemplateParameters = (
-  templateParameters?: TemplateVersionParameter[],
-): TemplateVersionParameter[] => {
-  if (!templateParameters) {
-    return [];
+export default CreateWorkspacePage;
+
+function getWorkspaceMode(params: URLSearchParams): CreateWorkspaceMode {
+  const paramMode = params.get("mode");
+  if (createWorkspaceModes.includes(paramMode as CreateWorkspaceMode)) {
+    return paramMode as CreateWorkspaceMode;
   }
 
-  const immutables = templateParameters.filter(
-    (parameter) => !parameter.mutable,
-  );
-  const mutables = templateParameters.filter((parameter) => parameter.mutable);
-  return [...immutables, ...mutables];
-};
-
-const generateUniqueName = () => {
-  const numberDictionary = NumberDictionary.generate({ min: 0, max: 99 });
-  return uniqueNamesGenerator({
-    dictionaries: [colors, animals, numberDictionary],
-    separator: "-",
-    length: 3,
-    style: "lowerCase",
-  });
-};
-
-export default CreateWorkspacePage;
+  return "form";
+}

@@ -1,12 +1,18 @@
-import { Meta, StoryObj } from "@storybook/react";
-import { DEFAULT_RECORDS_PER_PAGE } from "components/PaginationWidget/utils";
+import type { Meta, StoryObj } from "@storybook/react";
 import dayjs from "dayjs";
 import uniqueId from "lodash/uniqueId";
+import type { ComponentProps } from "react";
 import {
-  Workspace,
-  WorkspaceStatus,
+  type Workspace,
+  type WorkspaceStatus,
   WorkspaceStatuses,
 } from "api/typesGenerated";
+import {
+  MockMenu,
+  getDefaultFilterProps,
+} from "components/Filter/storyHelpers";
+import { DEFAULT_RECORDS_PER_PAGE } from "components/PaginationWidget/utils";
+import { DashboardContext } from "modules/dashboard/DashboardProvider";
 import {
   MockWorkspace,
   MockAppearanceConfig,
@@ -19,17 +25,13 @@ import {
   MockTemplate,
 } from "testHelpers/entities";
 import { WorkspacesPageView } from "./WorkspacesPageView";
-import { DashboardProviderContext } from "components/Dashboard/DashboardProvider";
-import { ComponentProps } from "react";
-import {
-  MockMenu,
-  getDefaultFilterProps,
-} from "components/Filter/storyHelpers";
 
 const createWorkspace = (
   status: WorkspaceStatus,
   outdated = false,
   lastUsedAt = "0001-01-01",
+  dormantAt?: string,
+  deletingAt?: string,
 ): Workspace => {
   return {
     ...MockWorkspace,
@@ -44,6 +46,8 @@ const createWorkspace = (
           : MockWorkspace.latest_build.job,
     },
     last_used_at: lastUsedAt,
+    dormant_at: dormantAt,
+    deleting_at: deletingAt,
   };
 };
 
@@ -63,6 +67,22 @@ const additionalWorkspaces: Record<string, Workspace> = {
     "running",
     true,
     dayjs().subtract(1, "month").subtract(4, "day").toString(),
+  ),
+};
+
+const dormantWorkspaces: Record<string, Workspace> = {
+  dormantNoDelete: createWorkspace(
+    "stopped",
+    false,
+    dayjs().subtract(1, "month").toString(),
+    dayjs().subtract(1, "month").toString(),
+  ),
+  dormantAutoDelete: createWorkspace(
+    "stopped",
+    false,
+    dayjs().subtract(1, "month").toString(),
+    dayjs().subtract(1, "month").toString(),
+    dayjs().add(29, "day").toString(),
   ),
 };
 
@@ -107,7 +127,7 @@ const mockTemplates = [
 ];
 
 const meta: Meta<typeof WorkspacesPageView> = {
-  title: "pages/WorkspacesPageView",
+  title: "pages/WorkspacesPage",
   component: WorkspacesPageView,
   args: {
     limit: DEFAULT_RECORDS_PER_PAGE,
@@ -116,10 +136,12 @@ const meta: Meta<typeof WorkspacesPageView> = {
     canCheckWorkspaces: true,
     templates: mockTemplates,
     templatesFetchStatus: "success",
+    count: 13,
+    page: 1,
   },
   decorators: [
     (Story) => (
-      <DashboardProviderContext.Provider
+      <DashboardContext.Provider
         value={{
           buildInfo: MockBuildInfo,
           entitlements: MockEntitlementsWithScheduling,
@@ -128,7 +150,7 @@ const meta: Meta<typeof WorkspacesPageView> = {
         }}
       >
         <Story />
-      </DashboardProviderContext.Provider>
+      </DashboardContext.Provider>
     ),
   ],
 };
@@ -143,10 +165,67 @@ export const AllStates: Story = {
   },
 };
 
+export const AllStatesWithFavorites: Story = {
+  args: {
+    workspaces: allWorkspaces.map((workspace, i) => ({
+      ...workspace,
+      // NOTE: testing sort order is not relevant here.
+      favorite: i % 2 === 0,
+    })),
+    count: allWorkspaces.length,
+  },
+};
+
+const icons = [
+  "/icon/code.svg",
+  "/icon/aws.svg",
+  "/icon/docker-white.svg",
+  "/icon/docker.svg",
+  "",
+  "/icon/doesntexist.svg",
+];
+
+export const Icons: Story = {
+  args: {
+    workspaces: allWorkspaces.map((workspace, i) => ({
+      ...workspace,
+      template_icon: icons[i % icons.length],
+    })),
+    count: allWorkspaces.length,
+  },
+};
+
 export const OwnerHasNoWorkspaces: Story = {
   args: {
     workspaces: [],
     count: 0,
+    canCreateTemplate: true,
+  },
+};
+
+export const OwnerHasNoWorkspacesAndNoTemplates: Story = {
+  args: {
+    workspaces: [],
+    templates: [],
+    count: 0,
+    canCreateTemplate: true,
+  },
+};
+
+export const UserHasNoWorkspaces: Story = {
+  args: {
+    workspaces: [],
+    count: 0,
+    canCreateTemplate: false,
+  },
+};
+
+export const UserHasNoWorkspacesAndNoTemplates: Story = {
+  args: {
+    workspaces: [],
+    templates: [],
+    count: 0,
+    canCreateTemplate: false,
   },
 };
 
@@ -179,8 +258,24 @@ export const UnhealthyWorkspace: Story = {
   },
 };
 
+export const DormantWorkspaces: Story = {
+  args: {
+    workspaces: Object.values(dormantWorkspaces),
+    count: Object.values(dormantWorkspaces).length,
+  },
+};
+
 export const Error: Story = {
   args: {
     error: mockApiError({ message: "Something went wrong" }),
+  },
+};
+
+export const InvalidPageNumber: Story = {
+  args: {
+    workspaces: [],
+    count: 200,
+    limit: 25,
+    page: 1000,
   },
 };

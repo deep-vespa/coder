@@ -6,7 +6,7 @@ paid license. [Contact Sales](https://coder.com/contact) for pricing or
 
 | Category        | Feature                                                                                             | Open Source | Enterprise |
 | --------------- | --------------------------------------------------------------------------------------------------- | :---------: | :--------: |
-| Support         | Email, Phone, Prioritization                                                                        |     ❌      |     ✅     |
+| Support         | Email, Prioritization                                                                               |     ❌      |     ✅     |
 | Scale           | [High Availability](./admin/high-availability.md)                                                   |     ❌      |     ✅     |
 | Scale           | [Multiple External Auth Providers](./admin/external-auth.md#multiple-external-providers-enterprise) |     ❌      |     ✅     |
 | Scale           | [Isolated Terraform Runners](./admin/provisioners.md)                                               |     ❌      |     ✅     |
@@ -15,7 +15,7 @@ paid license. [Contact Sales](https://coder.com/contact) for pricing or
 | Governance      | [Browser Only Connections](./networking/#browser-only-connections-enterprise)                       |     ❌      |     ✅     |
 | Governance      | [Groups & Template RBAC](./admin/rbac.md)                                                           |     ❌      |     ✅     |
 | Cost Control    | [Quotas](./admin/quotas.md)                                                                         |     ❌      |     ✅     |
-| Cost Control    | [Max Workspace Autostop](./templates/#configure-max-workspace-autostop)                             |     ❌      |     ✅     |
+| Cost Control    | [Max Workspace Lifetime](./workspaces.md#max-lifetime)                                              |     ❌      |     ✅     |
 | User Management | [Groups](./admin/groups.md)                                                                         |     ❌      |     ✅     |
 | User Management | [Group & role sync](./admin/auth.md#group-sync-enterprise)                                          |     ❌      |     ✅     |
 | User Management | [SCIM](./admin/auth.md#scim)                                                                        |     ❌      |     ✅     |

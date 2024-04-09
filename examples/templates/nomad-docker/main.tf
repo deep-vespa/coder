@@ -27,6 +27,12 @@ provider "coder" {}
 provider "nomad" {
   address   = var.nomad_provider_address
   http_auth = var.nomad_provider_http_auth == "" ? null : var.nomad_provider_http_auth
+
+  # Fix reading the NOMAD_NAMESPACE and the NOMAD_REGION env var from the coder's allocation.
+  ignore_env_vars = {
+    "NOMAD_NAMESPACE" = true
+    "NOMAD_REGION"    = true
+  }
 }
 
 data "coder_parameter" "cpu" {
@@ -82,10 +88,9 @@ data "coder_parameter" "memory" {
 data "coder_workspace" "me" {}
 
 resource "coder_agent" "main" {
-  os                     = "linux"
-  arch                   = "amd64"
-  startup_script_timeout = 180
-  startup_script         = <<-EOT
+  os             = "linux"
+  arch           = "amd64"
+  startup_script = <<-EOT
     set -e
     # install and start code-server
     curl -fsSL https://code-server.dev/install.sh | sh -s -- --method=standalone --prefix=/tmp/code-server

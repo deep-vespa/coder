@@ -1,18 +1,18 @@
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import * as api from "api/api";
+import { MockWorkspace } from "testHelpers/entities";
 import {
   renderWithWorkspaceSettingsLayout,
   waitForLoaderToBeRemoved,
 } from "testHelpers/renderHelpers";
 import WorkspaceSettingsPage from "./WorkspaceSettingsPage";
-import { screen, waitFor, within } from "@testing-library/react";
-import * as api from "api/api";
-import { MockWorkspace } from "testHelpers/entities";
 
 test("Submit the workspace settings page successfully", async () => {
   // Mock the API calls that loads data
   jest
     .spyOn(api, "getWorkspaceByOwnerAndName")
-    .mockResolvedValueOnce(MockWorkspace);
+    .mockResolvedValueOnce({ ...MockWorkspace });
   // Mock the API calls that submit data
   const patchWorkspaceSpy = jest
     .spyOn(api, "patchWorkspace")
@@ -38,4 +38,22 @@ test("Submit the workspace settings page successfully", async () => {
       name: "new-name",
     });
   });
+});
+
+test("Name field is disabled if renames are disabled", async () => {
+  // Mock the API calls that loads data
+  jest
+    .spyOn(api, "getWorkspaceByOwnerAndName")
+    .mockResolvedValueOnce({ ...MockWorkspace, allow_renames: false });
+  renderWithWorkspaceSettingsLayout(<WorkspaceSettingsPage />, {
+    route: "/@test-user/test-workspace/settings",
+    path: "/:username/:workspace/settings",
+    // Need this because after submit the user is redirected
+    extraRoutes: [{ path: "/:username/:workspace", element: <div /> }],
+  });
+  await waitForLoaderToBeRemoved();
+  // Fill the form and submit
+  const form = screen.getByTestId("form");
+  const name = within(form).getByLabelText("Name");
+  expect(name).toBeDisabled();
 });

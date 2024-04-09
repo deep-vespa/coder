@@ -1,4 +1,5 @@
-import { Meta, StoryObj } from "@storybook/react";
+import type { Meta, StoryObj } from "@storybook/react";
+import { chromatic } from "testHelpers/chromatic";
 import {
   mockApiError,
   MockTemplate,
@@ -11,14 +12,17 @@ import { CreateWorkspacePageView } from "./CreateWorkspacePageView";
 
 const meta: Meta<typeof CreateWorkspacePageView> = {
   title: "pages/CreateWorkspacePage",
+  parameters: { chromatic },
   component: CreateWorkspacePageView,
   args: {
     defaultName: "",
     defaultOwner: MockUser,
-    defaultBuildParameters: [],
+    autofillParameters: [],
     template: MockTemplate,
     parameters: [],
     externalAuth: [],
+    hasAllRequiredExternalAuth: true,
+    mode: "form",
     permissions: {
       createWorkspaceForUser: true,
     },
@@ -42,6 +46,18 @@ export const CreateWorkspaceError: Story = {
         },
       ],
     }),
+  },
+};
+
+export const SpecificVersion: Story = {
+  args: {
+    versionId: "specific-version",
+  },
+};
+
+export const Duplicate: Story = {
+  args: {
+    mode: "duplicate",
   },
 };
 
@@ -83,6 +99,18 @@ export const Parameters: Story = {
         ephemeral: false,
       },
     ],
+    autofillParameters: [
+      {
+        name: "first_parameter",
+        value: "Cool suggestion",
+        source: "user_history",
+      },
+      {
+        name: "third_parameter",
+        value: "aaaa",
+        source: "url",
+      },
+    ],
   },
 };
 
@@ -104,6 +132,82 @@ export const ExternalAuth: Story = {
         authenticate_url: "",
         display_icon: "/icon/gitlab.svg",
         display_name: "GitLab",
+        optional: true,
+      },
+    ],
+    hasAllRequiredExternalAuth: false,
+  },
+};
+
+export const ExternalAuthError: Story = {
+  args: {
+    error: true,
+    externalAuth: [
+      {
+        id: "github",
+        type: "github",
+        authenticated: false,
+        authenticate_url: "",
+        display_icon: "/icon/github.svg",
+        display_name: "GitHub",
+      },
+      {
+        id: "gitlab",
+        type: "gitlab",
+        authenticated: false,
+        authenticate_url: "",
+        display_icon: "/icon/gitlab.svg",
+        display_name: "GitLab",
+        optional: true,
+      },
+    ],
+    hasAllRequiredExternalAuth: false,
+  },
+};
+
+export const ExternalAuthAllRequiredConnected: Story = {
+  args: {
+    externalAuth: [
+      {
+        id: "github",
+        type: "github",
+        authenticated: true,
+        authenticate_url: "",
+        display_icon: "/icon/github.svg",
+        display_name: "GitHub",
+      },
+      {
+        id: "gitlab",
+        type: "gitlab",
+        authenticated: false,
+        authenticate_url: "",
+        display_icon: "/icon/gitlab.svg",
+        display_name: "GitLab",
+        optional: true,
+      },
+    ],
+  },
+};
+
+export const ExternalAuthAllConnected: Story = {
+  args: {
+    externalAuth: [
+      {
+        id: "github",
+        type: "github",
+        authenticated: true,
+        authenticate_url: "",
+        display_icon: "/icon/github.svg",
+        display_name: "GitHub",
+      },
+      {
+        id: "gitlab",
+        type: "gitlab",
+        authenticated: true,
+        authenticate_url: "",
+        display_icon: "/icon/gitlab.svg",
+        display_name: "GitLab",
+        optional: true,
       },
     ],
   },

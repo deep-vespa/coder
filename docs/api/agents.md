@@ -421,6 +421,7 @@ curl -X GET http://coder-server:8080/api/v2/workspaceagents/me/manifest \
 ```json
 {
   "agent_id": "string",
+  "agent_name": "string",
   "apps": [
     {
       "command": "string",
@@ -518,6 +519,7 @@ curl -X GET http://coder-server:8080/api/v2/workspaceagents/me/manifest \
     }
   ],
   "motd_file": "string",
+  "owner_name": "string",
   "scripts": [
     {
       "cron": "string",
@@ -530,7 +532,9 @@ curl -X GET http://coder-server:8080/api/v2/workspaceagents/me/manifest \
       "timeout": 0
     }
   ],
-  "vscode_port_proxy_uri": "string"
+  "vscode_port_proxy_uri": "string",
+  "workspace_id": "string",
+  "workspace_name": "string"
 }
 ```
 
@@ -699,6 +703,7 @@ curl -X GET http://coder-server:8080/api/v2/workspaceagents/{workspaceagent} \
 
 ```json
 {
+  "api_version": "string",
   "apps": [
     {
       "command": "string",
@@ -885,9 +890,9 @@ curl -X GET http://coder-server:8080/api/v2/workspaceagents/{workspaceagent}/con
 
 ### Responses
 
-| Status | Meaning                                                 | Description | Schema                                                                                   |
-| ------ | ------------------------------------------------------- | ----------- | ---------------------------------------------------------------------------------------- |
-| 200    | [OK](https://tools.ietf.org/html/rfc7231#section-6.3.1) | OK          | [codersdk.WorkspaceAgentConnectionInfo](schemas.md#codersdkworkspaceagentconnectioninfo) |
+| Status | Meaning                                                 | Description | Schema                                                                         |
+| ------ | ------------------------------------------------------- | ----------- | ------------------------------------------------------------------------------ |
+| 200    | [OK](https://tools.ietf.org/html/rfc7231#section-6.3.1) | OK          | [workspacesdk.AgentConnectionInfo](schemas.md#workspacesdkagentconnectioninfo) |
 
 To perform this operation, you must be authenticated. [Learn more](authentication.md).
 

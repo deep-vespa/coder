@@ -1,22 +1,45 @@
-import Box, { BoxProps } from "@mui/material/Box";
+import type { Interpolation, Theme } from "@emotion/react";
 import CircularProgress from "@mui/material/CircularProgress";
-import { FC } from "react";
+import type { FC, HTMLAttributes } from "react";
 
-export const Loader: FC<{ size?: number } & BoxProps> = ({
+interface LoaderProps extends HTMLAttributes<HTMLDivElement> {
+  fullscreen?: boolean;
+  size?: number;
+}
+
+export const Loader: FC<LoaderProps> = ({
+  fullscreen,
   size = 26,
-  ...boxProps
+  ...attrs
 }) => {
   return (
-    <Box
-      p={4}
-      width="100%"
-      display="flex"
-      alignItems="center"
-      justifyContent="center"
+    <div
+      css={fullscreen ? styles.fullscreen : styles.inline}
       data-testid="loader"
-      {...boxProps}
+      {...attrs}
     >
       <CircularProgress size={size} />
-    </Box>
+    </div>
   );
 };
+
+const styles = {
+  inline: {
+    padding: 32,
+    width: "100%",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  fullscreen: (theme) => ({
+    position: "absolute",
+    top: "0",
+    left: "0",
+    right: "0",
+    bottom: "0",
+    display: "flex",
+    justifyContent: "center",
+    alignItems: "center",
+    background: theme.palette.background.default,
+  }),
+} satisfies Record<string, Interpolation<Theme>>;

@@ -1,12 +1,12 @@
 import { Helmet } from "react-helmet-async";
+import { useMutation } from "react-query";
 import { useNavigate, useParams } from "react-router-dom";
+import { patchWorkspace, updateWorkspaceAutomaticUpdates } from "api/api";
+import { displaySuccess } from "components/GlobalSnackbar/utils";
 import { pageTitle } from "utils/page";
+import type { WorkspaceSettingsFormValues } from "./WorkspaceSettingsForm";
 import { useWorkspaceSettings } from "./WorkspaceSettingsLayout";
 import { WorkspaceSettingsPageView } from "./WorkspaceSettingsPageView";
-import { useMutation } from "react-query";
-import { displaySuccess } from "components/GlobalSnackbar/utils";
-import { patchWorkspace } from "api/api";
-import { WorkspaceSettingsFormValues } from "./WorkspaceSettingsForm";
 
 const WorkspaceSettingsPage = () => {
   const params = useParams() as {
@@ -17,9 +17,17 @@ const WorkspaceSettingsPage = () => {
   const username = params.username.replace("@", "");
   const workspace = useWorkspaceSettings();
   const navigate = useNavigate();
+
   const mutation = useMutation({
-    mutationFn: (formValues: WorkspaceSettingsFormValues) =>
-      patchWorkspace(workspace.id, { name: formValues.name }),
+    mutationFn: async (formValues: WorkspaceSettingsFormValues) => {
+      await Promise.all([
+        patchWorkspace(workspace.id, { name: formValues.name }),
+        updateWorkspaceAutomaticUpdates(
+          workspace.id,
+          formValues.automatic_updates,
+        ),
+      ]);
+    },
     onSuccess: (_, formValues) => {
       displaySuccess("Workspace updated successfully");
       navigate(`/@${username}/${formValues.name}/settings`);
@@ -34,10 +42,9 @@ const WorkspaceSettingsPage = () => {
 
       <WorkspaceSettingsPageView
         error={mutation.error}
-        isSubmitting={mutation.isLoading}
         workspace={workspace}
         onCancel={() => navigate(`/@${username}/${workspaceName}`)}
-        onSubmit={mutation.mutate}
+        onSubmit={mutation.mutateAsync}
       />
     </>
   );

@@ -10,12 +10,15 @@ import {
   renderWithTemplateSettingsLayout,
   waitForLoaderToBeRemoved,
 } from "testHelpers/renderHelpers";
-import { TemplateScheduleFormValues, getValidationSchema } from "./formHelpers";
+import {
+  getValidationSchema,
+  type TemplateScheduleFormValues,
+} from "./formHelpers";
 import TemplateSchedulePage from "./TemplateSchedulePage";
 
 const validFormValues: TemplateScheduleFormValues = {
   default_ttl_ms: 1,
-  max_ttl_ms: 2,
+  activity_bump_ms: 1,
   failure_ttl_ms: 7,
   time_til_dormant_ms: 180,
   time_til_dormant_autodelete_ms: 30,
@@ -36,6 +39,7 @@ const validFormValues: TemplateScheduleFormValues = {
     "saturday",
     "sunday",
   ],
+  disable_everyone_group_access: false,
 };
 
 const renderTemplateSchedulePage = async () => {
@@ -57,7 +61,6 @@ type FillAndSubmitConfig = {
 
 const fillAndSubmitForm = async ({
   default_ttl_ms,
-  max_ttl_ms,
   failure_ttl_ms,
   time_til_dormant_ms,
   time_til_dormant_autodelete_ms,
@@ -70,13 +73,6 @@ const fillAndSubmitForm = async ({
     );
     await user.clear(defaultTtlField);
     await user.type(defaultTtlField, default_ttl_ms.toString());
-  }
-
-  if (max_ttl_ms) {
-    const maxTtlField = await screen.findByLabelText("Max lifetime (hours)");
-
-    await user.clear(maxTtlField);
-    await user.type(maxTtlField, max_ttl_ms.toString());
   }
 
   if (failure_ttl_ms) {
@@ -133,9 +129,6 @@ describe("TemplateSchedulePage", () => {
     jest
       .spyOn(API, "getEntitlements")
       .mockResolvedValue(MockEntitlementsWithScheduling);
-
-    // remove when https://github.com/coder/coder/milestone/19 is completed.
-    jest.spyOn(API, "getExperiments").mockResolvedValue(["workspace_actions"]);
   });
 
   it("Calls the API when user fills in and submits a form", async () => {
@@ -151,7 +144,7 @@ describe("TemplateSchedulePage", () => {
     );
   });
 
-  test("default and max ttl is converted to and from hours", async () => {
+  test("default is converted to and from hours", async () => {
     await renderTemplateSchedulePage();
 
     jest.spyOn(API, "updateTemplateMeta").mockResolvedValueOnce({
@@ -169,7 +162,6 @@ describe("TemplateSchedulePage", () => {
         "test-template",
         expect.objectContaining({
           default_ttl_ms: (validFormValues.default_ttl_ms || 0) * 3600000,
-          max_ttl_ms: (validFormValues.max_ttl_ms || 0) * 3600000,
         }),
       );
     });

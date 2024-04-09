@@ -1,12 +1,16 @@
+import type { Meta, StoryObj } from "@storybook/react";
 import {
   MockUser,
   MockUser2,
   MockAssignableSiteRoles,
-  MockAuthMethods,
+  MockAuthMethodsPasswordOnly,
   MockGroup,
+  MockUserAdminRole,
+  MockTemplateAdminRole,
+  MockMemberRole,
+  MockAuditorRole,
 } from "testHelpers/entities";
 import { UsersTable } from "./UsersTable";
-import type { Meta, StoryObj } from "@storybook/react";
 
 const mockGroupsByUserId = new Map([
   [MockUser.id, [MockGroup]],
@@ -18,7 +22,7 @@ const meta: Meta<typeof UsersTable> = {
   component: UsersTable,
   args: {
     isNonInitialPage: false,
-    authMethods: MockAuthMethods,
+    authMethods: MockAuthMethodsPasswordOnly,
   },
 };
 
@@ -43,7 +47,12 @@ export const Editable: Story = {
         ...MockUser,
         username: "John Doe",
         email: "john.doe@coder.com",
-        roles: [],
+        roles: [
+          MockUserAdminRole,
+          MockTemplateAdminRole,
+          MockMemberRole,
+          MockAuditorRole,
+        ],
         status: "dormant",
       },
       {

@@ -1,20 +1,16 @@
-import { ClibaseOption } from "api/typesGenerated";
-import {
-  Badges,
-  DisabledBadge,
-  EnabledBadge,
-} from "components/DeploySettingsLayout/Badges";
-import { Header } from "components/DeploySettingsLayout/Header";
-import OptionsTable from "components/DeploySettingsLayout/OptionsTable";
+import type { SerpentOption } from "api/typesGenerated";
+import { Badges, DisabledBadge, EnabledBadge } from "components/Badges/Badges";
 import { Stack } from "components/Stack/Stack";
 import {
   deploymentGroupHasParent,
   useDeploymentOptions,
 } from "utils/deployOptions";
 import { docs } from "utils/docs";
+import { Header } from "../Header";
+import OptionsTable from "../OptionsTable";
 
 export type UserAuthSettingsPageViewProps = {
-  options: ClibaseOption[];
+  options: SerpentOption[];
 };
 
 export const UserAuthSettingsPageView = ({

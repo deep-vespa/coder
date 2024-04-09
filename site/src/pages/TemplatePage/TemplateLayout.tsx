@@ -1,19 +1,24 @@
-import { useTheme } from "@emotion/react";
-import { createContext, type FC, Suspense, useContext } from "react";
+import {
+  createContext,
+  type FC,
+  type PropsWithChildren,
+  Suspense,
+  useContext,
+} from "react";
 import { useQuery } from "react-query";
-import { Outlet, useNavigate, useParams } from "react-router-dom";
-import type { AuthorizationRequest } from "api/typesGenerated";
+import { Outlet, useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   checkAuthorization,
   getTemplateByName,
   getTemplateVersion,
 } from "api/api";
+import type { AuthorizationRequest } from "api/typesGenerated";
 import { ErrorAlert } from "components/Alert/ErrorAlert";
-import { Margins } from "components/Margins/Margins";
 import { Loader } from "components/Loader/Loader";
-import { useOrganizationId } from "hooks/useOrganizationId";
+import { Margins } from "components/Margins/Margins";
+import { TAB_PADDING_Y, TabLink, Tabs, TabsList } from "components/Tabs/Tabs";
+import { useAuthenticated } from "contexts/auth/RequireAuth";
 import { TemplatePageHeader } from "./TemplatePageHeader";
-import { TabLink, Tabs } from "components/Tabs/Tabs";
 
 const templatePermissions = (
   templateId: string,
@@ -25,10 +30,16 @@ const templatePermissions = (
     },
     action: "update",
   },
+  canReadInsights: {
+    object: {
+      resource_type: "template_insights",
+    },
+    action: "read",
+  },
 });
 
-const fetchTemplate = async (orgId: string, templateName: string) => {
-  const template = await getTemplateByName(orgId, templateName);
+const fetchTemplate = async (organizationId: string, templateName: string) => {
+  const template = await getTemplateByName(organizationId, templateName);
   const [activeVersion, permissions] = await Promise.all([
     getTemplateVersion(template.active_version_id),
     checkAuthorization({
@@ -59,22 +70,27 @@ export const useTemplateLayoutContext = (): TemplateLayoutContextValue => {
   return context;
 };
 
-export const TemplateLayout: FC<{ children?: JSX.Element }> = ({
+export const TemplateLayout: FC<PropsWithChildren> = ({
   children = <Outlet />,
 }) => {
-  const theme = useTheme();
   const navigate = useNavigate();
-  const orgId = useOrganizationId();
+  const { organizationId } = useAuthenticated();
   const { template: templateName } = useParams() as { template: string };
   const { data, error, isLoading } = useQuery({
     queryKey: ["template", templateName],
-    queryFn: () => fetchTemplate(orgId, templateName),
+    queryFn: () => fetchTemplate(organizationId, templateName),
   });
-  const shouldShowInsights = data?.permissions?.canUpdateTemplate;
+  const location = useLocation();
+  const paths = location.pathname.split("/");
+  const activeTab = paths[3] ?? "summary";
+  // Auditors should also be able to view insights, but do not automatically
+  // have permission to update templates. Need both checks.
+  const shouldShowInsights =
+    data?.permissions?.canUpdateTemplate || data?.permissions?.canReadInsights;
 
   if (error) {
     return (
-      <div css={{ margin: theme.spacing(2) }}>
+      <div css={{ margin: 16 }}>
         <ErrorAlert error={error} />
       </div>
     );
@@ -95,19 +111,42 @@ export const TemplateLayout: FC<{ children?: JSX.Element }> = ({
         }}
       />
 
-      <Tabs>
-        <TabLink end to={`/templates/${templateName}`}>
-          Summary
-        </TabLink>
-        <TabLink to={`/templates/${templateName}/docs`}>Docs</TabLink>
-        {data.permissions.canUpdateTemplate && (
-          <TabLink to={`/templates/${templateName}/files`}>Source Code</TabLink>
-        )}
-        <TabLink to={`/templates/${templateName}/versions`}>Versions</TabLink>
-        <TabLink to={`/templates/${templateName}/embed`}>Embed</TabLink>
-        {shouldShowInsights && (
-          <TabLink to={`/templates/${templateName}/insights`}>Insights</TabLink>
-        )}
+      <Tabs
+        active={activeTab}
+        css={{ marginBottom: 40, marginTop: -TAB_PADDING_Y }}
+      >
+        <Margins>
+          <TabsList>
+            <TabLink to={`/templates/${templateName}`} value="summary">
+              Summary
+            </TabLink>
+            <TabLink to={`/templates/${templateName}/docs`} value="docs">
+              Docs
+            </TabLink>
+            {data.permissions.canUpdateTemplate && (
+              <TabLink to={`/templates/${templateName}/files`} value="files">
+                Source Code
+              </TabLink>
+            )}
+            <TabLink
+              to={`/templates/${templateName}/versions`}
+              value="versions"
+            >
+              Versions
+            </TabLink>
+            <TabLink to={`/templates/${templateName}/embed`} value="embed">
+              Embed
+            </TabLink>
+            {shouldShowInsights && (
+              <TabLink
+                to={`/templates/${templateName}/insights`}
+                value="insights"
+              >
+                Insights
+              </TabLink>
+            )}
+          </TabsList>
+        </Margins>
       </Tabs>
 
       <Margins>

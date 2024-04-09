@@ -1,8 +1,8 @@
 import { screen } from "@testing-library/react";
+import type { UpdateUserProfileRequest } from "api/typesGenerated";
 import { MockUser2 } from "testHelpers/entities";
 import { render } from "testHelpers/renderHelpers";
 import { AccountForm } from "./AccountForm";
-import { UpdateUserProfileRequest } from "api/typesGenerated";
 
 // NOTE: it does not matter what the role props of MockUser are set to,
 //       only that editable is set to true or false. This is passed from
@@ -13,6 +13,7 @@ describe("AccountForm", () => {
       // Given
       const mockInitialValues: UpdateUserProfileRequest = {
         username: MockUser2.username,
+        name: MockUser2.name,
       };
 
       // When
@@ -43,6 +44,7 @@ describe("AccountForm", () => {
       // Given
       const mockInitialValues: UpdateUserProfileRequest = {
         username: MockUser2.username,
+        name: MockUser2.name,
       };
 
       // When

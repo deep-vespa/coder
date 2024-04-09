@@ -1,16 +1,20 @@
+import capitalize from "lodash/capitalize";
+import type { FC } from "react";
 import { AuditActions, ResourceTypes } from "api/typesGenerated";
-import { UserFilterMenu, UserMenu } from "components/Filter/UserFilter";
 import {
   Filter,
   FilterMenu,
   MenuSkeleton,
   OptionItem,
   SearchFieldSkeleton,
-  useFilter,
+  type useFilter,
 } from "components/Filter/filter";
-import { UseFilterMenuOptions, useFilterMenu } from "components/Filter/menu";
-import { BaseOption } from "components/Filter/options";
-import capitalize from "lodash/capitalize";
+import {
+  useFilterMenu,
+  type UseFilterMenuOptions,
+} from "components/Filter/menu";
+import type { BaseOption } from "components/Filter/options";
+import { type UserFilterMenu, UserMenu } from "components/Filter/UserFilter";
 import { docs } from "utils/docs";
 
 const PRESET_FILTERS = [
@@ -30,11 +34,7 @@ const PRESET_FILTERS = [
   },
 ];
 
-export const AuditFilter = ({
-  filter,
-  error,
-  menus,
-}: {
+interface AuditFilterProps {
   filter: ReturnType<typeof useFilter>;
   error?: unknown;
   menus: {
@@ -42,7 +42,9 @@ export const AuditFilter = ({
     action: ActionFilterMenu;
     resourceType: ResourceTypeFilterMenu;
   };
-}) => {
+}
+
+export const AuditFilter: FC<AuditFilterProps> = ({ filter, error, menus }) => {
   return (
     <Filter
       learnMoreLink={docs("/admin/audit-logs#filtering-logs")}
@@ -54,7 +56,7 @@ export const AuditFilter = ({
         <>
           <ResourceTypeMenu {...menus.resourceType} />
           <ActionMenu {...menus.action} />
-          <UserMenu {...menus.user} />
+          <UserMenu menu={menus.user} />
         </>
       }
       skeleton={

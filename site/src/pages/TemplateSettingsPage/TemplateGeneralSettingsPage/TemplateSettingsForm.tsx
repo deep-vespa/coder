@@ -1,7 +1,30 @@
+import type { Interpolation, Theme } from "@emotion/react";
+import Checkbox from "@mui/material/Checkbox";
+import MenuItem from "@mui/material/MenuItem";
 import TextField from "@mui/material/TextField";
-import { Template, UpdateTemplateMeta } from "api/typesGenerated";
-import { FormikContextType, FormikTouched, useFormik } from "formik";
-import { FC } from "react";
+import { type FormikContextType, type FormikTouched, useFormik } from "formik";
+import type { FC } from "react";
+import * as Yup from "yup";
+import {
+  WorkspaceAppSharingLevels,
+  type Template,
+  type UpdateTemplateMeta,
+} from "api/typesGenerated";
+import { EnterpriseBadge } from "components/Badges/Badges";
+import {
+  FormFields,
+  FormSection,
+  HorizontalForm,
+  FormFooter,
+} from "components/Form/Form";
+import {
+  HelpTooltip,
+  HelpTooltipContent,
+  HelpTooltipText,
+  HelpTooltipTrigger,
+} from "components/HelpTooltip/HelpTooltip";
+import { IconField } from "components/IconField/IconField";
+import { Stack } from "components/Stack/Stack";
 import {
   getFormHelpers,
   nameValidator,
@@ -9,23 +32,10 @@ import {
   onChangeTrimmed,
   iconValidator,
 } from "utils/formUtils";
-import * as Yup from "yup";
-import { LazyIconField } from "components/IconField/LazyIconField";
-import {
-  FormFields,
-  FormSection,
-  HorizontalForm,
-  FormFooter,
-} from "components/Form/Form";
-import { Stack } from "components/Stack/Stack";
-import Checkbox from "@mui/material/Checkbox";
-import {
-  HelpTooltip,
-  HelpTooltipText,
-} from "components/HelpTooltip/HelpTooltip";
-import { makeStyles } from "@mui/styles";
 
 const MAX_DESCRIPTION_CHAR_LIMIT = 128;
+const MAX_DESCRIPTION_MESSAGE =
+  "Please enter a description that is no longer than 128 characters.";
 
 export const getValidationSchema = (): Yup.AnyObjectSchema =>
   Yup.object({
@@ -33,11 +43,13 @@ export const getValidationSchema = (): Yup.AnyObjectSchema =>
     display_name: templateDisplayNameValidator("Display name"),
     description: Yup.string().max(
       MAX_DESCRIPTION_CHAR_LIMIT,
-      "Please enter a description that is less than or equal to 128 characters.",
+      MAX_DESCRIPTION_MESSAGE,
     ),
     allow_user_cancel_workspace_jobs: Yup.boolean(),
     icon: iconValidator,
     require_active_version: Yup.boolean(),
+    deprecation_message: Yup.string(),
+    max_port_sharing_level: Yup.string().oneOf(WorkspaceAppSharingLevels),
   });
 
 export interface TemplateSettingsForm {
@@ -49,6 +61,8 @@ export interface TemplateSettingsForm {
   // Helpful to show field errors on Storybook
   initialTouched?: FormikTouched<UpdateTemplateMeta>;
   accessControlEnabled: boolean;
+  portSharingExperimentEnabled: boolean;
+  portSharingControlsEnabled: boolean;
 }
 
 export const TemplateSettingsForm: FC<TemplateSettingsForm> = ({
@@ -59,6 +73,8 @@ export const TemplateSettingsForm: FC<TemplateSettingsForm> = ({
   isSubmitting,
   initialTouched,
   accessControlEnabled,
+  portSharingExperimentEnabled,
+  portSharingControlsEnabled,
 }) => {
   const validationSchema = getValidationSchema();
   const form: FormikContextType<UpdateTemplateMeta> =
@@ -73,13 +89,15 @@ export const TemplateSettingsForm: FC<TemplateSettingsForm> = ({
         update_workspace_last_used_at: false,
         update_workspace_dormant_at: false,
         require_active_version: template.require_active_version,
+        deprecation_message: template.deprecation_message,
+        disable_everyone_group_access: false,
+        max_port_share_level: template.max_port_share_level,
       },
       validationSchema,
       onSubmit,
       initialTouched,
     });
   const getFieldHelpers = getFormHelpers(form, error);
-  const styles = useStyles();
 
   return (
     <HorizontalForm
@@ -115,7 +133,9 @@ export const TemplateSettingsForm: FC<TemplateSettingsForm> = ({
           />
 
           <TextField
-            {...getFieldHelpers("description")}
+            {...getFieldHelpers("description", {
+              maxLength: MAX_DESCRIPTION_CHAR_LIMIT,
+            })}
             multiline
             disabled={isSubmitting}
             fullWidth
@@ -123,7 +143,7 @@ export const TemplateSettingsForm: FC<TemplateSettingsForm> = ({
             rows={2}
           />
 
-          <LazyIconField
+          <IconField
             {...getFieldHelpers("icon")}
             disabled={isSubmitting}
             onChange={onChangeTrimmed(form)}
@@ -154,16 +174,20 @@ export const TemplateSettingsForm: FC<TemplateSettingsForm> = ({
                   direction="row"
                   alignItems="center"
                   spacing={0.5}
-                  className={styles.optionText}
+                  css={styles.optionText}
                 >
                   Allow users to cancel in-progress workspace jobs.
                   <HelpTooltip>
-                    <HelpTooltipText>
-                      If checked, users may be able to corrupt their workspace.
-                    </HelpTooltipText>
+                    <HelpTooltipTrigger />
+                    <HelpTooltipContent>
+                      <HelpTooltipText>
+                        If checked, users may be able to corrupt their
+                        workspace.
+                      </HelpTooltipText>
+                    </HelpTooltipContent>
                   </HelpTooltip>
                 </Stack>
-                <span className={styles.optionHelperText}>
+                <span css={styles.optionHelperText}>
                   Depending on your template, canceling builds may leave
                   workspaces in an unhealthy state. This option isn&apos;t
                   recommended for most use cases.
@@ -171,54 +195,120 @@ export const TemplateSettingsForm: FC<TemplateSettingsForm> = ({
               </Stack>
             </Stack>
           </label>
-          {accessControlEnabled && (
-            <label htmlFor="require_active_version">
-              <Stack direction="row" spacing={1}>
-                <Checkbox
-                  id="require_active_version"
-                  name="require_active_version"
-                  checked={form.values.require_active_version}
-                  onChange={form.handleChange}
-                />
+          <label htmlFor="require_active_version">
+            <Stack direction="row" spacing={1}>
+              <Checkbox
+                id="require_active_version"
+                name="require_active_version"
+                checked={form.values.require_active_version}
+                onChange={form.handleChange}
+              />
 
-                <Stack direction="column" spacing={0.5}>
-                  <Stack
-                    direction="row"
-                    alignItems="center"
-                    spacing={0.5}
-                    className={styles.optionText}
-                  >
-                    Require the active template version for workspace builds.
-                    <HelpTooltip>
+              <Stack direction="column" spacing={0.5}>
+                <Stack
+                  direction="row"
+                  alignItems="center"
+                  spacing={0.5}
+                  css={styles.optionText}
+                >
+                  Require workspaces automatically update when started.
+                  <HelpTooltip>
+                    <HelpTooltipTrigger />
+                    <HelpTooltipContent>
                       <HelpTooltipText>
                         This setting is not enforced for template admins.
                       </HelpTooltipText>
-                    </HelpTooltip>
-                  </Stack>
-                  <span className={styles.optionHelperText}>
-                    Workspaces that are manually started or auto-started will
-                    use the promoted template version.
-                  </span>
+                    </HelpTooltipContent>
+                  </HelpTooltip>
                 </Stack>
+                <span css={styles.optionHelperText}>
+                  Workspaces that are manually started or auto-started will use
+                  the active template version.
+                </span>
               </Stack>
-            </label>
-          )}
+            </Stack>
+          </label>
         </Stack>
       </FormSection>
+
+      <FormSection
+        title="Deprecate"
+        description="Deprecating a template prevents any new workspaces from being created. Existing workspaces will continue to function."
+      >
+        <FormFields>
+          <TextField
+            {...getFieldHelpers("deprecation_message", {
+              helperText:
+                "Leave the message empty to keep the template active. Any message provided will mark the template as deprecated. Use this message to inform users of the deprecation and how to migrate to a new template.",
+            })}
+            disabled={isSubmitting || !accessControlEnabled}
+            fullWidth
+            label="Deprecation Message"
+          />
+          {!accessControlEnabled && (
+            <Stack direction="row">
+              <EnterpriseBadge />
+              <span css={styles.optionHelperText}>
+                Enterprise license required to deprecate templates.
+              </span>
+            </Stack>
+          )}
+        </FormFields>
+      </FormSection>
+
+      {portSharingExperimentEnabled && (
+        <FormSection
+          title="Port Sharing"
+          description="Shared ports with the Public sharing level can be accessed by anyone,
+          while ports with the Authenticated sharing level can only be accessed
+          by authenticated Coder users. Ports with the Owner sharing level can
+          only be accessed by the workspace owner."
+        >
+          <FormFields>
+            <TextField
+              {...getFieldHelpers("max_port_share_level", {
+                helperText:
+                  "The maximum level of port sharing allowed for workspaces.",
+              })}
+              disabled={isSubmitting || !portSharingControlsEnabled}
+              fullWidth
+              select
+              value={
+                portSharingControlsEnabled
+                  ? form.values.max_port_share_level
+                  : "public"
+              }
+              label="Maximum Port Sharing Level"
+            >
+              <MenuItem value="owner">Owner</MenuItem>
+              <MenuItem value="authenticated">Authenticated</MenuItem>
+              <MenuItem value="public">Public</MenuItem>
+            </TextField>
+            {!portSharingControlsEnabled && (
+              <Stack direction="row">
+                <EnterpriseBadge />
+                <span css={styles.optionHelperText}>
+                  Enterprise license required to control max port sharing level.
+                </span>
+              </Stack>
+            )}
+          </FormFields>
+        </FormSection>
+      )}
 
       <FormFooter onCancel={onCancel} isLoading={isSubmitting} />
     </HorizontalForm>
   );
 };
 
-const useStyles = makeStyles((theme) => ({
-  optionText: {
-    fontSize: theme.spacing(2),
+const styles = {
+  optionText: (theme) => ({
+    fontSize: 16,
     color: theme.palette.text.primary,
-  },
+  }),
 
-  optionHelperText: {
-    fontSize: theme.spacing(1.5),
+  optionHelperText: (theme) => ({
+    fontSize: 12,
     color: theme.palette.text.secondary,
-  },
-}));
+  }),
+} satisfies Record<string, Interpolation<Theme>>;

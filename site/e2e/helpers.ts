@@ -1,26 +1,45 @@
-import { expect, Page } from "@playwright/test";
-import { ChildProcess, exec, spawn } from "child_process";
+import { type BrowserContext, expect, type Page, test } from "@playwright/test";
+import axios from "axios";
+import { type ChildProcess, exec, spawn } from "child_process";
 import { randomUUID } from "crypto";
-import path from "path";
 import express from "express";
-import { TarWriter } from "utils/tar";
-import {
-  Agent,
-  App,
-  AppSharingLevel,
-  Response,
-  ParseComplete,
-  PlanComplete,
-  ApplyComplete,
-  Resource,
-  RichParameter,
-} from "./provisionerGenerated";
-import { prometheusPort, pprofPort } from "./constants";
-import { port } from "./playwright.config";
+import capitalize from "lodash/capitalize";
+import path from "path";
 import * as ssh from "ssh2";
 import { Duplex } from "stream";
-import { WorkspaceBuildParameter } from "api/typesGenerated";
-import axios from "axios";
+import type {
+  WorkspaceBuildParameter,
+  UpdateTemplateMeta,
+} from "api/typesGenerated";
+import { TarWriter } from "utils/tar";
+import {
+  agentPProfPort,
+  coderMain,
+  coderPort,
+  enterpriseLicense,
+  prometheusPort,
+  requireEnterpriseTests,
+} from "./constants";
+import {
+  Agent,
+  type App,
+  AppSharingLevel,
+  type ParseComplete,
+  type PlanComplete,
+  type ApplyComplete,
+  type Resource,
+  Response,
+  type RichParameter,
+} from "./provisionerGenerated";
+
+// requiresEnterpriseLicense will skip the test if we're not running with an enterprise license
+export function requiresEnterpriseLicense() {
+  if (requireEnterpriseTests) {
+    return;
+  }
+
+  test.skip(!enterpriseLicense);
+}
 
 // createWorkspace creates a workspace for a template.
 // It does not wait for it to be running, but it does navigate to the page.
@@ -43,12 +62,9 @@ export const createWorkspace = async (
 
   await expect(page).toHaveURL("/@admin/" + name);
 
-  await page.waitForSelector(
-    "span[data-testid='build-status'] >> text=Running",
-    {
-      state: "visible",
-    },
-  );
+  await page.waitForSelector("*[data-testid='build-status'] >> text=Running", {
+    state: "visible",
+  });
   return name;
 };
 
@@ -133,9 +149,24 @@ export const createTemplate = async (
   const name = randomName();
   await page.getByLabel("Name *").fill(name);
   await page.getByTestId("form-submit").click();
-  await expect(page).toHaveURL("/templates/" + name, {
+  await expect(page).toHaveURL(`/templates/${name}/files`, {
     timeout: 30000,
   });
+  return name;
+};
+
+// createGroup navigates to the /groups/create page and creates a group with a
+// random name.
+export const createGroup = async (page: Page): Promise<string> => {
+  await page.goto("/groups/create", { waitUntil: "domcontentloaded" });
+  await expect(page).toHaveURL("/groups/create");
+
+  const name = randomName();
+  await page.getByLabel("Name", { exact: true }).fill(name);
+  await page.getByTestId("form-submit").click();
+  await expect(page).toHaveURL(
+    /\/groups\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+  );
   return name;
 };
 
@@ -147,7 +178,7 @@ export const sshIntoWorkspace = async (
   binaryArgs: string[] = [],
 ): Promise<ssh.Client> => {
   if (binaryPath === "go") {
-    binaryArgs = ["run", coderMainPath()];
+    binaryArgs = ["run", coderMain];
   }
   const sessionToken = await findSessionToken(page);
   return new Promise<ssh.Client>((resolve, reject) => {
@@ -155,7 +186,7 @@ export const sshIntoWorkspace = async (
       env: {
         ...process.env,
         CODER_SESSION_TOKEN: sessionToken,
-        CODER_URL: "http://localhost:3000",
+        CODER_URL: `http://localhost:${coderPort}`,
       },
     });
     cp.on("error", (err) => reject(err));
@@ -193,12 +224,9 @@ export const stopWorkspace = async (page: Page, workspaceName: string) => {
 
   await page.getByTestId("workspace-stop-button").click();
 
-  await page.waitForSelector(
-    "span[data-testid='build-status'] >> text=Stopped",
-    {
-      state: "visible",
-    },
-  );
+  await page.waitForSelector("*[data-testid='build-status'] >> text=Stopped", {
+    state: "visible",
+  });
 };
 
 export const buildWorkspaceWithParameters = async (
@@ -221,12 +249,9 @@ export const buildWorkspaceWithParameters = async (
     await page.getByTestId("confirm-button").click();
   }
 
-  await page.waitForSelector(
-    "span[data-testid='build-status'] >> text=Running",
-    {
-      state: "visible",
-    },
-  );
+  await page.waitForSelector("*[data-testid='build-status'] >> text=Running", {
+    state: "visible",
+  });
 };
 
 // startAgent runs the coder agent with the provided token.
@@ -235,7 +260,7 @@ export const startAgent = async (
   page: Page,
   token: string,
 ): Promise<ChildProcess> => {
-  return startAgentWithCommand(page, token, "go", "run", coderMainPath());
+  return startAgentWithCommand(page, token, "go", "run", coderMain);
 };
 
 // downloadCoderVersion downloads the version provided into a temporary dir and
@@ -309,9 +334,9 @@ export const startAgentWithCommand = async (
   const cp = spawn(command, [...args, "agent", "--no-reap"], {
     env: {
       ...process.env,
-      CODER_AGENT_URL: "http://localhost:" + port,
+      CODER_AGENT_URL: `http://localhost:${coderPort}`,
       CODER_AGENT_TOKEN: token,
-      CODER_AGENT_PPROF_ADDRESS: "127.0.0.1:" + pprofPort,
+      CODER_AGENT_PPROF_ADDRESS: "127.0.0.1:" + agentPProfPort,
       CODER_AGENT_PROMETHEUS_ADDRESS: "127.0.0.1:" + prometheusPort,
     },
   });
@@ -364,25 +389,13 @@ const waitUntilUrlIsNotResponding = async (url: string) => {
   );
 };
 
-const coderMainPath = (): string => {
-  return path.join(
-    __dirname,
-    "..",
-    "..",
-    "enterprise",
-    "cmd",
-    "coder",
-    "main.go",
-  );
-};
-
 // Allows users to more easily define properties they want for agents and resources!
 type RecursivePartial<T> = {
   [P in keyof T]?: T[P] extends (infer U)[]
     ? RecursivePartial<U>[]
     : T[P] extends object | undefined
-    ? RecursivePartial<T[P]>
-    : T[P];
+      ? RecursivePartial<T[P]>
+      : T[P];
 };
 
 interface EchoProvisionerResponses {
@@ -451,7 +464,7 @@ const createTemplateVersionTar = async (
       resource.agents = resource.agents?.map(
         (agent: RecursivePartial<Agent>) => {
           if (agent.apps) {
-            agent.apps = agent.apps?.map((app: RecursivePartial<App>) => {
+            agent.apps = agent.apps.map((app) => {
               return {
                 command: "",
                 displayName: "example",
@@ -465,7 +478,7 @@ const createTemplateVersionTar = async (
               } as App;
             });
           }
-          return {
+          const agentResource = {
             apps: [],
             architecture: "amd64",
             connectionTimeoutSeconds: 300,
@@ -473,6 +486,7 @@ const createTemplateVersionTar = async (
             env: {},
             id: randomUUID(),
             metadata: [],
+            extraEnvs: [],
             scripts: [],
             motdFile: "",
             name: "dev",
@@ -486,6 +500,23 @@ const createTemplateVersionTar = async (
             token: randomUUID(),
             ...agent,
           } as Agent;
+
+          try {
+            Agent.encode(agentResource);
+          } catch (e) {
+            let m = `Error: agentResource encode failed, missing defaults?`;
+            if (e instanceof Error) {
+              if (!e.stack?.includes(e.message)) {
+                m += `\n${e.name}: ${e.message}`;
+              }
+              m += `\n${e.stack}`;
+            } else {
+              m += `\n${e}`;
+            }
+            throw new Error(m);
+          }
+
+          return agentResource;
         },
       );
     }
@@ -539,7 +570,7 @@ const createTemplateVersionTar = async (
   );
 };
 
-const randomName = () => {
+export const randomName = () => {
   return randomUUID().slice(0, 8);
 };
 
@@ -577,7 +608,7 @@ export const createServer = async (
   return e;
 };
 
-const findSessionToken = async (page: Page): Promise<string> => {
+export const findSessionToken = async (page: Page): Promise<string> => {
   const cookies = await page.context().cookies();
   const sessionCookie = cookies.find((c) => c.name === "coder_session_token");
   if (!sessionCookie) {
@@ -642,14 +673,14 @@ export const fillParameters = async (
           buildParameter.value +
           "']",
       );
-      await parameterField.check();
+      await parameterField.click();
     } else if (richParameter.options.length > 0) {
       const parameterField = await parameterLabel.waitForSelector(
         "[data-testid='parameter-field-options'] .MuiRadio-root input[value='" +
           buildParameter.value +
           "']",
       );
-      await parameterField.check();
+      await parameterField.click();
     } else if (richParameter.type === "list(string)") {
       throw new Error("not implemented yet"); // FIXME
     } else {
@@ -674,7 +705,7 @@ export const updateTemplate = async (
     "go",
     [
       "run",
-      coderMainPath(),
+      coderMain,
       "templates",
       "push",
       "--test.provisioner",
@@ -688,7 +719,7 @@ export const updateTemplate = async (
       env: {
         ...process.env,
         CODER_SESSION_TOKEN: sessionToken,
-        CODER_URL: "http://localhost:3000",
+        CODER_URL: `http://localhost:${coderPort}`,
       },
     },
   );
@@ -709,6 +740,34 @@ export const updateTemplate = async (
   await uploaded.wait();
 };
 
+export const updateTemplateSettings = async (
+  page: Page,
+  templateName: string,
+  templateSettingValues: Pick<
+    UpdateTemplateMeta,
+    "name" | "display_name" | "description" | "deprecation_message"
+  >,
+) => {
+  await page.goto(`/templates/${templateName}/settings`, {
+    waitUntil: "domcontentloaded",
+  });
+  await expect(page).toHaveURL(`/templates/${templateName}/settings`);
+
+  for (const [key, value] of Object.entries(templateSettingValues)) {
+    // Skip max_port_share_level for now since the frontend is not yet able to handle it
+    if (key === "max_port_share_level") {
+      continue;
+    }
+    const labelText = capitalize(key).replace("_", " ");
+    await page.getByLabel(labelText, { exact: true }).fill(value);
+  }
+
+  await page.getByTestId("form-submit").click();
+
+  const name = templateSettingValues.name ?? templateName;
+  await expect(page).toHaveURL(`/templates/${name}`);
+};
+
 export const updateWorkspace = async (
   page: Page,
   workspaceName: string,
@@ -726,12 +785,9 @@ export const updateWorkspace = async (
   await fillParameters(page, richParameters, buildParameters);
   await page.getByTestId("form-submit").click();
 
-  await page.waitForSelector(
-    "span[data-testid='build-status'] >> text=Running",
-    {
-      state: "visible",
-    },
-  );
+  await page.waitForSelector("*[data-testid='build-status'] >> text=Running", {
+    state: "visible",
+  });
 };
 
 export const updateWorkspaceParameters = async (
@@ -750,10 +806,27 @@ export const updateWorkspaceParameters = async (
   await fillParameters(page, richParameters, buildParameters);
   await page.getByTestId("form-submit").click();
 
-  await page.waitForSelector(
-    "span[data-testid='build-status'] >> text=Running",
-    {
-      state: "visible",
-    },
-  );
+  await page.waitForSelector("*[data-testid='build-status'] >> text=Running", {
+    state: "visible",
+  });
 };
+
+export async function openTerminalWindow(
+  page: Page,
+  context: BrowserContext,
+  workspaceName: string,
+): Promise<Page> {
+  // Wait for the web terminal to open in a new tab
+  const pagePromise = context.waitForEvent("page");
+  await page.getByTestId("terminal").click();
+  const terminal = await pagePromise;
+  await terminal.waitForLoadState("domcontentloaded");
+
+  // Specify that the shell should be `bash`, to prevent inheriting a shell that
+  // isn't POSIX compatible, such as Fish.
+  const commandQuery = `?command=${encodeURIComponent("/usr/bin/env bash")}`;
+  await expect(terminal).toHaveURL(`/@admin/${workspaceName}.dev/terminal`);
+  await terminal.goto(`/@admin/${workspaceName}.dev/terminal${commandQuery}`);
+
+  return terminal;
+}

@@ -1,3 +1,6 @@
+import type { Interpolation, Theme } from "@emotion/react";
+import PersonAdd from "@mui/icons-material/PersonAdd";
+import LoadingButton from "@mui/lab/LoadingButton";
 import MenuItem from "@mui/material/MenuItem";
 import Select, { type SelectProps } from "@mui/material/Select";
 import Table from "@mui/material/Table";
@@ -6,10 +9,10 @@ import TableCell from "@mui/material/TableCell";
 import TableContainer from "@mui/material/TableContainer";
 import TableHead from "@mui/material/TableHead";
 import TableRow from "@mui/material/TableRow";
-import PersonAdd from "@mui/icons-material/PersonAdd";
-import { type Interpolation, type Theme } from "@emotion/react";
+import { type FC, useState } from "react";
 import type {
   Group,
+  ReducedUser,
   TemplateACL,
   TemplateGroup,
   TemplateRole,
@@ -18,18 +21,22 @@ import type {
 import { AvatarData } from "components/AvatarData/AvatarData";
 import { ChooseOne, Cond } from "components/Conditionals/ChooseOne";
 import { EmptyState } from "components/EmptyState/EmptyState";
+import { GroupAvatar } from "components/GroupAvatar/GroupAvatar";
+import {
+  MoreMenu,
+  MoreMenuContent,
+  MoreMenuItem,
+  MoreMenuTrigger,
+  ThreeDotsButton,
+} from "components/MoreMenu/MoreMenu";
+import { PageHeader, PageHeaderTitle } from "components/PageHeader/PageHeader";
 import { Stack } from "components/Stack/Stack";
 import { TableLoader } from "components/TableLoader/TableLoader";
-import { TableRowMenu } from "components/TableRowMenu/TableRowMenu";
+import { getGroupSubtitle } from "utils/groups";
 import {
   UserOrGroupAutocomplete,
-  UserOrGroupAutocompleteValue,
+  type UserOrGroupAutocompleteValue,
 } from "./UserOrGroupAutocomplete";
-import { type FC, useState } from "react";
-import { GroupAvatar } from "components/GroupAvatar/GroupAvatar";
-import { getGroupSubtitle } from "utils/groups";
-import { PageHeader, PageHeaderTitle } from "components/PageHeader/PageHeader";
-import LoadingButton from "@mui/lab/LoadingButton";
 
 type AddTemplateUserOrGroupProps = {
   organizationId: string;
@@ -37,13 +44,17 @@ type AddTemplateUserOrGroupProps = {
   isLoading: boolean;
   templateACL: TemplateACL | undefined;
   onSubmit: (
-    userOrGroup: TemplateUser | TemplateGroup,
+    userOrGroup:
+      | TemplateUser
+      | TemplateGroup
+      // Reduce user is returned by the groups.
+      | ({ role: TemplateRole } & ReducedUser),
     role: TemplateRole,
     reset: () => void,
   ) => void;
 };
 
-const AddTemplateUserOrGroup: React.FC<AddTemplateUserOrGroupProps> = ({
+const AddTemplateUserOrGroup: FC<AddTemplateUserOrGroupProps> = ({
   isLoading,
   onSubmit,
   templateID,
@@ -154,7 +165,7 @@ export interface TemplatePermissionsPageViewProps {
   canUpdatePermissions: boolean;
   // User
   onAddUser: (
-    user: TemplateUser,
+    user: TemplateUser | ({ role: TemplateRole } & ReducedUser),
     role: TemplateRole,
     reset: () => void,
   ) => void;
@@ -175,7 +186,7 @@ export interface TemplatePermissionsPageViewProps {
 }
 
 export const TemplatePermissionsPageView: FC<
-  React.PropsWithChildren<TemplatePermissionsPageViewProps>
+  TemplatePermissionsPageViewProps
 > = ({
   templateACL,
   canUpdatePermissions,
@@ -281,16 +292,19 @@ export const TemplatePermissionsPageView: FC<
 
                       <TableCell>
                         {canUpdatePermissions && (
-                          <TableRowMenu
-                            data={group}
-                            menuItems={[
-                              {
-                                label: "Remove",
-                                onClick: () => onRemoveGroup(group),
-                                disabled: false,
-                              },
-                            ]}
-                          />
+                          <MoreMenu>
+                            <MoreMenuTrigger>
+                              <ThreeDotsButton />
+                            </MoreMenuTrigger>
+                            <MoreMenuContent>
+                              <MoreMenuItem
+                                danger
+                                onClick={() => onRemoveGroup(group)}
+                              >
+                                Remove
+                              </MoreMenuItem>
+                            </MoreMenuContent>
+                          </MoreMenu>
                         )}
                       </TableCell>
                     </TableRow>
@@ -327,16 +341,19 @@ export const TemplatePermissionsPageView: FC<
 
                       <TableCell>
                         {canUpdatePermissions && (
-                          <TableRowMenu
-                            data={user}
-                            menuItems={[
-                              {
-                                label: "Remove",
-                                onClick: () => onRemoveUser(user),
-                                disabled: false,
-                              },
-                            ]}
-                          />
+                          <MoreMenu>
+                            <MoreMenuTrigger>
+                              <ThreeDotsButton />
+                            </MoreMenuTrigger>
+                            <MoreMenuContent>
+                              <MoreMenuItem
+                                danger
+                                onClick={() => onRemoveUser(user)}
+                              >
+                                Remove
+                              </MoreMenuItem>
+                            </MoreMenuContent>
+                          </MoreMenu>
                         )}
                       </TableCell>
                     </TableRow>
@@ -358,34 +375,34 @@ const styles = {
     width: 100,
   },
 
-  updateSelect: (theme) => ({
+  updateSelect: {
     margin: 0,
     // Set a fixed width for the select. It avoids selects having different sizes
     // depending on how many roles they have selected.
-    width: theme.spacing(25),
+    width: 200,
 
     "& .MuiSelect-root": {
       // Adjusting padding because it does not have label
-      paddingTop: theme.spacing(1.5),
-      paddingBottom: theme.spacing(1.5),
+      paddingTop: 12,
+      paddingBottom: 12,
 
       ".secondary": {
         display: "none",
       },
     },
-  }),
+  },
 
   role: {
     textTransform: "capitalize",
   },
 
-  menuItem: (theme) => ({
+  menuItem: {
     lineHeight: "140%",
-    paddingTop: theme.spacing(1.5),
-    paddingBottom: theme.spacing(1.5),
+    paddingTop: 12,
+    paddingBottom: 12,
     whiteSpace: "normal",
     inlineSize: "250px",
-  }),
+  },
 
   menuItemSecondary: (theme) => ({
     fontSize: 14,

@@ -4,8 +4,8 @@ networking:
   accessURL:
   # Specifies the wildcard hostname to use for workspace applications in the form
   # "*.example.com".
-  # (default: <unset>, type: url)
-  wildcardAccessURL:
+  # (default: <unset>, type: string)
+  wildcardAccessURL: ""
   # Specifies the custom docs URL.
   # (default: <unset>, type: url)
   docsURL:
@@ -83,6 +83,14 @@ networking:
     # Path to key for client TLS authentication. It requires a PEM-encoded file.
     # (default: <unset>, type: string)
     clientKeyFile: ""
+    # Specify specific TLS ciphers that allowed to be used. See
+    # https://github.com/golang/go/blob/master/src/crypto/tls/cipher_suites.go#L53-L75.
+    # (default: <unset>, type: string-array)
+    tlsCiphers: []
+    # By default, only ciphers marked as 'secure' are allowed to be used. See
+    # https://github.com/golang/go/blob/master/src/crypto/tls/cipher_suites.go#L82-L95.
+    # (default: false, type: bool)
+    tlsAllowInsecureCiphers: false
     # Controls if the 'Strict-Transport-Security' header is set on all static file
     # responses. This header should only be set if the server is accessed via HTTPS.
     # This value is the MaxAge in seconds of the header.
@@ -180,6 +188,15 @@ introspection:
     # Collect agent stats (may increase charges for metrics storage).
     # (default: <unset>, type: bool)
     collect_agent_stats: false
+    # When collecting agent stats, aggregate metrics by a given set of comma-separated
+    # labels to reduce cardinality. Accepted values are agent_name, template_name,
+    # username, workspace_name.
+    # (default: agent_name,template_name,username,workspace_name, type: string-array)
+    aggregate_agent_stats_by:
+      - agent_name
+      - template_name
+      - username
+      - workspace_name
     # Collect database metrics (may increase charges for metrics storage).
     # (default: false, type: bool)
     collect_db_metrics: false
@@ -224,6 +241,15 @@ introspection:
     # Allow administrators to enable Terraform debug output.
     # (default: false, type: bool)
     enableTerraformDebugMode: false
+  healthcheck:
+    # Refresh interval for healthchecks.
+    # (default: 10m0s, type: duration)
+    refresh: 10m0s
+    # The threshold for the database health check. If the median latency of the
+    # database exceeds this threshold over 5 attempts, the database is considered
+    # unhealthy. The default value is 15ms.
+    # (default: 15ms, type: duration)
+    thresholdDatabase: 15ms
 oauth2:
   github:
     # Client ID for Login with GitHub.
@@ -306,6 +332,11 @@ oidc:
   # mapping.
   # (default: .*, type: regexp)
   groupRegexFilter: .*
+  # If provided any group name not in the list will not be allowed to authenticate.
+  # This allows for restricting access to a specific set of groups. This filter is
+  # applied after the group mapping and before the regex filter.
+  # (default: <unset>, type: string-array)
+  groupAllowed: []
   # This field must be set if using the user roles sync feature. Set this to the
   # name of the claim used to store the user's role. The roles should be sent as an
   # array of strings.
@@ -326,6 +357,10 @@ oidc:
   # URL pointing to the icon to use on the OpenID Connect login button.
   # (default: <unset>, type: url)
   iconURL:
+  # The custom text to show on the error page informing about disabled OIDC signups.
+  # Markdown format is supported.
+  # (default: <unset>, type: string)
+  signupsDisabledText: ""
 # Telemetry is critical to our ability to improve Coder. We strip all personal
 # information before sending data to our servers. Please only disable telemetry
 # when required by your organization's security policy.
@@ -357,9 +392,6 @@ provisioning:
   # Time to force cancel provisioning tasks that are stuck.
   # (default: 10m0s, type: duration)
   forceCancelInterval: 10m0s
-  # Pre-shared key to authenticate external provisioner daemons to Coder server.
-  # (default: <unset>, type: string)
-  daemonPSK: ""
 # Enable one or more experiments. These are not ready for production. Separate
 # multiple experiments with commas, or enter '*' to opt-in to all available
 # experiments.
@@ -379,15 +411,16 @@ cacheDir: [cache dir]
 # Controls whether data will be stored in an in-memory database.
 # (default: <unset>, type: bool)
 inMemoryDatabase: false
+# Type of auth to use when connecting to postgres.
+# (default: password, type: enum[password\|awsiamrds])
+pgAuth: password
 # The algorithm to use for generating ssh keys. Accepted values are "ed25519",
 # "ecdsa", or "rsa4096".
 # (default: ed25519, type: string)
 sshKeygenAlgorithm: ed25519
 # URL to use for agent troubleshooting when not set in the template.
-# (default:
-# https://coder.com/docs/coder-oss/latest/templates#troubleshooting-templates,
-# type: url)
-agentFallbackTroubleshootingURL: https://coder.com/docs/coder-oss/latest/templates#troubleshooting-templates
+# (default: https://coder.com/docs/v2/latest/templates/troubleshooting, type: url)
+agentFallbackTroubleshootingURL: https://coder.com/docs/v2/latest/templates/troubleshooting
 # Disable workspace apps that are not served from subdomains. Path-based apps can
 # make requests to the Coder API and pose a security risk when the workspace
 # serves malicious JavaScript. This is recommended for security purposes if a
@@ -411,6 +444,11 @@ client:
   # incorrectly can break SSH to your deployment, use cautiously.
   # (default: <unset>, type: string-array)
   sshConfigOptions: []
+  # The upgrade message to display to users when a client/server mismatch is
+  # detected. By default it instructs users to update using 'curl -L
+  # https://coder.com/install.sh | sh'.
+  # (default: <unset>, type: string)
+  cliUpgradeMessage: ""
   # The renderer to use when opening a web terminal. Valid values are 'canvas',
   # 'webgl', or 'dom'.
   # (default: canvas, type: string)
@@ -418,20 +456,32 @@ client:
 # Support links to display in the top right drop down menu.
 # (default: <unset>, type: struct[[]codersdk.LinkConfig])
 supportLinks: []
+# External Authentication providers.
+# (default: <unset>, type: struct[[]codersdk.ExternalAuthConfig])
+externalAuthProviders: []
 # Hostname of HTTPS server that runs https://github.com/coder/wgtunnel. By
 # default, this will pick the best available wgtunnel server hosted by Coder. e.g.
 # "tunnel.example.com".
 # (default: <unset>, type: string)
 wgtunnelHost: ""
 # Allow users to set quiet hours schedules each day for workspaces to avoid
-# workspaces stopping during the day due to template max TTL.
+# workspaces stopping during the day due to template scheduling.
 userQuietHoursSchedule:
   # The default daily cron schedule applied to users that haven't set a custom quiet
   # hours schedule themselves. The quiet hours schedule determines when workspaces
-  # will be force stopped due to the template's max TTL, and will round the max TTL
-  # up to be within the user's quiet hours window (or default). The format is the
-  # same as the standard cron format, but the day-of-month, month and day-of-week
-  # must be *. Only one hour and minute can be specified (ranges or comma separated
-  # values are not supported).
-  # (default: <unset>, type: string)
-  defaultQuietHoursSchedule: ""
+  # will be force stopped due to the template's autostop requirement, and will round
+  # the max deadline up to be within the user's quiet hours window (or default). The
+  # format is the same as the standard cron format, but the day-of-month, month and
+  # day-of-week must be *. Only one hour and minute can be specified (ranges or
+  # comma separated values are not supported).
+  # (default: CRON_TZ=UTC 0 0 * * *, type: string)
+  defaultQuietHoursSchedule: CRON_TZ=UTC 0 0 * * *
+  # Allow users to set their own quiet hours schedule for workspaces to stop in
+  # (depending on template autostop requirement settings). If false, users can't
+  # change their quiet hours schedule and the site default is always used.
+  # (default: true, type: bool)
+  allowCustomQuietHours: true
+# DEPRECATED: Allow users to rename their workspaces. Use only for temporary
+# compatibility reasons, this will be removed in a future release.
+# (default: false, type: bool)
+allowWorkspaceRenames: false

@@ -11,6 +11,8 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/xerrors"
 
+	"cdr.dev/slog"
+
 	"github.com/coder/coder/v2/coderd/tracing"
 )
 
@@ -29,6 +31,7 @@ type Workspace struct {
 	UpdatedAt                            time.Time      `json:"updated_at" format:"date-time"`
 	OwnerID                              uuid.UUID      `json:"owner_id" format:"uuid"`
 	OwnerName                            string         `json:"owner_name"`
+	OwnerAvatarURL                       string         `json:"owner_avatar_url"`
 	OrganizationID                       uuid.UUID      `json:"organization_id" format:"uuid"`
 	TemplateID                           uuid.UUID      `json:"template_id" format:"uuid"`
 	TemplateName                         string         `json:"template_name"`
@@ -57,6 +60,8 @@ type Workspace struct {
 	// what is causing an unhealthy status.
 	Health           WorkspaceHealth  `json:"health"`
 	AutomaticUpdates AutomaticUpdates `json:"automatic_updates" enums:"always,never"`
+	AllowRenames     bool             `json:"allow_renames"`
+	Favorite         bool             `json:"favorite"`
 }
 
 func (w Workspace) FullName() string {
@@ -219,7 +224,11 @@ func (c *Client) WatchWorkspace(ctx context.Context, id uuid.UUID) (<-chan Works
 				if err != nil {
 					return
 				}
-				wc <- ws
+				select {
+				case <-ctx.Done():
+					return
+				case wc <- ws:
+				}
 			}
 		}
 	}()
@@ -246,6 +255,9 @@ func (c *Client) UpdateWorkspace(ctx context.Context, id uuid.UUID, req UpdateWo
 
 // UpdateWorkspaceAutostartRequest is a request to update a workspace's autostart schedule.
 type UpdateWorkspaceAutostartRequest struct {
+	// Schedule is expected to be of the form `CRON_TZ=<IANA Timezone> <min> <hour> * * <dow>`
+	// Example: `CRON_TZ=US/Central 30 9 * * 1-5` represents 0930 in the timezone US/Central
+	// on weekdays (Mon-Fri). `CRON_TZ` defaults to UTC if not present.
 	Schedule *string `json:"schedule"`
 }
 
@@ -302,6 +314,54 @@ func (c *Client) PutExtendWorkspace(ctx context.Context, id uuid.UUID, req PutEx
 		return ReadBodyAsError(res)
 	}
 	return nil
+}
+
+// PostWorkspaceUsage marks the workspace as having been used recently.
+func (c *Client) PostWorkspaceUsage(ctx context.Context, id uuid.UUID) error {
+	path := fmt.Sprintf("/api/v2/workspaces/%s/usage", id.String())
+	res, err := c.Request(ctx, http.MethodPost, path, nil)
+	if err != nil {
+		return xerrors.Errorf("post workspace usage: %w", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusNoContent {
+		return ReadBodyAsError(res)
+	}
+	return nil
+}
+
+// UpdateWorkspaceUsageContext periodically posts workspace usage for the workspace
+// with the given id in the background.
+// The caller is responsible for calling the returned function to stop the background
+// process.
+func (c *Client) UpdateWorkspaceUsageContext(ctx context.Context, id uuid.UUID) func() {
+	hbCtx, hbCancel := context.WithCancel(ctx)
+	// Perform one initial update
+	if err := c.PostWorkspaceUsage(hbCtx, id); err != nil {
+		c.logger.Warn(ctx, "failed to post workspace usage", slog.Error(err))
+	}
+	ticker := time.NewTicker(time.Minute)
+	doneCh := make(chan struct{})
+	go func() {
+		defer func() {
+			ticker.Stop()
+			close(doneCh)
+		}()
+		for {
+			select {
+			case <-ticker.C:
+				if err := c.PostWorkspaceUsage(hbCtx, id); err != nil {
+					c.logger.Warn(ctx, "failed to post workspace usage in background", slog.Error(err))
+				}
+			case <-hbCtx.Done():
+				return
+			}
+		}
+	}()
+	return func() {
+		hbCancel()
+		<-doneCh
+	}
 }
 
 // UpdateWorkspaceDormancy is a request to activate or make a workspace dormant.
@@ -447,6 +507,47 @@ func (c *Client) WorkspaceQuota(ctx context.Context, userID string) (WorkspaceQu
 	}
 	var quota WorkspaceQuota
 	return quota, json.NewDecoder(res.Body).Decode(&quota)
+}
+
+type ResolveAutostartResponse struct {
+	ParameterMismatch bool `json:"parameter_mismatch"`
+}
+
+func (c *Client) ResolveAutostart(ctx context.Context, workspaceID string) (ResolveAutostartResponse, error) {
+	res, err := c.Request(ctx, http.MethodGet, fmt.Sprintf("/api/v2/workspaces/%s/resolve-autostart", workspaceID), nil)
+	if err != nil {
+		return ResolveAutostartResponse{}, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return ResolveAutostartResponse{}, ReadBodyAsError(res)
+	}
+	var response ResolveAutostartResponse
+	return response, json.NewDecoder(res.Body).Decode(&response)
+}
+
+func (c *Client) FavoriteWorkspace(ctx context.Context, workspaceID uuid.UUID) error {
+	res, err := c.Request(ctx, http.MethodPut, fmt.Sprintf("/api/v2/workspaces/%s/favorite", workspaceID), nil)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusNoContent {
+		return ReadBodyAsError(res)
+	}
+	return nil
+}
+
+func (c *Client) UnfavoriteWorkspace(ctx context.Context, workspaceID uuid.UUID) error {
+	res, err := c.Request(ctx, http.MethodDelete, fmt.Sprintf("/api/v2/workspaces/%s/favorite", workspaceID), nil)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusNoContent {
+		return ReadBodyAsError(res)
+	}
+	return nil
 }
 
 // WorkspaceNotifyChannel is the PostgreSQL NOTIFY

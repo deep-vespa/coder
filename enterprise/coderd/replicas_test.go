@@ -13,6 +13,7 @@ import (
 	"github.com/coder/coder/v2/coderd/coderdtest"
 	"github.com/coder/coder/v2/coderd/database/dbtestutil"
 	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/codersdk/workspacesdk"
 	"github.com/coder/coder/v2/enterprise/coderd/coderdenttest"
 	"github.com/coder/coder/v2/enterprise/coderd/license"
 	"github.com/coder/coder/v2/testutil"
@@ -81,11 +82,12 @@ func TestReplicas(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, replicas, 2)
 
-		_, agent := setupWorkspaceAgent(t, firstClient, firstUser, 0)
-		conn, err := secondClient.DialWorkspaceAgent(context.Background(), agent.ID, &codersdk.DialWorkspaceAgentOptions{
-			BlockEndpoints: true,
-			Logger:         slogtest.Make(t, nil).Leveled(slog.LevelDebug),
-		})
+		r := setupWorkspaceAgent(t, firstClient, firstUser, 0)
+		conn, err := workspacesdk.New(secondClient).
+			DialAgent(context.Background(), r.sdkAgent.ID, &workspacesdk.DialAgentOptions{
+				BlockEndpoints: true,
+				Logger:         slogtest.Make(t, nil).Leveled(slog.LevelDebug),
+			})
 		require.NoError(t, err)
 		require.Eventually(t, func() bool {
 			ctx, cancelFunc := context.WithTimeout(context.Background(), testutil.WaitShort)
@@ -127,11 +129,12 @@ func TestReplicas(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, replicas, 2)
 
-		_, agent := setupWorkspaceAgent(t, firstClient, firstUser, 0)
-		conn, err := secondClient.DialWorkspaceAgent(context.Background(), agent.ID, &codersdk.DialWorkspaceAgentOptions{
-			BlockEndpoints: true,
-			Logger:         slogtest.Make(t, nil).Named("client").Leveled(slog.LevelDebug),
-		})
+		r := setupWorkspaceAgent(t, firstClient, firstUser, 0)
+		conn, err := workspacesdk.New(secondClient).
+			DialAgent(context.Background(), r.sdkAgent.ID, &workspacesdk.DialAgentOptions{
+				BlockEndpoints: true,
+				Logger:         slogtest.Make(t, nil).Named("client").Leveled(slog.LevelDebug),
+			})
 		require.NoError(t, err)
 		require.Eventually(t, func() bool {
 			ctx, cancelFunc := context.WithTimeout(context.Background(), testutil.IntervalSlow)

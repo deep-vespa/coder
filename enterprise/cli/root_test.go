@@ -7,15 +7,15 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/coder/coder/v2/cli/clibase"
 	"github.com/coder/coder/v2/cli/clitest"
 	"github.com/coder/coder/v2/cli/config"
 	"github.com/coder/coder/v2/coderd/coderdtest"
 	"github.com/coder/coder/v2/enterprise/cli"
 	"github.com/coder/coder/v2/enterprise/coderd/coderdenttest"
+	"github.com/coder/serpent"
 )
 
-func newCLI(t *testing.T, args ...string) (*clibase.Invocation, config.Root) {
+func newCLI(t *testing.T, args ...string) (*serpent.Invocation, config.Root) {
 	var root cli.RootCmd
 	cmd, err := root.Command(root.EnterpriseSubcommands())
 	require.NoError(t, err)
@@ -47,7 +47,7 @@ func TestCheckWarnings(t *testing.T) {
 
 		var buf bytes.Buffer
 		inv.Stderr = &buf
-		clitest.SetupConfig(t, client, conf)
+		clitest.SetupConfig(t, client, conf) //nolint:gocritic // owners should see this
 
 		err := inv.Run()
 		require.NoError(t, err)

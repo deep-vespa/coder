@@ -1,8 +1,7 @@
 import { fireEvent, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { rest } from "msw";
+import { HttpResponse, http } from "msw";
 import { createMemoryRouter } from "react-router-dom";
-import { Language } from "./SignInForm";
 import {
   render,
   renderWithRouter,
@@ -10,14 +9,14 @@ import {
 } from "testHelpers/renderHelpers";
 import { server } from "testHelpers/server";
 import { LoginPage } from "./LoginPage";
-import * as TypesGen from "api/typesGenerated";
+import { Language } from "./SignInForm";
 
 describe("LoginPage", () => {
   beforeEach(() => {
-    // appear logged out
     server.use(
-      rest.get("/api/v2/users/me", (req, res, ctx) => {
-        return res(ctx.status(401), ctx.json({ message: "no user here" }));
+      // Appear logged out
+      http.get("/api/v2/users/me", () => {
+        return HttpResponse.json({ message: "no user here" }, { status: 401 });
       }),
     );
   });
@@ -27,8 +26,8 @@ describe("LoginPage", () => {
     const apiErrorMessage = "Something wrong happened";
     server.use(
       // Make login fail
-      rest.post("/api/v2/users/login", async (req, res, ctx) => {
-        return res(ctx.status(500), ctx.json({ message: apiErrorMessage }));
+      http.post("/api/v2/users/login", async () => {
+        return HttpResponse.json({ message: apiErrorMessage }, { status: 500 });
       }),
     );
 
@@ -51,8 +50,9 @@ describe("LoginPage", () => {
   it("redirects to the setup page if there is no first user", async () => {
     // Given
     server.use(
-      rest.get("/api/v2/users/first", async (req, res, ctx) => {
-        return res(ctx.status(404));
+      // No first user
+      http.get("/api/v2/users/first", () => {
+        return new HttpResponse(null, { status: 404 });
       }),
     );
 
@@ -75,33 +75,5 @@ describe("LoginPage", () => {
 
     // Then
     await screen.findByText("Setup");
-  });
-
-  it("hides password authentication if OIDC/GitHub is enabled and displays on click", async () => {
-    const authMethods: TypesGen.AuthMethods = {
-      password: { enabled: true },
-      github: { enabled: true },
-      oidc: { enabled: true, signInText: "", iconUrl: "" },
-    };
-
-    // Given
-    server.use(
-      rest.get("/api/v2/users/authmethods", async (req, res, ctx) => {
-        return res(ctx.status(200), ctx.json(authMethods));
-      }),
-    );
-
-    // When
-    render(<LoginPage />);
-
-    // Then
-    expect(screen.queryByText(Language.passwordSignIn)).not.toBeInTheDocument();
-    await screen.findByText(Language.githubSignIn);
-
-    const showPasswordAuthLink = screen.getByText("Email and password");
-    await userEvent.click(showPasswordAuthLink);
-
-    await screen.findByText(Language.passwordSignIn);
-    await screen.findByText(Language.githubSignIn);
   });
 });

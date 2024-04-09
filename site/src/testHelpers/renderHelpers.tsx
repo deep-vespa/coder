@@ -1,24 +1,35 @@
-import { render as tlRender, screen, waitFor } from "@testing-library/react";
-import { AppProviders, ThemeProviders } from "App";
-import { DashboardLayout } from "components/Dashboard/DashboardLayout";
+import {
+  render as testingLibraryRender,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import type { ReactNode } from "react";
+import { QueryClient } from "react-query";
+import {
+  createMemoryRouter,
+  RouterProvider,
+  type RouteObject,
+} from "react-router-dom";
+import { AppProviders } from "App";
+import { RequireAuth } from "contexts/auth/RequireAuth";
+import { ThemeProvider } from "contexts/ThemeProvider";
+import { DashboardLayout } from "modules/dashboard/DashboardLayout";
 import { TemplateSettingsLayout } from "pages/TemplateSettingsPage/TemplateSettingsLayout";
 import { WorkspaceSettingsLayout } from "pages/WorkspaceSettingsPage/WorkspaceSettingsLayout";
-import {
-  RouterProvider,
-  createMemoryRouter,
-  RouteObject,
-} from "react-router-dom";
-import { RequireAuth } from "../components/RequireAuth/RequireAuth";
 import { MockUser } from "./entities";
-import { ReactNode } from "react";
-import { QueryClient } from "react-query";
 
-export const renderWithRouter = (
-  router: ReturnType<typeof createMemoryRouter>,
-) => {
-  // Create one query client for each render isolate it avoid other
-  // tests to be affected
-  const queryClient = new QueryClient({
+export function createTestQueryClient() {
+  // Helps create one query client for each test case, to make sure that tests
+  // are isolated and can't affect each other
+  return new QueryClient({
+    logger: {
+      ...console,
+      // Some tests are designed to throw errors as part of their functionality.
+      // To avoid unnecessary noise from these expected errors, the code is
+      // structured to suppress them. If this suppression becomes problematic,
+      // the code can be refactored to handle query errors on a per-test basis.
+      error: () => {},
+    },
     defaultOptions: {
       queries: {
         retry: false,
@@ -28,9 +39,15 @@ export const renderWithRouter = (
       },
     },
   });
+}
+
+export const renderWithRouter = (
+  router: ReturnType<typeof createMemoryRouter>,
+) => {
+  const queryClient = createTestQueryClient();
 
   return {
-    ...tlRender(
+    ...testingLibraryRender(
       <AppProviders queryClient={queryClient}>
         <RouterProvider router={router} />
       </AppProviders>,
@@ -53,7 +70,7 @@ export const render = (element: ReactNode) => {
   );
 };
 
-type RenderWithAuthOptions = {
+export type RenderWithAuthOptions = {
   // The current URL, /workspaces/123
   route?: string;
   // The route path, /workspaces/:workspaceId
@@ -180,6 +197,8 @@ export const waitForLoaderToBeRemoved = async (): Promise<void> => {
   );
 };
 
-export const renderComponent = (component: React.ReactNode) => {
-  return tlRender(<ThemeProviders>{component}</ThemeProviders>);
+export const renderComponent = (component: React.ReactElement) => {
+  return testingLibraryRender(component, {
+    wrapper: ({ children }) => <ThemeProvider>{children}</ThemeProvider>,
+  });
 };

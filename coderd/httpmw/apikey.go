@@ -22,6 +22,7 @@ import (
 	"github.com/coder/coder/v2/coderd/database/dbauthz"
 	"github.com/coder/coder/v2/coderd/database/dbtime"
 	"github.com/coder/coder/v2/coderd/httpapi"
+	"github.com/coder/coder/v2/coderd/promoauth"
 	"github.com/coder/coder/v2/coderd/rbac"
 	"github.com/coder/coder/v2/codersdk"
 )
@@ -43,27 +44,15 @@ func APIKey(r *http.Request) database.APIKey {
 	return key
 }
 
-// User roles are the 'subject' field of Authorize()
-type userAuthKey struct{}
-
-type Authorization struct {
-	Actor rbac.Subject
-	// ActorName is required for logging and human friendly related identification.
-	// It is usually the "username" of the user, but it can be the name of the
-	// external workspace proxy or other service type actor.
-	ActorName string
-}
-
 // UserAuthorizationOptional may return the roles and scope used for
 // authorization. Depends on the ExtractAPIKey handler.
-func UserAuthorizationOptional(r *http.Request) (Authorization, bool) {
-	auth, ok := r.Context().Value(userAuthKey{}).(Authorization)
-	return auth, ok
+func UserAuthorizationOptional(r *http.Request) (rbac.Subject, bool) {
+	return dbauthz.ActorFromContext(r.Context())
 }
 
 // UserAuthorization returns the roles and scope used for authorization. Depends
 // on the ExtractAPIKey handler.
-func UserAuthorization(r *http.Request) Authorization {
+func UserAuthorization(r *http.Request) rbac.Subject {
 	auth, ok := UserAuthorizationOptional(r)
 	if !ok {
 		panic("developer error: ExtractAPIKey middleware not provided")
@@ -74,8 +63,8 @@ func UserAuthorization(r *http.Request) Authorization {
 // OAuth2Configs is a collection of configurations for OAuth-based authentication.
 // This should be extended to support other authentication types in the future.
 type OAuth2Configs struct {
-	Github OAuth2Config
-	OIDC   OAuth2Config
+	Github promoauth.OAuth2Config
+	OIDC   promoauth.OAuth2Config
 }
 
 func (c *OAuth2Configs) IsZero() bool {
@@ -112,6 +101,13 @@ type ExtractAPIKeyConfig struct {
 	// SessionTokenFunc is a custom function that can be used to extract the API
 	// key. If nil, the default behavior is used.
 	SessionTokenFunc func(r *http.Request) string
+
+	// PostAuthAdditionalHeadersFunc is a function that can be used to add
+	// headers to the response after the user has been authenticated.
+	//
+	// This is originally implemented to send entitlement warning headers after
+	// a user is authenticated to prevent additional CLI invocations.
+	PostAuthAdditionalHeadersFunc func(a rbac.Subject, header http.Header)
 }
 
 // ExtractAPIKeyMW calls ExtractAPIKey with the given config on each request,
@@ -134,9 +130,8 @@ func ExtractAPIKeyMW(cfg ExtractAPIKeyConfig) func(http.Handler) http.Handler {
 			// Actor is the user's authorization context.
 			ctx := r.Context()
 			ctx = context.WithValue(ctx, apiKeyContextKey{}, key)
-			ctx = context.WithValue(ctx, userAuthKey{}, authz)
-			// Set the auth context for the authzquerier as well.
-			ctx = dbauthz.As(ctx, authz.Actor)
+			// Set the auth context for the user.
+			ctx = dbauthz.As(ctx, authz)
 
 			next.ServeHTTP(rw, r.WithContext(ctx))
 		})
@@ -201,12 +196,12 @@ func APIKeyFromRequest(ctx context.Context, db database.Store, sessionTokenFunc 
 // and authz object may be returned. False is returned if a response was written
 // to the request and the caller should give up.
 // nolint:revive
-func ExtractAPIKey(rw http.ResponseWriter, r *http.Request, cfg ExtractAPIKeyConfig) (*database.APIKey, *Authorization, bool) {
+func ExtractAPIKey(rw http.ResponseWriter, r *http.Request, cfg ExtractAPIKeyConfig) (*database.APIKey, *rbac.Subject, bool) {
 	ctx := r.Context()
 	// Write wraps writing a response to redirect if the handler
 	// specified it should. This redirect is used for user-facing pages
 	// like workspace applications.
-	write := func(code int, response codersdk.Response) (*database.APIKey, *Authorization, bool) {
+	write := func(code int, response codersdk.Response) (*database.APIKey, *rbac.Subject, bool) {
 		if cfg.RedirectToLogin {
 			RedirectToLogin(rw, r, nil, response.Message)
 			return nil, nil, false
@@ -221,7 +216,7 @@ func ExtractAPIKey(rw http.ResponseWriter, r *http.Request, cfg ExtractAPIKeyCon
 	//
 	// It should be used when the API key is not provided or is invalid,
 	// but not when there are other errors.
-	optionalWrite := func(code int, response codersdk.Response) (*database.APIKey, *Authorization, bool) {
+	optionalWrite := func(code int, response codersdk.Response) (*database.APIKey, *rbac.Subject, bool) {
 		if cfg.Optional {
 			return nil, nil, true
 		}
@@ -270,7 +265,7 @@ func ExtractAPIKey(rw http.ResponseWriter, r *http.Request, cfg ExtractAPIKeyCon
 				})
 			}
 
-			var oauthConfig OAuth2Config
+			var oauthConfig promoauth.OAuth2Config
 			switch key.LoginType {
 			case database.LoginTypeGithub:
 				oauthConfig = cfg.OAuth2Configs.Github
@@ -378,6 +373,9 @@ func ExtractAPIKey(rw http.ResponseWriter, r *http.Request, cfg ExtractAPIKeyCon
 				OAuthRefreshToken:      link.OAuthRefreshToken,
 				OAuthRefreshTokenKeyID: sql.NullString{}, // dbcrypt will update as required
 				OAuthExpiry:            link.OAuthExpiry,
+				// Refresh should keep the same debug context because we use
+				// the original claims for the group/role sync.
+				DebugContext: link.DebugContext,
 			})
 			if err != nil {
 				return write(http.StatusInternalServerError, codersdk.Response{
@@ -440,17 +438,19 @@ func ExtractAPIKey(rw http.ResponseWriter, r *http.Request, cfg ExtractAPIKeyCon
 	}
 
 	// Actor is the user's authorization context.
-	authz := Authorization{
-		ActorName: roles.Username,
-		Actor: rbac.Subject{
-			ID:     key.UserID.String(),
-			Roles:  rbac.RoleNames(roles.Roles),
-			Groups: roles.Groups,
-			Scope:  rbac.ScopeName(key.Scope),
-		}.WithCachedASTValue(),
+	actor := rbac.Subject{
+		FriendlyName: roles.Username,
+		ID:           key.UserID.String(),
+		Roles:        rbac.RoleNames(roles.Roles),
+		Groups:       roles.Groups,
+		Scope:        rbac.ScopeName(key.Scope),
+	}.WithCachedASTValue()
+
+	if cfg.PostAuthAdditionalHeadersFunc != nil {
+		cfg.PostAuthAdditionalHeadersFunc(actor, rw.Header())
 	}
 
-	return key, &authz, true
+	return key, &actor, true
 }
 
 // APITokenFromRequest returns the api token from the request.
@@ -534,4 +534,19 @@ func RedirectToLogin(rw http.ResponseWriter, r *http.Request, dashboardURL *url.
 	// See other forces a GET request rather than keeping the current method
 	// (like temporary redirect does).
 	http.Redirect(rw, r, u.String(), http.StatusSeeOther)
+}
+
+// CustomRedirectToLogin redirects the user to the login page with the `message` and
+// `redirect` query parameters set, with a provided code
+func CustomRedirectToLogin(rw http.ResponseWriter, r *http.Request, redirect string, message string, code int) {
+	q := url.Values{}
+	q.Add("message", message)
+	q.Add("redirect", redirect)
+
+	u := &url.URL{
+		Path:     "/login",
+		RawQuery: q.Encode(),
+	}
+
+	http.Redirect(rw, r, u.String(), code)
 }

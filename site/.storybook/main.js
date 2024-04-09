@@ -1,19 +1,30 @@
 import turbosnap from "vite-plugin-turbosnap";
-import { mergeConfig } from "vite";
 
 module.exports = {
   stories: ["../src/**/*.stories.tsx"],
+
   addons: [
+    {
+      name: "@storybook/addon-essentials",
+      options: {
+        backgrounds: false,
+      },
+    },
     "@storybook/addon-links",
-    "@storybook/addon-essentials",
     "@storybook/addon-mdx-gfm",
+    "@storybook/addon-themes",
     "@storybook/addon-actions",
+    "@storybook/addon-interactions",
+    "storybook-addon-remix-react-router",
   ],
+
   staticDirs: ["../static"],
+
   framework: {
     name: "@storybook/react-vite",
     options: {},
   },
+
   async viteFinal(config, { configType }) {
     config.plugins = config.plugins || [];
     // return the customized config
@@ -26,5 +37,9 @@ module.exports = {
       );
     }
     return config;
+  },
+
+  docs: {
+    autodocs: false,
   },
 };

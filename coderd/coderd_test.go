@@ -3,12 +3,12 @@ package coderd_test
 import (
 	"context"
 	"flag"
+	"fmt"
 	"io"
 	"net/http"
 	"net/netip"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -21,6 +21,10 @@ import (
 
 	"cdr.dev/slog"
 	"cdr.dev/slog/sloggers/slogtest"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/database/dbfake"
+	"github.com/coder/coder/v2/codersdk/workspacesdk"
+	"github.com/coder/coder/v2/provisionersdk/proto"
 
 	"github.com/coder/coder/v2/agent/agenttest"
 	"github.com/coder/coder/v2/buildinfo"
@@ -29,6 +33,7 @@ import (
 	"github.com/coder/coder/v2/codersdk"
 	"github.com/coder/coder/v2/provisioner/echo"
 	"github.com/coder/coder/v2/tailnet"
+	tailnetproto "github.com/coder/coder/v2/tailnet/proto"
 	"github.com/coder/coder/v2/testutil"
 )
 
@@ -54,6 +59,7 @@ func TestBuildInfo(t *testing.T) {
 
 func TestDERP(t *testing.T) {
 	t.Parallel()
+	ctx := testutil.Context(t, testutil.WaitMedium)
 	client := coderdtest.New(t, nil)
 
 	logger := slogtest.Make(t, nil).Leveled(slog.LevelDebug)
@@ -92,16 +98,29 @@ func TestDERP(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	w2Ready := make(chan struct{})
-	w2ReadyOnce := sync.Once{}
+	w1ID := uuid.New()
 	w1.SetNodeCallback(func(node *tailnet.Node) {
-		w2.UpdateNodes([]*tailnet.Node{node}, false)
-		w2ReadyOnce.Do(func() {
-			close(w2Ready)
-		})
+		pn, err := tailnet.NodeToProto(node)
+		if !assert.NoError(t, err) {
+			return
+		}
+		w2.UpdatePeers([]*tailnetproto.CoordinateResponse_PeerUpdate{{
+			Id:   w1ID[:],
+			Node: pn,
+			Kind: tailnetproto.CoordinateResponse_PeerUpdate_NODE,
+		}})
 	})
+	w2ID := uuid.New()
 	w2.SetNodeCallback(func(node *tailnet.Node) {
-		w1.UpdateNodes([]*tailnet.Node{node}, false)
+		pn, err := tailnet.NodeToProto(node)
+		if !assert.NoError(t, err) {
+			return
+		}
+		w1.UpdatePeers([]*tailnetproto.CoordinateResponse_PeerUpdate{{
+			Id:   w2ID[:],
+			Node: pn,
+			Kind: tailnetproto.CoordinateResponse_PeerUpdate_NODE,
+		}})
 	})
 
 	conn := make(chan struct{})
@@ -117,8 +136,8 @@ func TestDERP(t *testing.T) {
 	}()
 
 	<-conn
-	<-w2Ready
-	nc, err := w2.DialContextTCP(context.Background(), netip.AddrPortFrom(w1IP, 35565))
+	w2.AwaitReachable(ctx, w1IP)
+	nc, err := w2.DialContextTCP(ctx, netip.AddrPortFrom(w1IP, 35565))
 	require.NoError(t, err)
 	_ = nc.Close()
 	<-conn
@@ -171,9 +190,10 @@ func TestDERPForceWebSockets(t *testing.T) {
 	t.Cleanup(func() {
 		client.HTTPClient.CloseIdleConnections()
 	})
+	wsclient := workspacesdk.New(client)
 	user := coderdtest.CreateFirstUser(t, client)
 
-	gen, err := client.WorkspaceAgentConnectionInfoGeneric(context.Background())
+	gen, err := wsclient.AgentConnectionInfoGeneric(context.Background())
 	require.NoError(t, err)
 	t.Log(spew.Sdump(gen))
 
@@ -195,7 +215,11 @@ func TestDERPForceWebSockets(t *testing.T) {
 	defer cancel()
 
 	resources := coderdtest.AwaitWorkspaceAgents(t, client, workspace.ID)
-	conn, err := client.DialWorkspaceAgent(ctx, resources[0].Agents[0].ID, nil)
+	conn, err := wsclient.DialAgent(ctx, resources[0].Agents[0].ID,
+		&workspacesdk.DialAgentOptions{
+			Logger: slogtest.Make(t, nil).Leveled(slog.LevelDebug).Named("client"),
+		},
+	)
 	require.NoError(t, err)
 	defer func() {
 		_ = conn.Close()
@@ -290,12 +314,9 @@ func TestSwagger(t *testing.T) {
 
 		resp, err := requestWithRetries(ctx, t, client, http.MethodGet, swaggerEndpoint, nil)
 		require.NoError(t, err)
-
-		body, err := io.ReadAll(resp.Body)
-		require.NoError(t, err)
 		defer resp.Body.Close()
 
-		require.Equal(t, "<pre>\n</pre>\n", string(body))
+		require.Equal(t, http.StatusNotFound, resp.StatusCode)
 	})
 	t.Run("doc.json disabled by default", func(t *testing.T) {
 		t.Parallel()
@@ -307,11 +328,68 @@ func TestSwagger(t *testing.T) {
 
 		resp, err := requestWithRetries(ctx, t, client, http.MethodGet, swaggerEndpoint+"/doc.json", nil)
 		require.NoError(t, err)
-
-		body, err := io.ReadAll(resp.Body)
-		require.NoError(t, err)
 		defer resp.Body.Close()
 
-		require.Equal(t, "<pre>\n</pre>\n", string(body))
+		require.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+}
+
+func TestCSRFExempt(t *testing.T) {
+	t.Parallel()
+
+	// This test build a workspace with an agent and an app. The app is not
+	// a real http server, so it will fail to serve requests. We just want
+	// to make sure the failure is not a CSRF failure, as path based
+	// apps should be exempt.
+	t.Run("PathBasedApp", func(t *testing.T) {
+		t.Parallel()
+
+		client, _, api := coderdtest.NewWithAPI(t, nil)
+		first := coderdtest.CreateFirstUser(t, client)
+		owner, err := client.User(context.Background(), "me")
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitMedium)
+		defer cancel()
+
+		// Create a workspace.
+		const agentSlug = "james"
+		const appSlug = "web"
+		wrk := dbfake.WorkspaceBuild(t, api.Database, database.Workspace{
+			OwnerID:        owner.ID,
+			OrganizationID: first.OrganizationID,
+		}).
+			WithAgent(func(agents []*proto.Agent) []*proto.Agent {
+				agents[0].Name = agentSlug
+				agents[0].Apps = []*proto.App{{
+					Slug:        appSlug,
+					DisplayName: appSlug,
+					Subdomain:   false,
+					Url:         "/",
+				}}
+
+				return agents
+			}).
+			Do()
+
+		u := client.URL.JoinPath(fmt.Sprintf("/@%s/%s.%s/apps/%s", owner.Username, wrk.Workspace.Name, agentSlug, appSlug)).String()
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, nil)
+		req.AddCookie(&http.Cookie{
+			Name:   codersdk.SessionTokenCookie,
+			Value:  client.SessionToken(),
+			Path:   "/",
+			Domain: client.URL.String(),
+		})
+		require.NoError(t, err)
+
+		resp, err := client.HTTPClient.Do(req)
+		require.NoError(t, err)
+		data, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+
+		// A StatusBadGateway means Coderd tried to proxy to the agent and failed because the agent
+		// was not there. This means CSRF did not block the app request, which is what we want.
+		require.Equal(t, http.StatusBadGateway, resp.StatusCode, "status code 500 is CSRF failure")
+		require.NotContains(t, string(data), "CSRF")
 	})
 }

@@ -3,6 +3,7 @@ package coderd_test
 import (
 	"bytes"
 	"context"
+	"net/http"
 	"reflect"
 	"strings"
 	"testing"
@@ -13,6 +14,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
 
+	"cdr.dev/slog/sloggers/slogtest"
+
 	agplaudit "github.com/coder/coder/v2/coderd/audit"
 	"github.com/coder/coder/v2/coderd/coderdtest"
 	"github.com/coder/coder/v2/coderd/database"
@@ -22,12 +25,16 @@ import (
 	"github.com/coder/coder/v2/coderd/database/dbtime"
 	"github.com/coder/coder/v2/coderd/rbac"
 	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/codersdk/workspacesdk"
 	"github.com/coder/coder/v2/enterprise/audit"
 	"github.com/coder/coder/v2/enterprise/coderd"
 	"github.com/coder/coder/v2/enterprise/coderd/coderdenttest"
 	"github.com/coder/coder/v2/enterprise/coderd/license"
 	"github.com/coder/coder/v2/enterprise/dbcrypt"
+	"github.com/coder/coder/v2/enterprise/replicasync"
 	"github.com/coder/coder/v2/testutil"
+	"github.com/coder/retry"
+	"github.com/coder/serpent"
 )
 
 func TestMain(m *testing.M) {
@@ -38,17 +45,22 @@ func TestEntitlements(t *testing.T) {
 	t.Parallel()
 	t.Run("NoLicense", func(t *testing.T) {
 		t.Parallel()
-		client, _ := coderdenttest.New(t, &coderdenttest.Options{
+		adminClient, adminUser := coderdenttest.New(t, &coderdenttest.Options{
 			DontAddLicense: true,
 		})
-		res, err := client.Entitlements(context.Background())
+		anotherClient, _ := coderdtest.CreateAnotherUser(t, adminClient, adminUser.OrganizationID)
+		res, err := anotherClient.Entitlements(context.Background())
 		require.NoError(t, err)
 		require.False(t, res.HasLicense)
 		require.Empty(t, res.Warnings)
 	})
 	t.Run("FullLicense", func(t *testing.T) {
+		// PGCoordinator requires a real postgres
+		if !dbtestutil.WillUsePostgres() {
+			t.Skip("test only with postgres")
+		}
 		t.Parallel()
-		client, _ := coderdenttest.New(t, &coderdenttest.Options{
+		adminClient, _ := coderdenttest.New(t, &coderdenttest.Options{
 			AuditLogging:   true,
 			DontAddLicense: true,
 		})
@@ -58,11 +70,11 @@ func TestEntitlements(t *testing.T) {
 			features[feature] = 1
 		}
 		features[codersdk.FeatureUserLimit] = 100
-		coderdenttest.AddLicense(t, client, coderdenttest.LicenseOptions{
+		coderdenttest.AddLicense(t, adminClient, coderdenttest.LicenseOptions{
 			Features: features,
 			GraceAt:  time.Now().Add(59 * 24 * time.Hour),
 		})
-		res, err := client.Entitlements(context.Background())
+		res, err := adminClient.Entitlements(context.Background()) //nolint:gocritic // adding another user would put us over user limit
 		require.NoError(t, err)
 		assert.True(t, res.HasLicense)
 		ul := res.Features[codersdk.FeatureUserLimit]
@@ -83,27 +95,28 @@ func TestEntitlements(t *testing.T) {
 	})
 	t.Run("FullLicenseToNone", func(t *testing.T) {
 		t.Parallel()
-		client, _ := coderdenttest.New(t, &coderdenttest.Options{
+		adminClient, adminUser := coderdenttest.New(t, &coderdenttest.Options{
 			AuditLogging:   true,
 			DontAddLicense: true,
 		})
-		license := coderdenttest.AddLicense(t, client, coderdenttest.LicenseOptions{
+		anotherClient, _ := coderdtest.CreateAnotherUser(t, adminClient, adminUser.OrganizationID)
+		license := coderdenttest.AddLicense(t, adminClient, coderdenttest.LicenseOptions{
 			Features: license.Features{
 				codersdk.FeatureUserLimit: 100,
 				codersdk.FeatureAuditLog:  1,
 			},
 		})
-		res, err := client.Entitlements(context.Background())
+		res, err := anotherClient.Entitlements(context.Background())
 		require.NoError(t, err)
 		assert.True(t, res.HasLicense)
 		al := res.Features[codersdk.FeatureAuditLog]
 		assert.Equal(t, codersdk.EntitlementEntitled, al.Entitlement)
 		assert.True(t, al.Enabled)
 
-		err = client.DeleteLicense(context.Background(), license.ID)
+		err = adminClient.DeleteLicense(context.Background(), license.ID)
 		require.NoError(t, err)
 
-		res, err = client.Entitlements(context.Background())
+		res, err = anotherClient.Entitlements(context.Background())
 		require.NoError(t, err)
 		assert.False(t, res.HasLicense)
 		al = res.Features[codersdk.FeatureAuditLog]
@@ -112,8 +125,9 @@ func TestEntitlements(t *testing.T) {
 	})
 	t.Run("Pubsub", func(t *testing.T) {
 		t.Parallel()
-		client, _, api, _ := coderdenttest.NewWithAPI(t, &coderdenttest.Options{DontAddLicense: true})
-		entitlements, err := client.Entitlements(context.Background())
+		adminClient, _, api, adminUser := coderdenttest.NewWithAPI(t, &coderdenttest.Options{DontAddLicense: true})
+		anotherClient, _ := coderdtest.CreateAnotherUser(t, adminClient, adminUser.OrganizationID)
+		entitlements, err := anotherClient.Entitlements(context.Background())
 		require.NoError(t, err)
 		require.False(t, entitlements.HasLicense)
 		//nolint:gocritic // unit test
@@ -131,18 +145,19 @@ func TestEntitlements(t *testing.T) {
 		err = api.Pubsub.Publish(coderd.PubsubEventLicenses, []byte{})
 		require.NoError(t, err)
 		require.Eventually(t, func() bool {
-			entitlements, err := client.Entitlements(context.Background())
+			entitlements, err := anotherClient.Entitlements(context.Background())
 			assert.NoError(t, err)
 			return entitlements.HasLicense
 		}, testutil.WaitShort, testutil.IntervalFast)
 	})
 	t.Run("Resync", func(t *testing.T) {
 		t.Parallel()
-		client, _, api, _ := coderdenttest.NewWithAPI(t, &coderdenttest.Options{
+		adminClient, _, api, adminUser := coderdenttest.NewWithAPI(t, &coderdenttest.Options{
 			EntitlementsUpdateInterval: 25 * time.Millisecond,
 			DontAddLicense:             true,
 		})
-		entitlements, err := client.Entitlements(context.Background())
+		anotherClient, _ := coderdtest.CreateAnotherUser(t, adminClient, adminUser.OrganizationID)
+		entitlements, err := anotherClient.Entitlements(context.Background())
 		require.NoError(t, err)
 		require.False(t, entitlements.HasLicense)
 		// Valid
@@ -177,10 +192,44 @@ func TestEntitlements(t *testing.T) {
 		})
 		require.NoError(t, err)
 		require.Eventually(t, func() bool {
-			entitlements, err := client.Entitlements(context.Background())
+			entitlements, err := anotherClient.Entitlements(context.Background())
 			assert.NoError(t, err)
 			return entitlements.HasLicense
 		}, testutil.WaitShort, testutil.IntervalFast)
+	})
+}
+
+func TestEntitlements_HeaderWarnings(t *testing.T) {
+	t.Parallel()
+	t.Run("ExistForAdmin", func(t *testing.T) {
+		t.Parallel()
+		adminClient, _ := coderdenttest.New(t, &coderdenttest.Options{
+			AuditLogging: true,
+			LicenseOptions: &coderdenttest.LicenseOptions{
+				AllFeatures: false,
+			},
+		})
+		//nolint:gocritic // This isn't actually bypassing any RBAC checks
+		res, err := adminClient.Request(context.Background(), http.MethodGet, "/api/v2/users/me", nil)
+		require.NoError(t, err)
+		defer res.Body.Close()
+		require.Equal(t, http.StatusOK, res.StatusCode)
+		require.NotEmpty(t, res.Header.Values(codersdk.EntitlementsWarningHeader))
+	})
+	t.Run("NoneForNormalUser", func(t *testing.T) {
+		t.Parallel()
+		adminClient, adminUser := coderdenttest.New(t, &coderdenttest.Options{
+			AuditLogging: true,
+			LicenseOptions: &coderdenttest.LicenseOptions{
+				AllFeatures: false,
+			},
+		})
+		anotherClient, _ := coderdtest.CreateAnotherUser(t, adminClient, adminUser.OrganizationID)
+		res, err := anotherClient.Request(context.Background(), http.MethodGet, "/api/v2/users/me", nil)
+		require.NoError(t, err)
+		defer res.Body.Close()
+		require.Equal(t, http.StatusOK, res.StatusCode)
+		require.Empty(t, res.Header.Values(codersdk.EntitlementsWarningHeader))
 	})
 }
 
@@ -223,13 +272,14 @@ func TestAuditLogging(t *testing.T) {
 			},
 			DontAddLicense: true,
 		})
-		workspace, agent := setupWorkspaceAgent(t, client, user, 0)
-		conn, err := client.DialWorkspaceAgent(ctx, agent.ID, nil)
+		r := setupWorkspaceAgent(t, client, user, 0)
+		conn, err := workspacesdk.New(client).DialAgent(ctx, r.sdkAgent.ID, nil) //nolint:gocritic // RBAC is not the purpose of this test
 		require.NoError(t, err)
 		defer conn.Close()
 		connected := conn.AwaitReachable(ctx)
 		require.True(t, connected)
-		build := coderdtest.CreateWorkspaceBuild(t, client, workspace, database.WorkspaceTransitionStop)
+		_ = r.agent.Close() // close first so we don't drop error logs from outdated build
+		build := coderdtest.CreateWorkspaceBuild(t, client, r.workspace, database.WorkspaceTransitionStop)
 		coderdtest.AwaitWorkspaceBuildJobCompleted(t, client, build.ID)
 	})
 }
@@ -360,6 +410,83 @@ func TestExternalTokenEncryption(t *testing.T) {
 			return feature.Enabled && !entitled && warningExists
 		}, testutil.WaitShort, testutil.IntervalFast)
 	})
+}
+
+func TestMultiReplica_EmptyRelayAddress(t *testing.T) {
+	t.Parallel()
+
+	ctx := testutil.Context(t, testutil.WaitLong)
+	db, ps := dbtestutil.NewDB(t)
+	logger := slogtest.Make(t, nil)
+
+	_, _ = coderdenttest.New(t, &coderdenttest.Options{
+		EntitlementsUpdateInterval: 25 * time.Millisecond,
+		ReplicaSyncUpdateInterval:  25 * time.Millisecond,
+		Options: &coderdtest.Options{
+			Logger:   &logger,
+			Database: db,
+			Pubsub:   ps,
+		},
+	})
+
+	mgr, err := replicasync.New(ctx, logger, db, ps, &replicasync.Options{
+		ID:             uuid.New(),
+		RelayAddress:   "",
+		RegionID:       999,
+		UpdateInterval: testutil.IntervalFast,
+	})
+	require.NoError(t, err)
+	defer mgr.Close()
+
+	// Send a bunch of updates to see if the coderd will log errors.
+	{
+		ctx, cancel := context.WithTimeout(ctx, testutil.IntervalMedium)
+		for r := retry.New(testutil.IntervalFast, testutil.IntervalFast); r.Wait(ctx); {
+			require.NoError(t, mgr.PublishUpdate())
+		}
+		cancel()
+	}
+}
+
+func TestMultiReplica_EmptyRelayAddress_DisabledDERP(t *testing.T) {
+	t.Parallel()
+
+	ctx := testutil.Context(t, testutil.WaitLong)
+	db, ps := dbtestutil.NewDB(t)
+	logger := slogtest.Make(t, nil)
+
+	dv := coderdtest.DeploymentValues(t)
+	dv.DERP.Server.Enable = serpent.Bool(false)
+	dv.DERP.Config.URL = serpent.String("https://controlplane.tailscale.com/derpmap/default")
+
+	_, _ = coderdenttest.New(t, &coderdenttest.Options{
+		EntitlementsUpdateInterval: 25 * time.Millisecond,
+		ReplicaSyncUpdateInterval:  25 * time.Millisecond,
+		Options: &coderdtest.Options{
+			Logger:           &logger,
+			Database:         db,
+			Pubsub:           ps,
+			DeploymentValues: dv,
+		},
+	})
+
+	mgr, err := replicasync.New(ctx, logger, db, ps, &replicasync.Options{
+		ID:             uuid.New(),
+		RelayAddress:   "",
+		RegionID:       999,
+		UpdateInterval: testutil.IntervalFast,
+	})
+	require.NoError(t, err)
+	defer mgr.Close()
+
+	// Send a bunch of updates to see if the coderd will log errors.
+	{
+		ctx, cancel := context.WithTimeout(ctx, testutil.IntervalMedium)
+		for r := retry.New(testutil.IntervalFast, testutil.IntervalFast); r.Wait(ctx); {
+			require.NoError(t, mgr.PublishUpdate())
+		}
+		cancel()
+	}
 }
 
 // testDBAuthzRole returns a context with a subject that has a role

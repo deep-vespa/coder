@@ -1,44 +1,41 @@
-import Button from "@mui/material/Button";
 import AddIcon from "@mui/icons-material/Add";
 import EditIcon from "@mui/icons-material/Edit";
+import Button from "@mui/material/Button";
+import type { FC } from "react";
+import { Link as RouterLink } from "react-router-dom";
+import type { TemplateVersion } from "api/typesGenerated";
+import { ErrorAlert } from "components/Alert/ErrorAlert";
 import { Loader } from "components/Loader/Loader";
 import { Margins } from "components/Margins/Margins";
 import {
   PageHeader,
   PageHeaderCaption,
-  PageHeaderSubtitle,
   PageHeaderTitle,
 } from "components/PageHeader/PageHeader";
 import { Stack } from "components/Stack/Stack";
 import { Stats, StatsItem } from "components/Stats/Stats";
-import { TemplateFiles } from "components/TemplateFiles/TemplateFiles";
-import { UseTabResult } from "hooks/useTab";
-import { type FC } from "react";
-import { Link as RouterLink } from "react-router-dom";
+import { TemplateFiles } from "modules/templates/TemplateFiles/TemplateFiles";
+import { TemplateUpdateMessage } from "modules/templates/TemplateUpdateMessage";
 import { createDayString } from "utils/createDayString";
-import { ErrorAlert } from "components/Alert/ErrorAlert";
-import { TemplateVersion } from "api/typesGenerated";
-import { TemplateVersionFiles } from "utils/templateVersion";
+import type { TemplateVersionFiles } from "utils/templateVersion";
 
 export interface TemplateVersionPageViewProps {
   versionName: string;
   templateName: string;
-  tab: UseTabResult;
   createWorkspaceUrl?: string;
   error: unknown;
   currentVersion: TemplateVersion | undefined;
   currentFiles: TemplateVersionFiles | undefined;
-  previousFiles: TemplateVersionFiles | undefined;
+  baseFiles: TemplateVersionFiles | undefined;
 }
 
 export const TemplateVersionPageView: FC<TemplateVersionPageViewProps> = ({
-  tab,
   versionName,
   templateName,
   createWorkspaceUrl,
   currentVersion,
   currentFiles,
-  previousFiles,
+  baseFiles,
   error,
 }) => {
   return (
@@ -68,17 +65,17 @@ export const TemplateVersionPageView: FC<TemplateVersionPageViewProps> = ({
       >
         <PageHeaderCaption>Version</PageHeaderCaption>
         <PageHeaderTitle>{versionName}</PageHeaderTitle>
-        {currentVersion &&
-          currentVersion.message &&
-          currentVersion.message !== "" && (
-            <PageHeaderSubtitle>{currentVersion.message}</PageHeaderSubtitle>
-          )}
       </PageHeader>
 
       {!currentFiles && !error && <Loader />}
 
       <Stack spacing={4}>
         {Boolean(error) && <ErrorAlert error={error} />}
+        {currentVersion?.message && (
+          <TemplateUpdateMessage>
+            {currentVersion.message}
+          </TemplateUpdateMessage>
+        )}
         {currentVersion && currentFiles && (
           <>
             <Stats>
@@ -101,9 +98,10 @@ export const TemplateVersionPageView: FC<TemplateVersionPageViewProps> = ({
             </Stats>
 
             <TemplateFiles
-              tab={tab}
               currentFiles={currentFiles}
-              previousFiles={previousFiles}
+              baseFiles={baseFiles}
+              templateName={templateName}
+              versionName={versionName}
             />
           </>
         )}

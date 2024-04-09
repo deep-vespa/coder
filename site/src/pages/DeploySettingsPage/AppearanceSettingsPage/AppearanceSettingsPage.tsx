@@ -1,13 +1,13 @@
-import { UpdateAppearanceConfig } from "api/typesGenerated";
-import { useDashboard } from "components/Dashboard/DashboardProvider";
-import { FC } from "react";
+import type { FC } from "react";
 import { Helmet } from "react-helmet-async";
+import { useMutation, useQueryClient } from "react-query";
+import { getErrorMessage } from "api/errors";
+import { updateAppearance } from "api/queries/appearance";
+import type { UpdateAppearanceConfig } from "api/typesGenerated";
+import { displayError, displaySuccess } from "components/GlobalSnackbar/utils";
+import { useDashboard } from "modules/dashboard/useDashboard";
 import { pageTitle } from "utils/page";
 import { AppearanceSettingsPageView } from "./AppearanceSettingsPageView";
-import { useMutation, useQueryClient } from "react-query";
-import { updateAppearance } from "api/queries/appearance";
-import { getErrorMessage } from "api/errors";
-import { displayError, displaySuccess } from "components/GlobalSnackbar/utils";
 
 // ServiceBanner is unlike the other Deployment Settings pages because it
 // implements a form, whereas the others are read-only. We make this

@@ -4,24 +4,18 @@ import {
   ThemeProvider as MuiThemeProvider,
 } from "@mui/material/styles";
 import { ThemeProvider as EmotionThemeProvider } from "@emotion/react";
-import { withRouter } from "storybook-addon-react-router-v6";
-import { HelmetProvider } from "react-helmet-async";
-import { dark } from "theme";
-import "theme/globalFonts";
+import { DecoratorHelpers } from "@storybook/addon-themes";
+import { withRouter } from "storybook-addon-remix-react-router";
 import { QueryClient, QueryClientProvider } from "react-query";
+import { HelmetProvider } from "react-helmet-async";
+import themes from "theme";
+import "theme/globalFonts";
+
+DecoratorHelpers.initializeThemeState(Object.keys(themes), "dark");
 
 export const decorators = [
-  (Story) => (
-    <StyledEngineProvider injectFirst>
-      <MuiThemeProvider theme={dark}>
-        <EmotionThemeProvider theme={dark}>
-          <CssBaseline />
-          <Story />
-        </EmotionThemeProvider>
-      </MuiThemeProvider>
-    </StyledEngineProvider>
-  ),
   withRouter,
+  withQuery,
   (Story) => {
     return (
       <HelmetProvider>
@@ -29,18 +23,31 @@ export const decorators = [
       </HelmetProvider>
     );
   },
-  (Story) => {
+  (Story, context) => {
+    const selectedTheme = DecoratorHelpers.pluckThemeFromContext(context);
+    const { themeOverride } = DecoratorHelpers.useThemeParameters();
+    const selected = themeOverride || selectedTheme || "dark";
+
     return (
-      <QueryClientProvider client={new QueryClient()}>
-        <Story />
-      </QueryClientProvider>
+      <StyledEngineProvider injectFirst>
+        <MuiThemeProvider theme={themes[selected]}>
+          <EmotionThemeProvider theme={themes[selected]}>
+            <CssBaseline />
+            <Story />
+          </EmotionThemeProvider>
+        </MuiThemeProvider>
+      </StyledEngineProvider>
     );
   },
 ];
 
 export const parameters = {
-  actions: {
-    argTypesRegex: "^(on|handler)[A-Z].*",
+  options: {
+    storySort: {
+      method: "alphabetical",
+      order: ["design", "pages", "modules", "components"],
+      locales: "en-US",
+    },
   },
   controls: {
     expanded: true,
@@ -49,4 +56,46 @@ export const parameters = {
       date: /Date$/,
     },
   },
+  viewport: {
+    viewports: {
+      ipad: {
+        name: "iPad Mini",
+        styles: {
+          height: "1024px",
+          width: "768px",
+        },
+        type: "tablet",
+      },
+      terminal: {
+        name: "Terminal",
+        styles: {
+          height: "400",
+          width: "400",
+        },
+      },
+    },
+  },
 };
+
+function withQuery(Story, { parameters }) {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: {
+        staleTime: Infinity,
+        retry: false,
+      },
+    },
+  });
+
+  if (parameters.queries) {
+    parameters.queries.forEach((query) => {
+      queryClient.setQueryData(query.key, query.data);
+    });
+  }
+
+  return (
+    <QueryClientProvider client={queryClient}>
+      <Story />
+    </QueryClientProvider>
+  );
+}

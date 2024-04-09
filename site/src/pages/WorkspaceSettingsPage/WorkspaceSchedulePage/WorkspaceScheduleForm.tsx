@@ -5,9 +5,21 @@ import FormGroup from "@mui/material/FormGroup";
 import FormHelperText from "@mui/material/FormHelperText";
 import FormLabel from "@mui/material/FormLabel";
 import MenuItem from "@mui/material/MenuItem";
-import makeStyles from "@mui/styles/makeStyles";
 import Switch from "@mui/material/Switch";
 import TextField from "@mui/material/TextField";
+import Tooltip from "@mui/material/Tooltip";
+import { formatDuration, intervalToDuration } from "date-fns";
+import dayjs from "dayjs";
+import advancedFormat from "dayjs/plugin/advancedFormat";
+import duration from "dayjs/plugin/duration";
+import relativeTime from "dayjs/plugin/relativeTime";
+import timezone from "dayjs/plugin/timezone";
+import utc from "dayjs/plugin/utc";
+import { type FormikTouched, useFormik } from "formik";
+import type { ChangeEvent, FC } from "react";
+import * as Yup from "yup";
+import type { Template } from "api/typesGenerated";
+import { DisabledBadge } from "components/Badges/Badges";
 import {
   HorizontalForm,
   FormFooter,
@@ -15,23 +27,12 @@ import {
   FormFields,
 } from "components/Form/Form";
 import { Stack } from "components/Stack/Stack";
-import dayjs from "dayjs";
-import advancedFormat from "dayjs/plugin/advancedFormat";
-import duration from "dayjs/plugin/duration";
-import relativeTime from "dayjs/plugin/relativeTime";
-import timezone from "dayjs/plugin/timezone";
-import utc from "dayjs/plugin/utc";
-import { FormikTouched, useFormik } from "formik";
 import {
   defaultSchedule,
   emptySchedule,
 } from "pages/WorkspaceSettingsPage/WorkspaceSchedulePage/schedule";
-import { ChangeEvent, FC } from "react";
-import * as Yup from "yup";
 import { getFormHelpers } from "utils/formUtils";
 import { timeZones } from "utils/timeZones";
-import { Pill } from "components/Pill/Pill";
-import Tooltip from "@mui/material/Tooltip";
 
 // REMARK: some plugins depend on utc, so it's listed first. Otherwise they're
 //         sorted alphabetically.
@@ -62,11 +63,6 @@ export const Language = {
   startTimeLabel: "Start time",
   timezoneLabel: "Timezone",
   ttlLabel: "Time until shutdown (hours)",
-  ttlCausesShutdownHelperText: "Your workspace will shut down",
-  ttlCausesShutdownAfterStart:
-    "after its next start. We delay shutdown by this time whenever we detect activity",
-  ttlCausesNoShutdownHelperText:
-    "Your workspace will not automatically shut down.",
   formTitle: "Workspace schedule",
   startSection: "Start",
   startSwitch: "Enable Autostart",
@@ -75,11 +71,10 @@ export const Language = {
 };
 
 export interface WorkspaceScheduleFormProps {
-  submitScheduleError?: unknown;
+  template: Template;
+  error?: unknown;
   initialValues: WorkspaceScheduleFormValues;
   isLoading: boolean;
-  enableAutoStop: boolean;
-  enableAutoStart: boolean;
   onCancel: () => void;
   onSubmit: (values: WorkspaceScheduleFormValues) => void;
   // for storybook
@@ -98,7 +93,6 @@ export interface WorkspaceScheduleFormValues {
   saturday: boolean;
   startTime: string;
   timezone: string;
-
   autostopEnabled: boolean;
   ttl: number;
 }
@@ -174,7 +168,6 @@ export const validationSchema = Yup.object({
       }
     }),
   ttl: Yup.number()
-    .integer()
     .min(0)
     .max(24 * 30 /* 30 days */, Language.errorTtlMax)
     .test("positive-if-autostop", Language.errorNoStop, function (value) {
@@ -187,21 +180,16 @@ export const validationSchema = Yup.object({
     }),
 });
 
-export const WorkspaceScheduleForm: FC<
-  React.PropsWithChildren<WorkspaceScheduleFormProps>
-> = ({
-  submitScheduleError,
+export const WorkspaceScheduleForm: FC<WorkspaceScheduleFormProps> = ({
+  error,
   initialValues,
   isLoading,
   onCancel,
   onSubmit,
   initialTouched,
   defaultTTL,
-  enableAutoStop,
-  enableAutoStart,
+  template,
 }) => {
-  const styles = useStyles();
-
   const form = useFormik<WorkspaceScheduleFormValues>({
     initialValues,
     onSubmit,
@@ -209,17 +197,9 @@ export const WorkspaceScheduleForm: FC<
     initialTouched,
     enableReinitialize: true,
   });
-  const formHelpers = getFormHelpers<WorkspaceScheduleFormValues>(
-    form,
-    submitScheduleError,
-  );
+  const formHelpers = getFormHelpers<WorkspaceScheduleFormValues>(form, error);
 
   const checkboxes: Array<{ value: boolean; name: string; label: string }> = [
-    {
-      value: form.values.sunday,
-      name: "sunday",
-      label: Language.daySundayLabel,
-    },
     {
       value: form.values.monday,
       name: "monday",
@@ -249,6 +229,11 @@ export const WorkspaceScheduleForm: FC<
       value: form.values.saturday,
       name: "saturday",
       label: Language.daySaturdayLabel,
+    },
+    {
+      value: form.values.sunday,
+      name: "sunday",
+      label: Language.daySundayLabel,
     },
   ];
 
@@ -296,9 +281,9 @@ export const WorkspaceScheduleForm: FC<
               Select the time and days of week on which you want the workspace
               starting automatically.
             </div>
-            {!enableAutoStart && (
+            {!template.allow_user_autostart && (
               <Tooltip title="This option can be enabled in the template settings">
-                <Pill text="Disabled" />
+                <DisabledBadge />
               </Tooltip>
             )}
           </>
@@ -308,7 +293,7 @@ export const WorkspaceScheduleForm: FC<
           <FormControlLabel
             control={
               <Switch
-                disabled={!enableAutoStart}
+                disabled={!template.allow_user_autostart}
                 name="autostartEnabled"
                 checked={form.values.autostartEnabled}
                 onChange={handleToggleAutostart}
@@ -319,14 +304,26 @@ export const WorkspaceScheduleForm: FC<
           <Stack direction="row">
             <TextField
               {...formHelpers("startTime")}
-              disabled={isLoading || !form.values.autostartEnabled}
+              // disabled if template does not allow autostart
+              // or if primary feature is toggled off via the switch above
+              disabled={
+                isLoading ||
+                !template.allow_user_autostart ||
+                !form.values.autostartEnabled
+              }
               label={Language.startTimeLabel}
               type="time"
               fullWidth
             />
             <TextField
               {...formHelpers("timezone")}
-              disabled={isLoading || !form.values.autostartEnabled}
+              // disabled if template does not allow autostart
+              // or if primary feature is toggled off via the switch above
+              disabled={
+                isLoading ||
+                !template.allow_user_autostart ||
+                !form.values.autostartEnabled
+              }
               label={Language.timezoneLabel}
               select
               fullWidth
@@ -340,17 +337,34 @@ export const WorkspaceScheduleForm: FC<
           </Stack>
 
           <FormControl component="fieldset" error={Boolean(form.errors.monday)}>
-            <FormLabel className={styles.daysOfWeekLabel} component="legend">
+            <FormLabel css={{ fontSize: 12 }} component="legend">
               {Language.daysOfWeekLabel}
             </FormLabel>
 
-            <FormGroup className={styles.daysOfWeekOptions}>
+            <FormGroup
+              css={{
+                display: "flex",
+                flexDirection: "row",
+                flexWrap: "wrap",
+                paddingTop: 4,
+              }}
+            >
               {checkboxes.map((checkbox) => (
                 <FormControlLabel
                   control={
                     <Checkbox
                       checked={checkbox.value}
-                      disabled={isLoading || !form.values.autostartEnabled}
+                      // template admins can disable the autostart feature in general,
+                      // or they can disallow autostart on specific days of the week.
+                      // also disabled if primary feature switch (above) is toggled off
+                      disabled={
+                        isLoading ||
+                        !template.allow_user_autostart ||
+                        !template.autostart_requirement.days_of_week.includes(
+                          checkbox.name,
+                        ) ||
+                        !form.values.autostartEnabled
+                      }
                       onChange={form.handleChange}
                       name={checkbox.name}
                       size="small"
@@ -374,12 +388,17 @@ export const WorkspaceScheduleForm: FC<
         description={
           <>
             <div css={{ marginBottom: 16 }}>
-              Set how many hours should elapse after you log off before the
-              workspace automatically shuts down.
+              Set how many hours should elapse after the workspace started
+              before the workspace automatically shuts down. This will be
+              extended by{" "}
+              {dayjs
+                .duration({ milliseconds: template.activity_bump_ms })
+                .humanize()}{" "}
+              after last activity in the workspace was detected.
             </div>
-            {!enableAutoStop && (
+            {!template.allow_user_autostop && (
               <Tooltip title="This option can be enabled in the template settings">
-                <Pill text="Disabled" />
+                <DisabledBadge />
               </Tooltip>
             )}
           </>
@@ -392,45 +411,58 @@ export const WorkspaceScheduleForm: FC<
                 name="autostopEnabled"
                 checked={form.values.autostopEnabled}
                 onChange={handleToggleAutostop}
-                disabled={!enableAutoStop}
+                disabled={!template.allow_user_autostop}
               />
             }
             label={Language.stopSwitch}
           />
           <TextField
-            {...formHelpers("ttl", ttlShutdownAt(form.values.ttl), "ttl_ms")}
-            disabled={isLoading || !form.values.autostopEnabled}
-            inputProps={{ min: 0, step: 1 }}
+            {...formHelpers("ttl", {
+              helperText: ttlShutdownAt(form.values.ttl),
+              backendFieldName: "ttl_ms",
+            })}
+            // disabled if autostop disabled at template level or
+            // if autostop feature is toggled off via the switch above
+            disabled={
+              isLoading ||
+              !template.allow_user_autostop ||
+              !form.values.autostopEnabled
+            }
+            inputProps={{ min: 0, step: "any", maxLength: 5 }}
             label={Language.ttlLabel}
             type="number"
             fullWidth
           />
         </FormFields>
       </FormSection>
-      <FormFooter onCancel={onCancel} isLoading={isLoading} />
+      <FormFooter
+        onCancel={onCancel}
+        isLoading={isLoading}
+        // If both options, autostart and autostop, are disabled at the template
+        // level, the form is disabled.
+        submitDisabled={
+          !template.allow_user_autostart && !template.allow_user_autostop
+        }
+      />
     </HorizontalForm>
   );
 };
 
 export const ttlShutdownAt = (formTTL: number): string => {
-  if (formTTL < 1) {
+  if (formTTL === 0) {
     // Passing an empty value for TTL in the form results in a number that is not zero but less than 1.
-    return Language.ttlCausesNoShutdownHelperText;
-  } else {
-    return `${Language.ttlCausesShutdownHelperText} ${dayjs
-      .duration(formTTL, "hours")
-      .humanize()} ${Language.ttlCausesShutdownAfterStart}.`;
+    return "Your workspace will not automatically shut down.";
+  }
+
+  try {
+    return `Your workspace will shut down ${formatDuration(
+      intervalToDuration({ start: 0, end: formTTL * 60 * 60 * 1000 }),
+      { delimiter: " and " },
+    )} after its next start. We delay shutdown by 1 hour whenever we detect activity.`;
+  } catch (e) {
+    if (e instanceof RangeError) {
+      return Language.errorTtlMax;
+    }
+    throw e;
   }
 };
-
-const useStyles = makeStyles((theme) => ({
-  daysOfWeekLabel: {
-    fontSize: 12,
-  },
-  daysOfWeekOptions: {
-    display: "flex",
-    flexDirection: "row",
-    flexWrap: "wrap",
-    paddingTop: theme.spacing(0.5),
-  },
-}));

@@ -148,6 +148,12 @@ var (
 		Type: "user_data",
 	}
 
+	// ResourceUserWorkspaceBuildParameters is the user's workspace build
+	// parameter history.
+	ResourceUserWorkspaceBuildParameters = Object{
+		Type: "user_workspace_build_parameters",
+	}
+
 	// ResourceOrganizationMember is a user's membership in an organization.
 	// Has ONLY an organization owner.
 	//	create/delete  = Create/delete member from org.
@@ -192,6 +198,35 @@ var (
 	// ResourceTailnetCoordinator is a pseudo-resource for use by the tailnet coordinator
 	ResourceTailnetCoordinator = Object{
 		Type: "tailnet_coordinator",
+	}
+
+	// ResourceTemplateInsights is a pseudo-resource for reading template insights data.
+	ResourceTemplateInsights = Object{
+		Type: "template_insights",
+	}
+
+	// ResourceOAuth2ProviderApp CRUD.
+	//	create/delete = Make or delete an OAuth2 app.
+	//	update = Update the properties of the OAuth2 app.
+	//	read = Read OAuth2 apps.
+	ResourceOAuth2ProviderApp = Object{
+		Type: "oauth2_app",
+	}
+
+	// ResourceOAuth2ProviderAppSecret CRUD.
+	//	create/delete = Make or delete an OAuth2 app secret.
+	//	update = Update last used date.
+	//	read = Read OAuth2 app hashed or truncated secret.
+	ResourceOAuth2ProviderAppSecret = Object{
+		Type: "oauth2_app_secret",
+	}
+
+	// ResourceOAuth2ProviderAppCodeToken CRUD.
+	//	create/delete = Make or delete an OAuth2 app code or token.
+	//  update = None
+	//	read = Check if OAuth2 app code or token exists.
+	ResourceOAuth2ProviderAppCodeToken = Object{
+		Type: "oauth2_app_code_token",
 	}
 )
 

@@ -3,21 +3,21 @@ package cli
 import (
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
-	"github.com/jedib0t/go-pretty/v6/table"
 	"golang.org/x/xerrors"
 
-	"github.com/coder/coder/v2/cli/clibase"
 	"github.com/coder/coder/v2/cli/cliui"
 	"github.com/coder/coder/v2/coderd/schedule/cron"
 	"github.com/coder/coder/v2/coderd/util/ptr"
 	"github.com/coder/coder/v2/coderd/util/tz"
 	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/serpent"
 )
 
 const (
-	scheduleShowDescriptionLong = `Shows the following information for the given workspace:
+	scheduleShowDescriptionLong = `Shows the following information for the given workspace(s):
   * The automatic start schedule
   * The next scheduled start time
   * The duration after which it will stop
@@ -53,15 +53,15 @@ When enabling scheduled stop, enter a duration in one of the following formats:
 `
 )
 
-func (r *RootCmd) schedules() *clibase.Cmd {
-	scheduleCmd := &clibase.Cmd{
+func (r *RootCmd) schedules() *serpent.Command {
+	scheduleCmd := &serpent.Command{
 		Annotations: workspaceCommand,
 		Use:         "schedule { show | start | stop | override } <workspace>",
 		Short:       "Schedule automated start and stop times for workspaces",
-		Handler: func(inv *clibase.Invocation) error {
+		Handler: func(inv *serpent.Invocation) error {
 			return inv.Command.HelpHandler(inv)
 		},
-		Children: []*clibase.Cmd{
+		Children: []*serpent.Command{
 			r.scheduleShow(),
 			r.scheduleStart(),
 			r.scheduleStop(),
@@ -72,31 +72,73 @@ func (r *RootCmd) schedules() *clibase.Cmd {
 	return scheduleCmd
 }
 
-func (r *RootCmd) scheduleShow() *clibase.Cmd {
+// scheduleShow() is just a wrapper for list() with some different defaults.
+func (r *RootCmd) scheduleShow() *serpent.Command {
+	var (
+		filter    cliui.WorkspaceFilter
+		formatter = cliui.NewOutputFormatter(
+			cliui.TableFormat(
+				[]scheduleListRow{},
+				[]string{
+					"workspace",
+					"starts at",
+					"starts next",
+					"stops after",
+					"stops next",
+				},
+			),
+			cliui.JSONFormat(),
+		)
+	)
 	client := new(codersdk.Client)
-	showCmd := &clibase.Cmd{
-		Use:   "show <workspace-name>",
-		Short: "Show workspace schedule",
+	showCmd := &serpent.Command{
+		Use:   "show <workspace | --search <query> | --all>",
+		Short: "Show workspace schedules",
 		Long:  scheduleShowDescriptionLong,
-		Middleware: clibase.Chain(
-			clibase.RequireNArgs(1),
+		Middleware: serpent.Chain(
+			serpent.RequireRangeArgs(0, 1),
 			r.InitClient(client),
 		),
-		Handler: func(inv *clibase.Invocation) error {
-			workspace, err := namedWorkspace(inv.Context(), client, inv.Args[0])
+		Handler: func(inv *serpent.Invocation) error {
+			// To preserve existing behavior, if an argument is passed we will
+			// only show the schedule for that workspace.
+			// This will clobber the search query if one is passed.
+			f := filter.Filter()
+			if len(inv.Args) == 1 {
+				// If the argument contains a slash, we assume it's a full owner/name reference
+				if strings.Contains(inv.Args[0], "/") {
+					_, workspaceName, err := splitNamedWorkspace(inv.Args[0])
+					if err != nil {
+						return err
+					}
+					f.FilterQuery = fmt.Sprintf("name:%s", workspaceName)
+				} else {
+					// Otherwise, we assume it's a workspace name owned by the current user
+					f.FilterQuery = fmt.Sprintf("owner:me name:%s", inv.Args[0])
+				}
+			}
+			res, err := queryConvertWorkspaces(inv.Context(), client, f, scheduleListRowFromWorkspace)
 			if err != nil {
 				return err
 			}
 
-			return displaySchedule(workspace, inv.Stdout)
+			out, err := formatter.Format(inv.Context(), res)
+			if err != nil {
+				return err
+			}
+
+			_, err = fmt.Fprintln(inv.Stdout, out)
+			return err
 		},
 	}
+	filter.AttachOptions(&showCmd.Options)
+	formatter.AttachOptions(&showCmd.Options)
 	return showCmd
 }
 
-func (r *RootCmd) scheduleStart() *clibase.Cmd {
+func (r *RootCmd) scheduleStart() *serpent.Command {
 	client := new(codersdk.Client)
-	cmd := &clibase.Cmd{
+	cmd := &serpent.Command{
 		Use: "start <workspace-name> { <start-time> [day-of-week] [location] | manual }",
 		Long: scheduleStartDescriptionLong + "\n" + formatExamples(
 			example{
@@ -105,11 +147,11 @@ func (r *RootCmd) scheduleStart() *clibase.Cmd {
 			},
 		),
 		Short: "Edit workspace start schedule",
-		Middleware: clibase.Chain(
-			clibase.RequireRangeArgs(2, 4),
+		Middleware: serpent.Chain(
+			serpent.RequireRangeArgs(2, 4),
 			r.InitClient(client),
 		),
-		Handler: func(inv *clibase.Invocation) error {
+		Handler: func(inv *serpent.Invocation) error {
 			workspace, err := namedWorkspace(inv.Context(), client, inv.Args[0])
 			if err != nil {
 				return err
@@ -143,9 +185,9 @@ func (r *RootCmd) scheduleStart() *clibase.Cmd {
 	return cmd
 }
 
-func (r *RootCmd) scheduleStop() *clibase.Cmd {
+func (r *RootCmd) scheduleStop() *serpent.Command {
 	client := new(codersdk.Client)
-	return &clibase.Cmd{
+	return &serpent.Command{
 		Use: "stop <workspace-name> { <duration> | manual }",
 		Long: scheduleStopDescriptionLong + "\n" + formatExamples(
 			example{
@@ -153,11 +195,11 @@ func (r *RootCmd) scheduleStop() *clibase.Cmd {
 			},
 		),
 		Short: "Edit workspace stop schedule",
-		Middleware: clibase.Chain(
-			clibase.RequireNArgs(2),
+		Middleware: serpent.Chain(
+			serpent.RequireNArgs(2),
 			r.InitClient(client),
 		),
-		Handler: func(inv *clibase.Invocation) error {
+		Handler: func(inv *serpent.Invocation) error {
 			workspace, err := namedWorkspace(inv.Context(), client, inv.Args[0])
 			if err != nil {
 				return err
@@ -187,9 +229,9 @@ func (r *RootCmd) scheduleStop() *clibase.Cmd {
 	}
 }
 
-func (r *RootCmd) scheduleOverride() *clibase.Cmd {
+func (r *RootCmd) scheduleOverride() *serpent.Command {
 	client := new(codersdk.Client)
-	overrideCmd := &clibase.Cmd{
+	overrideCmd := &serpent.Command{
 		Use:   "override-stop <workspace-name> <duration from now>",
 		Short: "Override the stop time of a currently running workspace instance.",
 		Long: scheduleOverrideDescriptionLong + "\n" + formatExamples(
@@ -197,11 +239,11 @@ func (r *RootCmd) scheduleOverride() *clibase.Cmd {
 				Command: "coder schedule override-stop my-workspace 90m",
 			},
 		),
-		Middleware: clibase.Chain(
-			clibase.RequireNArgs(2),
+		Middleware: serpent.Chain(
+			serpent.RequireNArgs(2),
 			r.InitClient(client),
 		),
-		Handler: func(inv *clibase.Invocation) error {
+		Handler: func(inv *serpent.Invocation) error {
 			overrideDuration, err := parseDuration(inv.Args[1])
 			if err != nil {
 				return err
@@ -242,50 +284,52 @@ func (r *RootCmd) scheduleOverride() *clibase.Cmd {
 	return overrideCmd
 }
 
-func displaySchedule(workspace codersdk.Workspace, out io.Writer) error {
-	loc, err := tz.TimezoneIANA()
+func displaySchedule(ws codersdk.Workspace, out io.Writer) error {
+	rows := []workspaceListRow{workspaceListRowFromWorkspace(time.Now(), ws)}
+	rendered, err := cliui.DisplayTable(rows, "workspace", []string{
+		"workspace", "starts at", "starts next", "stops after", "stops next",
+	})
 	if err != nil {
-		loc = time.UTC // best effort
+		return err
 	}
+	_, err = fmt.Fprintln(out, rendered)
+	return err
+}
 
-	var (
-		schedStart     = "manual"
-		schedStop      = "manual"
-		schedNextStart = "-"
-		schedNextStop  = "-"
-	)
+// scheduleListRow is a row in the schedule list.
+// this is required for proper JSON output.
+type scheduleListRow struct {
+	WorkspaceName string `json:"workspace" table:"workspace,default_sort"`
+	StartsAt      string `json:"starts_at" table:"starts at"`
+	StartsNext    string `json:"starts_next" table:"starts next"`
+	StopsAfter    string `json:"stops_after" table:"stops after"`
+	StopsNext     string `json:"stops_next" table:"stops next"`
+}
+
+func scheduleListRowFromWorkspace(now time.Time, workspace codersdk.Workspace) scheduleListRow {
+	autostartDisplay := ""
+	nextStartDisplay := ""
 	if !ptr.NilOrEmpty(workspace.AutostartSchedule) {
-		sched, err := cron.Weekly(ptr.NilToEmpty(workspace.AutostartSchedule))
-		if err != nil {
-			// This should never happen.
-			_, _ = fmt.Fprintf(out, "Invalid autostart schedule %q for workspace %s: %s\n", *workspace.AutostartSchedule, workspace.Name, err.Error())
-			return nil
+		if sched, err := cron.Weekly(*workspace.AutostartSchedule); err == nil {
+			autostartDisplay = sched.Humanize()
+			nextStartDisplay = timeDisplay(sched.Next(now))
 		}
-		schedNext := sched.Next(time.Now()).In(sched.Location())
-		schedStart = fmt.Sprintf("%s %s (%s)", sched.Time(), sched.DaysOfWeek(), sched.Location())
-		schedNextStart = schedNext.Format(timeFormat + " on " + dateFormat)
 	}
 
+	autostopDisplay := ""
+	nextStopDisplay := ""
 	if !ptr.NilOrZero(workspace.TTLMillis) {
-		d := time.Duration(*workspace.TTLMillis) * time.Millisecond
-		schedStop = durationDisplay(d) + " after start"
-	}
-
-	if !workspace.LatestBuild.Deadline.IsZero() {
-		if workspace.LatestBuild.Transition != "start" {
-			schedNextStop = "-"
-		} else {
-			schedNextStop = workspace.LatestBuild.Deadline.Time.In(loc).Format(timeFormat + " on " + dateFormat)
-			schedNextStop = fmt.Sprintf("%s (in %s)", schedNextStop, durationDisplay(time.Until(workspace.LatestBuild.Deadline.Time)))
+		dur := time.Duration(*workspace.TTLMillis) * time.Millisecond
+		autostopDisplay = durationDisplay(dur)
+		if !workspace.LatestBuild.Deadline.IsZero() && workspace.LatestBuild.Transition == codersdk.WorkspaceTransitionStart {
+			nextStopDisplay = timeDisplay(workspace.LatestBuild.Deadline.Time)
 		}
 	}
-
-	tw := cliui.Table()
-	tw.AppendRow(table.Row{"Starts at", schedStart})
-	tw.AppendRow(table.Row{"Starts next", schedNextStart})
-	tw.AppendRow(table.Row{"Stops at", schedStop})
-	tw.AppendRow(table.Row{"Stops next", schedNextStop})
-
-	_, _ = fmt.Fprintln(out, tw.Render())
-	return nil
+	return scheduleListRow{
+		WorkspaceName: workspace.OwnerName + "/" + workspace.Name,
+		StartsAt:      autostartDisplay,
+		StartsNext:    nextStartDisplay,
+		StopsAfter:    autostopDisplay,
+		StopsNext:     nextStopDisplay,
+	}
 }

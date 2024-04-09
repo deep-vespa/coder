@@ -1,32 +1,36 @@
-import { type TemplateVersion } from "api/typesGenerated";
-import { type FC, type ReactNode } from "react";
-import CircularProgress from "@mui/material/CircularProgress";
-import ErrorIcon from "@mui/icons-material/ErrorOutline";
 import CheckIcon from "@mui/icons-material/CheckOutlined";
-import { Pill, type PillType } from "components/Pill/Pill";
+import ErrorIcon from "@mui/icons-material/ErrorOutline";
+import QueuedIcon from "@mui/icons-material/HourglassEmpty";
+import type { FC, ReactNode } from "react";
+import type { TemplateVersion } from "api/typesGenerated";
+import { Pill, PillSpinner } from "components/Pill/Pill";
+import type { ThemeRole } from "theme/roles";
+import { getPendingStatusLabel } from "utils/provisionerJob";
 
-export const TemplateVersionStatusBadge: FC<{
+interface TemplateVersionStatusBadgeProps {
   version: TemplateVersion;
-}> = ({ version }) => {
+}
+
+export const TemplateVersionStatusBadge: FC<
+  TemplateVersionStatusBadgeProps
+> = ({ version }) => {
   const { text, icon, type } = getStatus(version);
   return (
     <Pill
       icon={icon}
-      text={text}
       type={type}
       title={`Build status is ${text}`}
-    />
+      role="status"
+    >
+      {text}
+    </Pill>
   );
-};
-
-const LoadingIcon: FC = () => {
-  return <CircularProgress size={10} style={{ color: "#FFF" }} />;
 };
 
 export const getStatus = (
   version: TemplateVersion,
 ): {
-  type?: PillType;
+  type?: ThemeRole;
   text: string;
   icon: ReactNode;
 } => {
@@ -35,19 +39,19 @@ export const getStatus = (
       return {
         type: "info",
         text: "Running",
-        icon: <LoadingIcon />,
+        icon: <PillSpinner />,
       };
     case "pending":
       return {
-        text: "Pending",
-        icon: <LoadingIcon />,
         type: "info",
+        text: getPendingStatusLabel(version.job),
+        icon: <QueuedIcon />,
       };
     case "canceling":
       return {
         type: "warning",
         text: "Canceling",
-        icon: <LoadingIcon />,
+        icon: <PillSpinner />,
       };
     case "canceled":
       return {

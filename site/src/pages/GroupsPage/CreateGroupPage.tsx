@@ -1,16 +1,16 @@
-import { useOrganizationId } from "hooks/useOrganizationId";
-import { FC } from "react";
+import type { FC } from "react";
 import { Helmet } from "react-helmet-async";
+import { useMutation, useQueryClient } from "react-query";
 import { useNavigate } from "react-router-dom";
+import { createGroup } from "api/queries/groups";
+import { useAuthenticated } from "contexts/auth/RequireAuth";
 import { pageTitle } from "utils/page";
 import CreateGroupPageView from "./CreateGroupPageView";
-import { useMutation, useQueryClient } from "react-query";
-import { createGroup } from "api/queries/groups";
 
 export const CreateGroupPage: FC = () => {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const organizationId = useOrganizationId();
+  const { organizationId } = useAuthenticated();
   const createGroupMutation = useMutation(createGroup(queryClient));
 
   return (
@@ -26,7 +26,7 @@ export const CreateGroupPage: FC = () => {
           });
           navigate(`/groups/${newGroup.id}`);
         }}
-        formErrors={createGroupMutation.error}
+        error={createGroupMutation.error}
         isLoading={createGroupMutation.isLoading}
       />
     </>

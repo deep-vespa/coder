@@ -7,6 +7,15 @@ You'll also want to install the
 [latest version of Coder](https://github.com/coder/coder/releases/latest)
 locally in order to log in and manage templates.
 
+> Coder supports two release channels: mainline for the true latest version of
+> Coder, and stable for large enterprise deployments. Before installing your
+> control plane via Helm, please read the [Releases](./releases.md) document to
+> identify the best-suited release for your team, then specify the version using
+> Helm's `--version` flag.
+
+> The version flags for both stable and mainline are automatically filled in
+> this page.
+
 ## Install Coder with Helm
 
 1. Create a namespace for Coder, such as `coder`:
@@ -46,7 +55,7 @@ locally in order to log in and manage templates.
 
    The cluster-internal DB URL for the above database is:
 
-   ```console
+   ```shell
    postgres://coder:coder@coder-db-postgresql.coder.svc.cluster.local:5432/coder?sslmode=disable
    ```
 
@@ -57,7 +66,7 @@ locally in order to log in and manage templates.
 
 1. Create a secret with the database URL:
 
-   ```console
+   ```shell
    # Uses Bitnami PostgreSQL example. If you have another database,
    # change to the proper URL.
    kubectl create secret generic coder-db-url -n coder \
@@ -66,7 +75,7 @@ locally in order to log in and manage templates.
 
 1. Add the Coder Helm repo:
 
-   ```console
+   ```shell
    helm repo add coder-v2 https://helm.coder.com/v2
    ```
 
@@ -81,7 +90,7 @@ locally in order to log in and manage templates.
      # to the workspace provisioner (so you can consume them in your Terraform
      # templates for auth keys etc.).
      #
-     # Please keep in mind that you should not set `CODER_ADDRESS`,
+     # Please keep in mind that you should not set `CODER_HTTP_ADDRESS`,
      # `CODER_TLS_ENABLE`, `CODER_TLS_CERT_FILE` or `CODER_TLS_KEY_FILE` as
      # they are already set by the Helm chart and will cause conflicts.
      env:
@@ -112,10 +121,22 @@ locally in order to log in and manage templates.
 
 1. Run the following command to install the chart in your cluster.
 
-   ```console
+   For the **mainline** Coder release:
+
+   ```shell
    helm install coder coder-v2/coder \
        --namespace coder \
-       --values values.yaml
+       --values values.yaml \
+       --version 2.10.0
+   ```
+
+   For the **stable** Coder release:
+
+   ```shell
+   helm install coder coder-v2/coder \
+       --namespace coder \
+       --values values.yaml \
+       --version 2.9.1
    ```
 
    You can watch Coder start up by running `kubectl get pods -n coder`. Once
@@ -135,12 +156,70 @@ locally in order to log in and manage templates.
 To upgrade Coder in the future or change values, you can run the following
 command:
 
-```console
+```shell
 helm repo update
 helm upgrade coder coder-v2/coder \
   --namespace coder \
   -f values.yaml
 ```
+
+## Kubernetes Security Reference
+
+Below are common requirements we see from our enterprise customers when
+deploying an application in Kubernetes. This is intended to serve as a
+reference, and not all security requirements may apply to your business.
+
+1. **All container images must be sourced from an internal container registry.**
+
+   - Control plane - To pull the control plane image from the appropriate
+     registry,
+     [update this Helm chart value](https://github.com/coder/coder/blob/f57ce97b5aadd825ddb9a9a129bb823a3725252b/helm/coder/values.yaml#L43-L50).
+   - Workspaces - To pull the workspace image from your registry,
+     [update the Terraform template code here](https://github.com/coder/coder/blob/f57ce97b5aadd825ddb9a9a129bb823a3725252b/examples/templates/kubernetes/main.tf#L271).
+     This assumes your cluster nodes are authenticated to pull from the internal
+     registry.
+
+2. **All containers must run as non-root user**
+
+   - Control plane - Our control plane pod
+     [runs as non-root by default](https://github.com/coder/coder/blob/f57ce97b5aadd825ddb9a9a129bb823a3725252b/helm/coder/values.yaml#L124-L127).
+   - Workspaces - Workspace pod UID is
+     [set in the Terraform template here](https://github.com/coder/coder/blob/f57ce97b5aadd825ddb9a9a129bb823a3725252b/examples/templates/kubernetes/main.tf#L274-L276),
+     and are not required to run as `root`.
+
+3. **Containers cannot run privileged**
+
+   - Coder's control plane does not run as privileged.
+     [We disable](https://github.com/coder/coder/blob/f57ce97b5aadd825ddb9a9a129bb823a3725252b/helm/coder/values.yaml#L141)
+     `allowPrivilegeEscalation`
+     [by default](https://github.com/coder/coder/blob/f57ce97b5aadd825ddb9a9a129bb823a3725252b/helm/coder/values.yaml#L141).
+   - Workspace pods do not require any elevated privileges, with the exception
+     of our `envbox` workspace template (used for docker-in-docker workspaces,
+     not required).
+
+4. **Containers cannot mount host filesystems**
+
+   - Both the control plane and workspace containers do not require any host
+     filesystem mounts.
+
+5. **Containers cannot attach to host network**
+
+   - Both the control plane and workspaces use the Kubernetes networking layer
+     by default, and do not require host network access.
+
+6. **All Kubernetes objects must define resource requests/limits**
+
+   - Both the control plane and workspaces set resource request/limits by
+     default.
+
+7. **All Kubernetes objects must define liveness and readiness probes**
+
+   - Control plane - The control plane Deployment has liveness and readiness
+     probes
+     [configured by default here](https://github.com/coder/coder/blob/f57ce97b5aadd825ddb9a9a129bb823a3725252b/helm/coder/templates/_coder.tpl#L98-L107).
+   - Workspaces - the Kubernetes Deployment template does not configure
+     liveness/readiness probes for the workspace, but this can be added to the
+     Terraform template, and is supported.
 
 ## Load balancing considerations
 
@@ -191,43 +270,6 @@ was needed. The Application Gateway supports:
 
 - Websocket traffic (required for workspace connections)
 - TLS termination
-
-## PostgreSQL Certificates
-
-Your organization may require connecting to the database instance over SSL. To
-supply Coder with the appropriate certificates, and have it connect over SSL,
-follow the steps below:
-
-1. Create the certificate as a secret in your Kubernetes cluster, if not already
-   present:
-
-```console
-$ kubectl create secret tls postgres-certs -n coder --key="postgres.key" --cert="postgres.crt"
-```
-
-1. Define the secret volume and volumeMounts in the Helm chart:
-
-```yaml
-coder:
-  volumes:
-    - name: "pg-certs-mount"
-      secret:
-        secretName: "postgres-certs"
-  volumeMounts:
-    - name: "pg-certs-mount"
-      mountPath: "$HOME/.postgresql"
-      readOnly: true
-```
-
-1. Lastly, your PG connection URL will look like:
-
-```console
-postgres://<user>:<password>@databasehost:<port>/<db-name>?sslmode=require&sslcert=$HOME/.postgresql/postgres.crt&sslkey=$HOME/.postgresql/postgres.key"
-```
-
-> More information on connecting to PostgreSQL databases using certificates can
-> be found
-> [here](https://www.postgresql.org/docs/current/libpq-ssl.html#LIBPQ-SSL-CLIENTCERT).
 
 ## Troubleshooting
 

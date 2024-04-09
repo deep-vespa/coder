@@ -94,6 +94,11 @@ export interface InstanceIdentityAuth {
   instanceId: string;
 }
 
+export interface ExternalAuthProviderResource {
+  id: string;
+  optional: boolean;
+}
+
 export interface ExternalAuthProvider {
   id: string;
   accessToken: string;
@@ -122,6 +127,8 @@ export interface Agent {
   /** Field 19 was startup_script_behavior, now removed. */
   displayApps: DisplayApps | undefined;
   scripts: Script[];
+  extraEnvs: Env[];
+  order: number;
 }
 
 export interface Agent_Metadata {
@@ -130,6 +137,7 @@ export interface Agent_Metadata {
   script: string;
   interval: number;
   timeout: number;
+  order: number;
 }
 
 export interface Agent_EnvEntry {
@@ -143,6 +151,11 @@ export interface DisplayApps {
   webTerminal: boolean;
   sshHelper: boolean;
   portForwardingHelper: boolean;
+}
+
+export interface Env {
+  name: string;
+  value: string;
 }
 
 /** Script represents a script to be run on the workspace. */
@@ -173,6 +186,7 @@ export interface App {
   healthcheck: Healthcheck | undefined;
   sharingLevel: AppSharingLevel;
   external: boolean;
+  order: number;
 }
 
 /** Healthcheck represents configuration for checking for app readiness. */
@@ -215,6 +229,8 @@ export interface Metadata {
   workspaceOwnerOidcAccessToken: string;
   workspaceOwnerSessionToken: string;
   templateId: string;
+  workspaceOwnerName: string;
+  workspaceOwnerGroups: string[];
 }
 
 /** Config represents execution configuration shared by all subsequent requests in the Session */
@@ -249,7 +265,7 @@ export interface PlanComplete {
   error: string;
   resources: Resource[];
   parameters: RichParameter[];
-  externalAuthProviders: string[];
+  externalAuthProviders: ExternalAuthProviderResource[];
 }
 
 /**
@@ -266,7 +282,7 @@ export interface ApplyComplete {
   error: string;
   resources: Resource[];
   parameters: RichParameter[];
-  externalAuthProviders: string[];
+  externalAuthProviders: ExternalAuthProviderResource[];
 }
 
 /** CancelRequest requests that the previous request be canceled gracefully. */
@@ -455,6 +471,21 @@ export const InstanceIdentityAuth = {
   },
 };
 
+export const ExternalAuthProviderResource = {
+  encode(
+    message: ExternalAuthProviderResource,
+    writer: _m0.Writer = _m0.Writer.create(),
+  ): _m0.Writer {
+    if (message.id !== "") {
+      writer.uint32(10).string(message.id);
+    }
+    if (message.optional === true) {
+      writer.uint32(16).bool(message.optional);
+    }
+    return writer;
+  },
+};
+
 export const ExternalAuthProvider = {
   encode(
     message: ExternalAuthProvider,
@@ -523,6 +554,12 @@ export const Agent = {
     for (const v of message.scripts) {
       Script.encode(v!, writer.uint32(170).fork()).ldelim();
     }
+    for (const v of message.extraEnvs) {
+      Env.encode(v!, writer.uint32(178).fork()).ldelim();
+    }
+    if (message.order !== 0) {
+      writer.uint32(184).int64(message.order);
+    }
     return writer;
   },
 };
@@ -546,6 +583,9 @@ export const Agent_Metadata = {
     }
     if (message.timeout !== 0) {
       writer.uint32(40).int64(message.timeout);
+    }
+    if (message.order !== 0) {
+      writer.uint32(48).int64(message.order);
     }
     return writer;
   },
@@ -585,6 +625,18 @@ export const DisplayApps = {
     }
     if (message.portForwardingHelper === true) {
       writer.uint32(40).bool(message.portForwardingHelper);
+    }
+    return writer;
+  },
+};
+
+export const Env = {
+  encode(message: Env, writer: _m0.Writer = _m0.Writer.create()): _m0.Writer {
+    if (message.name !== "") {
+      writer.uint32(10).string(message.name);
+    }
+    if (message.value !== "") {
+      writer.uint32(18).string(message.value);
     }
     return writer;
   },
@@ -657,6 +709,9 @@ export const App = {
     }
     if (message.external === true) {
       writer.uint32(72).bool(message.external);
+    }
+    if (message.order !== 0) {
+      writer.uint32(80).int64(message.order);
     }
     return writer;
   },
@@ -775,6 +830,12 @@ export const Metadata = {
     if (message.templateId !== "") {
       writer.uint32(98).string(message.templateId);
     }
+    if (message.workspaceOwnerName !== "") {
+      writer.uint32(106).string(message.workspaceOwnerName);
+    }
+    for (const v of message.workspaceOwnerGroups) {
+      writer.uint32(114).string(v!);
+    }
     return writer;
   },
 };
@@ -860,7 +921,10 @@ export const PlanComplete = {
       RichParameter.encode(v!, writer.uint32(26).fork()).ldelim();
     }
     for (const v of message.externalAuthProviders) {
-      writer.uint32(34).string(v!);
+      ExternalAuthProviderResource.encode(
+        v!,
+        writer.uint32(34).fork(),
+      ).ldelim();
     }
     return writer;
   },
@@ -896,7 +960,10 @@ export const ApplyComplete = {
       RichParameter.encode(v!, writer.uint32(34).fork()).ldelim();
     }
     for (const v of message.externalAuthProviders) {
-      writer.uint32(42).string(v!);
+      ExternalAuthProviderResource.encode(
+        v!,
+        writer.uint32(42).fork(),
+      ).ldelim();
     }
     return writer;
   },

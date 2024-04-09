@@ -20,11 +20,11 @@ import {
   waitForLoaderToBeRemoved,
 } from "testHelpers/renderHelpers";
 import CreateWorkspacePage from "./CreateWorkspacePage";
+import { Language } from "./CreateWorkspacePageView";
 
 const nameLabelText = "Workspace Name";
 const createWorkspaceText = "Create Workspace";
 const validationNumberNotInRangeText = "Value must be between 1 and 3.";
-const validationPatternNotMatched = `${MockTemplateVersionParameter3.validation_error} (value does not match the pattern ^[a-z]{3}$)`;
 
 const renderCreateWorkspacePage = () => {
   return renderWithAuth(<CreateWorkspacePage />, {
@@ -151,7 +151,36 @@ describe("CreateWorkspacePage", () => {
     fireEvent.submit(thirdParameterField);
 
     const validationError = await screen.findByText(
-      validationPatternNotMatched,
+      MockTemplateVersionParameter3.validation_error as string,
+    );
+    expect(validationError).toBeInTheDocument();
+  });
+
+  it("rich parameter: number validation fails with custom error", async () => {
+    jest.spyOn(API, "getTemplateVersionRichParameters").mockResolvedValueOnce([
+      MockTemplateVersionParameter1,
+      {
+        ...MockTemplateVersionParameter2,
+        validation_error: "These are values: {min}, {max}, and {value}.",
+        validation_monotonic: undefined, // only needs min-max rules
+      },
+    ]);
+
+    renderCreateWorkspacePage();
+    await waitForLoaderToBeRemoved();
+
+    const secondParameterField = await screen.findByLabelText(
+      MockTemplateVersionParameter2.name,
+      { exact: false },
+    );
+    expect(secondParameterField).toBeDefined();
+    fireEvent.change(secondParameterField, {
+      target: { value: "4" },
+    });
+    fireEvent.submit(secondParameterField);
+
+    const validationError = await screen.findByText(
+      "These are values: 1, 3, and 4.",
     );
     expect(validationError).toBeInTheDocument();
   });
@@ -184,7 +213,11 @@ describe("CreateWorkspacePage", () => {
       .spyOn(API, "getTemplateVersionExternalAuth")
       .mockResolvedValue([MockTemplateVersionExternalAuthGithubAuthenticated]);
 
-    await screen.findByText("Authenticated with GitHub");
+    await screen.findByText(
+      "Authenticated with GitHub",
+      {},
+      { interval: 500, timeout: 5000 },
+    );
 
     const submitButton = screen.getByText(createWorkspaceText);
     await userEvent.click(submitButton);
@@ -200,25 +233,44 @@ describe("CreateWorkspacePage", () => {
     );
   });
 
-  it("external auth: errors if unauthenticated and submits", async () => {
+  it("optional external auth is optional", async () => {
+    jest
+      .spyOn(API, "getWorkspaceQuota")
+      .mockResolvedValueOnce(MockWorkspaceQuota);
+    jest
+      .spyOn(API, "getUsers")
+      .mockResolvedValueOnce({ users: [MockUser], count: 1 });
+    jest.spyOn(API, "createWorkspace").mockResolvedValueOnce(MockWorkspace);
     jest
       .spyOn(API, "getTemplateVersionExternalAuth")
-      .mockResolvedValueOnce([MockTemplateVersionExternalAuthGithub]);
+      .mockResolvedValue([
+        { ...MockTemplateVersionExternalAuthGithub, optional: true },
+      ]);
 
     renderCreateWorkspacePage();
     await waitForLoaderToBeRemoved();
 
     const nameField = await screen.findByLabelText(nameLabelText);
-
     // have to use fireEvent b/c userEvent isn't cleaning up properly between tests
     fireEvent.change(nameField, {
       target: { value: "test" },
     });
 
+    // Ensure we're not logged in
+    await screen.findByText("Login with GitHub");
+
     const submitButton = screen.getByText(createWorkspaceText);
     await userEvent.click(submitButton);
 
-    await screen.findByText("You must authenticate to create a workspace!");
+    await waitFor(() =>
+      expect(API.createWorkspace).toBeCalledWith(
+        MockUser.organization_ids[0],
+        MockUser.id,
+        expect.objectContaining({
+          ...MockWorkspaceRequest,
+        }),
+      ),
+    );
   });
 
   it("auto create a workspace if uses mode=auto", async () => {
@@ -239,11 +291,46 @@ describe("CreateWorkspacePage", () => {
         MockOrganization.id,
         "me",
         expect.objectContaining({
-          template_id: MockTemplate.id,
-          rich_parameter_values: [{ name: param, value: paramValue }],
+          template_version_id: MockTemplate.active_version_id,
+          rich_parameter_values: [
+            expect.objectContaining({
+              name: param,
+              source: "url",
+              value: paramValue,
+            }),
+          ],
         }),
       );
     });
+  });
+
+  it("disables mode=auto if a required external auth provider is not connected", async () => {
+    const param = "first_parameter";
+    const paramValue = "It works!";
+    const createWorkspaceSpy = jest.spyOn(API, "createWorkspace");
+
+    const externalAuthSpy = jest
+      .spyOn(API, "getTemplateVersionExternalAuth")
+      .mockResolvedValue([MockTemplateVersionExternalAuthGithub]);
+
+    renderWithAuth(<CreateWorkspacePage />, {
+      route:
+        "/templates/" +
+        MockTemplate.name +
+        `/workspace?param.${param}=${paramValue}&mode=auto`,
+      path: "/templates/:template/workspace",
+    });
+    await waitForLoaderToBeRemoved();
+
+    const warning =
+      "This template requires an external authentication provider that is not connected.";
+    expect(await screen.findByText(warning)).toBeInTheDocument();
+    expect(createWorkspaceSpy).not.toBeCalled();
+
+    // We don't need to do this on any other tests out of hundreds of very, very,
+    // very similar tests, and yet here, I find it to be absolutely necessary for
+    // some reason that I certainly do not understand. - Kayla
+    externalAuthSpy.mockReset();
   });
 
   it("auto create a workspace if uses mode=auto and version=version-id", async () => {
@@ -265,9 +352,32 @@ describe("CreateWorkspacePage", () => {
         "me",
         expect.objectContaining({
           template_version_id: MockTemplate.active_version_id,
-          rich_parameter_values: [{ name: param, value: paramValue }],
+          rich_parameter_values: [
+            expect.objectContaining({ name: param, value: paramValue }),
+          ],
         }),
       );
     });
+  });
+
+  it("Detects when a workspace is being created with the 'duplicate' mode", async () => {
+    const params = new URLSearchParams({
+      mode: "duplicate",
+      name: `${MockWorkspace.name}-copy`,
+      version: MockWorkspace.template_active_version_id,
+    });
+
+    renderWithAuth(<CreateWorkspacePage />, {
+      path: "/templates/:template/workspace",
+      route: `/templates/${MockWorkspace.name}/workspace?${params.toString()}`,
+    });
+
+    const warningMessage = await screen.findByTestId("duplication-warning");
+    const nameInput = await screen.findByRole("textbox", {
+      name: "Workspace Name",
+    });
+
+    expect(warningMessage).toHaveTextContent(Language.duplicationWarning);
+    expect(nameInput).toHaveValue(`${MockWorkspace.name}-copy`);
   });
 });

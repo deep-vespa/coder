@@ -1,4 +1,4 @@
-import { Meta, StoryObj } from "@storybook/react";
+import type { Meta, StoryObj } from "@storybook/react";
 import * as Mocks from "testHelpers/entities";
 import { WorkspaceActions } from "./WorkspaceActions";
 
@@ -73,6 +73,13 @@ export const Failed: Story = {
   },
 };
 
+export const FailedWithDebug: Story = {
+  args: {
+    workspace: Mocks.MockFailedWorkspace,
+    canDebug: true,
+  },
+};
+
 export const Updating: Story = {
   args: {
     isUpdating: true,
@@ -91,5 +98,45 @@ export const RequireActiveVersionStopped: Story = {
   args: {
     workspace: Mocks.MockOutdatedStoppedWorkspaceRequireActiveVersion,
     canChangeVersions: false,
+  },
+};
+
+export const AlwaysUpdateStarted: Story = {
+  args: {
+    workspace: Mocks.MockOutdatedRunningWorkspaceAlwaysUpdate,
+    canChangeVersions: true,
+  },
+};
+
+export const AlwaysUpdateStopped: Story = {
+  args: {
+    workspace: Mocks.MockOutdatedStoppedWorkspaceAlwaysUpdate,
+    canChangeVersions: true,
+  },
+};
+
+export const CancelShownForOwner: Story = {
+  args: {
+    workspace: {
+      ...Mocks.MockStartingWorkspace,
+      template_allow_user_cancel_workspace_jobs: false,
+    },
+    isOwner: true,
+  },
+};
+export const CancelShownForUser: Story = {
+  args: {
+    workspace: Mocks.MockStartingWorkspace,
+    isOwner: false,
+  },
+};
+
+export const CancelHiddenForUser: Story = {
+  args: {
+    workspace: {
+      ...Mocks.MockStartingWorkspace,
+      template_allow_user_cancel_workspace_jobs: false,
+    },
+    isOwner: false,
   },
 };

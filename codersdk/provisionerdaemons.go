@@ -2,11 +2,9 @@ package codersdk
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"time"
@@ -16,9 +14,10 @@ import (
 	"golang.org/x/xerrors"
 	"nhooyr.io/websocket"
 
+	"github.com/coder/coder/v2/buildinfo"
+	"github.com/coder/coder/v2/codersdk/drpc"
 	"github.com/coder/coder/v2/provisionerd/proto"
 	"github.com/coder/coder/v2/provisionerd/runner"
-	"github.com/coder/coder/v2/provisionersdk"
 )
 
 type LogSource string
@@ -39,8 +38,10 @@ const (
 type ProvisionerDaemon struct {
 	ID           uuid.UUID         `json:"id" format:"uuid"`
 	CreatedAt    time.Time         `json:"created_at" format:"date-time"`
-	UpdatedAt    sql.NullTime      `json:"updated_at" format:"date-time"`
+	LastSeenAt   NullTime          `json:"last_seen_at,omitempty" format:"date-time"`
 	Name         string            `json:"name"`
+	Version      string            `json:"version"`
+	APIVersion   string            `json:"api_version"`
 	Provisioners []ProvisionerType `json:"provisioners"`
 	Tags         map[string]string `json:"tags"`
 }
@@ -176,8 +177,10 @@ func (c *Client) provisionerJobLogsAfter(ctx context.Context, path string, after
 type ServeProvisionerDaemonRequest struct {
 	// ID is a unique ID for a provisioner daemon.
 	ID uuid.UUID `json:"id" format:"uuid"`
-	// Organization is the organization for the URL.  At present provisioner daemons ARE NOT scoped to organizations
-	// and so the organization ID is optional.
+	// Name is the human-readable unique identifier for the daemon.
+	Name string `json:"name" example:"my-cool-provisioner-daemon"`
+	// Organization is the organization for the URL. If no orgID is provided,
+	// then it is assumed to use the default organization.
 	Organization uuid.UUID `json:"organization" format:"uuid"`
 	// Provisioners is a list of provisioner types hosted by the provisioner daemon
 	Provisioners []ProvisionerType `json:"provisioners"`
@@ -191,12 +194,21 @@ type ServeProvisionerDaemonRequest struct {
 // implementation. The context is during dial, not during the lifetime of the
 // client. Client should be closed after use.
 func (c *Client) ServeProvisionerDaemon(ctx context.Context, req ServeProvisionerDaemonRequest) (proto.DRPCProvisionerDaemonClient, error) {
-	serverURL, err := c.URL.Parse(fmt.Sprintf("/api/v2/organizations/%s/provisionerdaemons/serve", req.Organization))
+	orgParam := req.Organization.String()
+	if req.Organization == uuid.Nil {
+		orgParam = DefaultOrganization
+	}
+
+	serverURL, err := c.URL.Parse(fmt.Sprintf("/api/v2/organizations/%s/provisionerdaemons/serve", orgParam))
 	if err != nil {
 		return nil, xerrors.Errorf("parse url: %w", err)
 	}
 	query := serverURL.Query()
+	query.Add("version", proto.CurrentVersion.String())
 	query.Add("id", req.ID.String())
+	query.Add("name", req.Name)
+	query.Add("version", proto.CurrentVersion.String())
+
 	for _, provisioner := range req.Provisioners {
 		query.Add("provisioner", string(provisioner))
 	}
@@ -209,6 +221,7 @@ func (c *Client) ServeProvisionerDaemon(ctx context.Context, req ServeProvisione
 	}
 	headers := http.Header{}
 
+	headers.Set(BuildVersionHeader, buildinfo.Version())
 	if req.PreSharedKey == "" {
 		// use session token if we don't have a PSK.
 		jar, err := cookiejar.New(nil)
@@ -242,54 +255,12 @@ func (c *Client) ServeProvisionerDaemon(ctx context.Context, req ServeProvisione
 	config := yamux.DefaultConfig()
 	config.LogOutput = io.Discard
 	// Use background context because caller should close the client.
-	_, wsNetConn := websocketNetConn(context.Background(), conn, websocket.MessageBinary)
+	_, wsNetConn := WebsocketNetConn(context.Background(), conn, websocket.MessageBinary)
 	session, err := yamux.Client(wsNetConn, config)
 	if err != nil {
 		_ = conn.Close(websocket.StatusGoingAway, "")
 		_ = wsNetConn.Close()
 		return nil, xerrors.Errorf("multiplex client: %w", err)
 	}
-	return proto.NewDRPCProvisionerDaemonClient(provisionersdk.MultiplexedConn(session)), nil
-}
-
-// wsNetConn wraps net.Conn created by websocket.NetConn(). Cancel func
-// is called if a read or write error is encountered.
-// @typescript-ignore wsNetConn
-type wsNetConn struct {
-	cancel context.CancelFunc
-	net.Conn
-}
-
-func (c *wsNetConn) Read(b []byte) (n int, err error) {
-	n, err = c.Conn.Read(b)
-	if err != nil {
-		c.cancel()
-	}
-	return n, err
-}
-
-func (c *wsNetConn) Write(b []byte) (n int, err error) {
-	n, err = c.Conn.Write(b)
-	if err != nil {
-		c.cancel()
-	}
-	return n, err
-}
-
-func (c *wsNetConn) Close() error {
-	defer c.cancel()
-	return c.Conn.Close()
-}
-
-// websocketNetConn wraps websocket.NetConn and returns a context that
-// is tied to the parent context and the lifetime of the conn. Any error
-// during read or write will cancel the context, but not close the
-// conn. Close should be called to release context resources.
-func websocketNetConn(ctx context.Context, conn *websocket.Conn, msgType websocket.MessageType) (context.Context, net.Conn) {
-	ctx, cancel := context.WithCancel(ctx)
-	nc := websocket.NetConn(ctx, conn, msgType)
-	return ctx, &wsNetConn{
-		cancel: cancel,
-		Conn:   nc,
-	}
+	return proto.NewDRPCProvisionerDaemonClient(drpc.MultiplexedConn(session)), nil
 }

@@ -391,6 +391,149 @@ func TestCreateWithRichParameters(t *testing.T) {
 		}
 		<-doneChan
 	})
+
+	t.Run("WrongParameterName/DidYouMean", func(t *testing.T) {
+		t.Parallel()
+
+		client := coderdtest.New(t, &coderdtest.Options{IncludeProvisionerDaemon: true})
+		owner := coderdtest.CreateFirstUser(t, client)
+		member, _ := coderdtest.CreateAnotherUser(t, client, owner.OrganizationID)
+		version := coderdtest.CreateTemplateVersion(t, client, owner.OrganizationID, echoResponses)
+		coderdtest.AwaitTemplateVersionJobCompleted(t, client, version.ID)
+
+		template := coderdtest.CreateTemplate(t, client, owner.OrganizationID, version.ID)
+
+		wrongFirstParameterName := "frst-prameter"
+		inv, root := clitest.New(t, "create", "my-workspace", "--template", template.Name,
+			"--parameter", fmt.Sprintf("%s=%s", wrongFirstParameterName, firstParameterValue),
+			"--parameter", fmt.Sprintf("%s=%s", secondParameterName, secondParameterValue),
+			"--parameter", fmt.Sprintf("%s=%s", immutableParameterName, immutableParameterValue))
+		clitest.SetupConfig(t, member, root)
+		pty := ptytest.New(t).Attach(inv)
+		inv.Stdout = pty.Output()
+		inv.Stderr = pty.Output()
+		err := inv.Run()
+		assert.ErrorContains(t, err, "parameter \""+wrongFirstParameterName+"\" is not present in the template")
+		assert.ErrorContains(t, err, "Did you mean: "+firstParameterName)
+	})
+
+	t.Run("CopyParameters", func(t *testing.T) {
+		t.Parallel()
+
+		client := coderdtest.New(t, &coderdtest.Options{IncludeProvisionerDaemon: true})
+		owner := coderdtest.CreateFirstUser(t, client)
+		member, _ := coderdtest.CreateAnotherUser(t, client, owner.OrganizationID)
+		version := coderdtest.CreateTemplateVersion(t, client, owner.OrganizationID, echoResponses)
+		coderdtest.AwaitTemplateVersionJobCompleted(t, client, version.ID)
+
+		template := coderdtest.CreateTemplate(t, client, owner.OrganizationID, version.ID)
+
+		// Firstly, create a regular workspace using template with parameters.
+		inv, root := clitest.New(t, "create", "my-workspace", "--template", template.Name, "-y",
+			"--parameter", fmt.Sprintf("%s=%s", firstParameterName, firstParameterValue),
+			"--parameter", fmt.Sprintf("%s=%s", secondParameterName, secondParameterValue),
+			"--parameter", fmt.Sprintf("%s=%s", immutableParameterName, immutableParameterValue))
+		clitest.SetupConfig(t, member, root)
+		pty := ptytest.New(t).Attach(inv)
+		inv.Stdout = pty.Output()
+		inv.Stderr = pty.Output()
+		err := inv.Run()
+		require.NoError(t, err, "can't create first workspace")
+
+		// Secondly, create a new workspace using parameters from the previous workspace.
+		const otherWorkspace = "other-workspace"
+
+		inv, root = clitest.New(t, "create", "--copy-parameters-from", "my-workspace", otherWorkspace, "-y")
+		clitest.SetupConfig(t, member, root)
+		pty = ptytest.New(t).Attach(inv)
+		inv.Stdout = pty.Output()
+		inv.Stderr = pty.Output()
+		err = inv.Run()
+		require.NoError(t, err, "can't create a workspace based on the source workspace")
+
+		// Verify if the new workspace uses expected parameters.
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
+		defer cancel()
+
+		workspaces, err := client.Workspaces(ctx, codersdk.WorkspaceFilter{
+			Name: otherWorkspace,
+		})
+		require.NoError(t, err, "can't list available workspaces")
+		require.Len(t, workspaces.Workspaces, 1)
+
+		otherWorkspaceLatestBuild := workspaces.Workspaces[0].LatestBuild
+
+		buildParameters, err := client.WorkspaceBuildParameters(ctx, otherWorkspaceLatestBuild.ID)
+		require.NoError(t, err)
+		require.Len(t, buildParameters, 3)
+		require.Contains(t, buildParameters, codersdk.WorkspaceBuildParameter{Name: firstParameterName, Value: firstParameterValue})
+		require.Contains(t, buildParameters, codersdk.WorkspaceBuildParameter{Name: secondParameterName, Value: secondParameterValue})
+		require.Contains(t, buildParameters, codersdk.WorkspaceBuildParameter{Name: immutableParameterName, Value: immutableParameterValue})
+	})
+
+	t.Run("CopyParametersFromNotUpdatedWorkspace", func(t *testing.T) {
+		t.Parallel()
+
+		client := coderdtest.New(t, &coderdtest.Options{IncludeProvisionerDaemon: true})
+		owner := coderdtest.CreateFirstUser(t, client)
+		member, _ := coderdtest.CreateAnotherUser(t, client, owner.OrganizationID)
+		version := coderdtest.CreateTemplateVersion(t, client, owner.OrganizationID, echoResponses)
+		coderdtest.AwaitTemplateVersionJobCompleted(t, client, version.ID)
+
+		template := coderdtest.CreateTemplate(t, client, owner.OrganizationID, version.ID)
+
+		// Firstly, create a regular workspace using template with parameters.
+		inv, root := clitest.New(t, "create", "my-workspace", "--template", template.Name, "-y",
+			"--parameter", fmt.Sprintf("%s=%s", firstParameterName, firstParameterValue),
+			"--parameter", fmt.Sprintf("%s=%s", secondParameterName, secondParameterValue),
+			"--parameter", fmt.Sprintf("%s=%s", immutableParameterName, immutableParameterValue))
+		clitest.SetupConfig(t, member, root)
+		pty := ptytest.New(t).Attach(inv)
+		inv.Stdout = pty.Output()
+		inv.Stderr = pty.Output()
+		err := inv.Run()
+		require.NoError(t, err, "can't create first workspace")
+
+		// Secondly, update the template to the newer version.
+		version2 := coderdtest.CreateTemplateVersion(t, client, owner.OrganizationID, prepareEchoResponses([]*proto.RichParameter{
+			{Name: "third_parameter", Type: "string", DefaultValue: "not-relevant"},
+		}), func(ctvr *codersdk.CreateTemplateVersionRequest) {
+			ctvr.TemplateID = template.ID
+		})
+		coderdtest.AwaitTemplateVersionJobCompleted(t, client, version2.ID)
+		coderdtest.UpdateActiveTemplateVersion(t, client, template.ID, version2.ID)
+
+		// Thirdly, create a new workspace using parameters from the previous workspace.
+		const otherWorkspace = "other-workspace"
+
+		inv, root = clitest.New(t, "create", "--copy-parameters-from", "my-workspace", otherWorkspace, "-y")
+		clitest.SetupConfig(t, member, root)
+		pty = ptytest.New(t).Attach(inv)
+		inv.Stdout = pty.Output()
+		inv.Stderr = pty.Output()
+		err = inv.Run()
+		require.NoError(t, err, "can't create a workspace based on the source workspace")
+
+		// Verify if the new workspace uses expected parameters.
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
+		defer cancel()
+
+		workspaces, err := client.Workspaces(ctx, codersdk.WorkspaceFilter{
+			Name: otherWorkspace,
+		})
+		require.NoError(t, err, "can't list available workspaces")
+		require.Len(t, workspaces.Workspaces, 1)
+
+		otherWorkspaceLatestBuild := workspaces.Workspaces[0].LatestBuild
+		require.Equal(t, version.ID, otherWorkspaceLatestBuild.TemplateVersionID)
+
+		buildParameters, err := client.WorkspaceBuildParameters(ctx, otherWorkspaceLatestBuild.ID)
+		require.NoError(t, err)
+		require.Len(t, buildParameters, 3)
+		require.Contains(t, buildParameters, codersdk.WorkspaceBuildParameter{Name: firstParameterName, Value: firstParameterValue})
+		require.Contains(t, buildParameters, codersdk.WorkspaceBuildParameter{Name: secondParameterName, Value: secondParameterValue})
+		require.Contains(t, buildParameters, codersdk.WorkspaceBuildParameter{Name: immutableParameterName, Value: immutableParameterValue})
+	})
 }
 
 func TestCreateValidateRichParameters(t *testing.T) {
@@ -411,6 +554,14 @@ func TestCreateValidateRichParameters(t *testing.T) {
 
 	numberRichParameters := []*proto.RichParameter{
 		{Name: numberParameterName, Type: "number", Mutable: true, ValidationMin: ptr.Ref(int32(3)), ValidationMax: ptr.Ref(int32(10))},
+	}
+
+	numberCustomErrorRichParameters := []*proto.RichParameter{
+		{
+			Name: numberParameterName, Type: "number", Mutable: true,
+			ValidationMin: ptr.Ref(int32(3)), ValidationMax: ptr.Ref(int32(10)),
+			ValidationError: "These are values: {min}, {max}, and {value}.",
+		},
 	}
 
 	stringRichParameters := []*proto.RichParameter{
@@ -487,6 +638,44 @@ func TestCreateValidateRichParameters(t *testing.T) {
 		matches := []string{
 			numberParameterName, "12",
 			"is more than the maximum", "",
+			"Enter a value", "8",
+			"Confirm create?", "yes",
+		}
+		for i := 0; i < len(matches); i += 2 {
+			match := matches[i]
+			value := matches[i+1]
+			pty.ExpectMatch(match)
+			if value != "" {
+				pty.WriteLine(value)
+			}
+		}
+		<-doneChan
+	})
+
+	t.Run("ValidateNumber_CustomError", func(t *testing.T) {
+		t.Parallel()
+
+		client := coderdtest.New(t, &coderdtest.Options{IncludeProvisionerDaemon: true})
+		owner := coderdtest.CreateFirstUser(t, client)
+		member, _ := coderdtest.CreateAnotherUser(t, client, owner.OrganizationID)
+		version := coderdtest.CreateTemplateVersion(t, client, owner.OrganizationID, prepareEchoResponses(numberCustomErrorRichParameters))
+		coderdtest.AwaitTemplateVersionJobCompleted(t, client, version.ID)
+
+		template := coderdtest.CreateTemplate(t, client, owner.OrganizationID, version.ID)
+
+		inv, root := clitest.New(t, "create", "my-workspace", "--template", template.Name)
+		clitest.SetupConfig(t, member, root)
+		doneChan := make(chan struct{})
+		pty := ptytest.New(t).Attach(inv)
+		go func() {
+			defer close(doneChan)
+			err := inv.Run()
+			assert.NoError(t, err)
+		}()
+
+		matches := []string{
+			numberParameterName, "12",
+			"These are values: 3, 10, and 12.", "",
 			"Enter a value", "8",
 			"Confirm create?", "yes",
 		}
@@ -614,7 +803,7 @@ func TestCreateWithGitAuth(t *testing.T) {
 			{
 				Type: &proto.Response_Plan{
 					Plan: &proto.PlanComplete{
-						ExternalAuthProviders: []string{"github"},
+						ExternalAuthProviders: []*proto.ExternalAuthProviderResource{{Id: "github"}},
 					},
 				},
 			},
@@ -624,11 +813,11 @@ func TestCreateWithGitAuth(t *testing.T) {
 
 	client := coderdtest.New(t, &coderdtest.Options{
 		ExternalAuthConfigs: []*externalauth.Config{{
-			OAuth2Config: &testutil.OAuth2Config{},
-			ID:           "github",
-			Regex:        regexp.MustCompile(`github\.com`),
-			Type:         codersdk.EnhancedExternalAuthProviderGitHub.String(),
-			DisplayName:  "GitHub",
+			InstrumentedOAuth2Config: &testutil.OAuth2Config{},
+			ID:                       "github",
+			Regex:                    regexp.MustCompile(`github\.com`),
+			Type:                     codersdk.EnhancedExternalAuthProviderGitHub.String(),
+			DisplayName:              "GitHub",
 		}},
 		IncludeProvisionerDaemon: true,
 	})

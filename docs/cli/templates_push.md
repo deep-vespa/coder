@@ -2,7 +2,7 @@
 
 # templates push
 
-Push a new template version from the current directory or as specified by flag
+Create or update a template from the current directory or as specified by flag
 
 ## Usage
 
@@ -11,6 +11,54 @@ coder templates push [flags] [template]
 ```
 
 ## Options
+
+### --variables-file
+
+|      |                     |
+| ---- | ------------------- |
+| Type | <code>string</code> |
+
+Specify a file path with values for Terraform-managed variables.
+
+### --variable
+
+|      |                           |
+| ---- | ------------------------- |
+| Type | <code>string-array</code> |
+
+Specify a set of values for Terraform-managed variables.
+
+### --var
+
+|      |                           |
+| ---- | ------------------------- |
+| Type | <code>string-array</code> |
+
+Alias of --variable.
+
+### --provisioner-tag
+
+|      |                           |
+| ---- | ------------------------- |
+| Type | <code>string-array</code> |
+
+Specify a set of tags to target provisioner daemons.
+
+### --name
+
+|      |                     |
+| ---- | ------------------- |
+| Type | <code>string</code> |
+
+Specify a name for the new template version. It will be automatically generated if not provided.
+
+### --always-prompt
+
+|      |                   |
+| ---- | ----------------- |
+| Type | <code>bool</code> |
+
+Always prompt all parameters. Does not pull parameter values from active template version.
 
 ### --activate
 
@@ -21,22 +69,13 @@ coder templates push [flags] [template]
 
 Whether the new template will be marked active.
 
-### --always-prompt
+### -y, --yes
 
 |      |                   |
 | ---- | ----------------- |
 | Type | <code>bool</code> |
 
-Always prompt all parameters. Does not pull parameter values from active template version.
-
-### --create
-
-|         |                    |
-| ------- | ------------------ |
-| Type    | <code>bool</code>  |
-| Default | <code>false</code> |
-
-Create the template if it does not exist.
+Bypass prompts.
 
 ### -d, --directory
 
@@ -63,51 +102,3 @@ Ignore warnings about not having a .terraform.lock.hcl file present in the templ
 | Type | <code>string</code> |
 
 Specify a message describing the changes in this version of the template. Messages longer than 72 characters will be displayed as truncated.
-
-### --name
-
-|      |                     |
-| ---- | ------------------- |
-| Type | <code>string</code> |
-
-Specify a name for the new template version. It will be automatically generated if not provided.
-
-### --provisioner-tag
-
-|      |                           |
-| ---- | ------------------------- |
-| Type | <code>string-array</code> |
-
-Specify a set of tags to target provisioner daemons.
-
-### --var
-
-|      |                           |
-| ---- | ------------------------- |
-| Type | <code>string-array</code> |
-
-Alias of --variable.
-
-### --variable
-
-|      |                           |
-| ---- | ------------------------- |
-| Type | <code>string-array</code> |
-
-Specify a set of values for Terraform-managed variables.
-
-### --variables-file
-
-|      |                     |
-| ---- | ------------------- |
-| Type | <code>string</code> |
-
-Specify a file path with values for Terraform-managed variables.
-
-### -y, --yes
-
-|      |                   |
-| ---- | ----------------- |
-| Type | <code>bool</code> |
-
-Bypass prompts.

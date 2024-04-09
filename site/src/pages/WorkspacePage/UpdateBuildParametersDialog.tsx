@@ -1,22 +1,22 @@
+import { css } from "@emotion/css";
+import type { Interpolation, Theme } from "@emotion/react";
+import Button from "@mui/material/Button";
 import Dialog from "@mui/material/Dialog";
+import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
 import DialogContentText from "@mui/material/DialogContentText";
 import DialogTitle from "@mui/material/DialogTitle";
-import DialogActions from "@mui/material/DialogActions";
-import Button from "@mui/material/Button";
 import { useFormik } from "formik";
+import type { FC } from "react";
 import * as Yup from "yup";
-import { type FC } from "react";
-import { css } from "@emotion/css";
-import { type Interpolation, type Theme, useTheme } from "@emotion/react";
-import { getFormHelpers } from "utils/formUtils";
-import type { DialogProps } from "components/Dialogs/Dialog";
-import { FormFields, VerticalForm } from "components/Form/Form";
 import type {
   TemplateVersionParameter,
   WorkspaceBuildParameter,
 } from "api/typesGenerated";
+import type { DialogProps } from "components/Dialogs/Dialog";
+import { FormFields, VerticalForm } from "components/Form/Form";
 import { RichParameterInput } from "components/RichParameterInput/RichParameterInput";
+import { getFormHelpers } from "utils/formUtils";
 import {
   getInitialRichParameterValues,
   useValidationSchemaForRichParameters,
@@ -31,7 +31,6 @@ export type UpdateBuildParametersDialogProps = DialogProps & {
 export const UpdateBuildParametersDialog: FC<
   UpdateBuildParametersDialogProps
 > = ({ missedParameters, onUpdate, ...dialogProps }) => {
-  const theme = useTheme();
   const form = useFormik({
     initialValues: {
       rich_parameter_values: getInitialRichParameterValues(missedParameters),
@@ -57,16 +56,7 @@ export const UpdateBuildParametersDialog: FC<
     >
       <DialogTitle
         id="update-build-parameters-title"
-        classes={{
-          root: css`
-            padding: ${theme.spacing(3, 5)};
-
-            & h2 {
-              font-size: ${theme.spacing(2.5)};
-              font-weight: 400;
-            }
-          `,
-        }}
+        classes={{ root: classNames.root }}
       >
         Workspace parameters
       </DialogTitle>
@@ -124,18 +114,29 @@ export const UpdateBuildParametersDialog: FC<
   );
 };
 
+const classNames = {
+  root: css`
+    padding: 24px 40px;
+
+    & h2 {
+      font-size: 20px;
+      font-weight: 400;
+    }
+  `,
+};
+
 const styles = {
-  content: (theme) => ({
-    padding: theme.spacing(0, 5, 0, 5),
-  }),
+  content: {
+    padding: "0 40px",
+  },
 
-  form: (theme) => ({
-    paddingTop: theme.spacing(4),
-  }),
+  form: {
+    paddingTop: 32,
+  },
 
-  dialogActions: (theme) => ({
-    padding: theme.spacing(5),
+  dialogActions: {
+    padding: 40,
     flexDirection: "column",
-    gap: theme.spacing(1),
-  }),
+    gap: 8,
+  },
 } satisfies Record<string, Interpolation<Theme>>;

@@ -18,7 +18,10 @@ type Auditable interface {
 		database.AuditableGroup |
 		database.License |
 		database.WorkspaceProxy |
-		database.AuditOAuthConvertState
+		database.AuditOAuthConvertState |
+		database.HealthSettings |
+		database.OAuth2ProviderApp |
+		database.OAuth2ProviderAppSecret
 }
 
 // Map is a map of changed fields in an audited resource. It maps field names to

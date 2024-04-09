@@ -32,29 +32,46 @@ import (
 	"github.com/coder/coder/v2/coderd/database/dbtime"
 	"github.com/coder/coder/v2/coderd/database/pubsub"
 	"github.com/coder/coder/v2/coderd/externalauth"
-	"github.com/coder/coder/v2/coderd/httpmw"
+	"github.com/coder/coder/v2/coderd/promoauth"
 	"github.com/coder/coder/v2/coderd/schedule"
 	"github.com/coder/coder/v2/coderd/telemetry"
 	"github.com/coder/coder/v2/coderd/tracing"
 	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/codersdk/drpc"
 	"github.com/coder/coder/v2/provisioner"
 	"github.com/coder/coder/v2/provisionerd/proto"
 	"github.com/coder/coder/v2/provisionersdk"
 	sdkproto "github.com/coder/coder/v2/provisionersdk/proto"
 )
 
-// DefaultAcquireJobLongPollDur is the time the (deprecated) AcquireJob rpc waits to try to obtain a job before
-// canceling and returning an empty job.
-const DefaultAcquireJobLongPollDur = time.Second * 5
+const (
+	// DefaultAcquireJobLongPollDur is the time the (deprecated) AcquireJob rpc waits to try to obtain a job before
+	// canceling and returning an empty job.
+	DefaultAcquireJobLongPollDur = time.Second * 5
+
+	// DefaultHeartbeatInterval is the interval at which the provisioner daemon
+	// will update its last seen at timestamp in the database.
+	DefaultHeartbeatInterval = time.Minute
+)
 
 type Options struct {
-	OIDCConfig          httpmw.OAuth2Config
+	OIDCConfig          promoauth.OAuth2Config
 	ExternalAuthConfigs []*externalauth.Config
 	// TimeNowFn is only used in tests
 	TimeNowFn func() time.Time
 
 	// AcquireJobLongPollDur is used in tests
 	AcquireJobLongPollDur time.Duration
+
+	// HeartbeatInterval is the interval at which the provisioner daemon
+	// will update its last seen at timestamp in the database.
+	HeartbeatInterval time.Duration
+
+	// HeartbeatFn is the function that will be called at the interval
+	// specified by HeartbeatInterval.
+	// The default function just calls UpdateProvisionerDaemonLastSeenAt.
+	// This is mainly used for testing.
+	HeartbeatFn func(context.Context) error
 }
 
 type server struct {
@@ -64,6 +81,7 @@ type server struct {
 	lifecycleCtx                context.Context
 	AccessURL                   *url.URL
 	ID                          uuid.UUID
+	OrganizationID              uuid.UUID
 	Logger                      slog.Logger
 	Provisioners                []database.ProvisionerType
 	ExternalAuthConfigs         []*externalauth.Config
@@ -79,11 +97,14 @@ type server struct {
 	UserQuietHoursScheduleStore *atomic.Pointer[schedule.UserQuietHoursScheduleStore]
 	DeploymentValues            *codersdk.DeploymentValues
 
-	OIDCConfig httpmw.OAuth2Config
+	OIDCConfig promoauth.OAuth2Config
 
 	TimeNowFn func() time.Time
 
 	acquireJobLongPollDur time.Duration
+
+	heartbeatInterval time.Duration
+	heartbeatFn       func(ctx context.Context) error
 }
 
 // We use the null byte (0x00) in generating a canonical map key for tags, so
@@ -114,6 +135,7 @@ func NewServer(
 	lifecycleCtx context.Context,
 	accessURL *url.URL,
 	id uuid.UUID,
+	organizationID uuid.UUID,
 	logger slog.Logger,
 	provisioners []database.ProvisionerType,
 	tags Tags,
@@ -160,10 +182,15 @@ func NewServer(
 	if options.AcquireJobLongPollDur == 0 {
 		options.AcquireJobLongPollDur = DefaultAcquireJobLongPollDur
 	}
-	return &server{
+	if options.HeartbeatInterval == 0 {
+		options.HeartbeatInterval = DefaultHeartbeatInterval
+	}
+
+	s := &server{
 		lifecycleCtx:                lifecycleCtx,
 		AccessURL:                   accessURL,
 		ID:                          id,
+		OrganizationID:              organizationID,
 		Logger:                      logger,
 		Provisioners:                provisioners,
 		ExternalAuthConfigs:         options.ExternalAuthConfigs,
@@ -181,7 +208,16 @@ func NewServer(
 		OIDCConfig:                  options.OIDCConfig,
 		TimeNowFn:                   options.TimeNowFn,
 		acquireJobLongPollDur:       options.AcquireJobLongPollDur,
-	}, nil
+		heartbeatInterval:           options.HeartbeatInterval,
+		heartbeatFn:                 options.HeartbeatFn,
+	}
+
+	if s.heartbeatFn == nil {
+		s.heartbeatFn = s.defaultHeartbeat
+	}
+
+	go s.heartbeatLoop()
+	return s, nil
 }
 
 // timeNow should be used when trying to get the current time for math
@@ -191,6 +227,56 @@ func (s *server) timeNow() time.Time {
 		return dbtime.Time(s.TimeNowFn())
 	}
 	return dbtime.Now()
+}
+
+// heartbeatLoop runs heartbeatOnce at the interval specified by HeartbeatInterval
+// until the lifecycle context is canceled.
+func (s *server) heartbeatLoop() {
+	tick := time.NewTicker(time.Nanosecond)
+	defer tick.Stop()
+	for {
+		select {
+		case <-s.lifecycleCtx.Done():
+			s.Logger.Debug(s.lifecycleCtx, "heartbeat loop canceled")
+			return
+		case <-tick.C:
+			if s.lifecycleCtx.Err() != nil {
+				return
+			}
+			start := s.timeNow()
+			hbCtx, hbCancel := context.WithTimeout(s.lifecycleCtx, s.heartbeatInterval)
+			if err := s.heartbeat(hbCtx); err != nil && !database.IsQueryCanceledError(err) {
+				s.Logger.Error(hbCtx, "heartbeat failed", slog.Error(err))
+			}
+			hbCancel()
+			elapsed := s.timeNow().Sub(start)
+			nextBeat := s.heartbeatInterval - elapsed
+			// avoid negative interval
+			if nextBeat <= 0 {
+				nextBeat = time.Nanosecond
+			}
+			tick.Reset(nextBeat)
+		}
+	}
+}
+
+// heartbeat updates the last seen at timestamp in the database.
+// If HeartbeatFn is set, it will be called instead.
+func (s *server) heartbeat(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return nil
+	default:
+		return s.heartbeatFn(ctx)
+	}
+}
+
+func (s *server) defaultHeartbeat(ctx context.Context) error {
+	//nolint:gocritic // This is specifically for updating the last seen at timestamp.
+	return s.Database.UpdateProvisionerDaemonLastSeenAt(dbauthz.AsSystemRestricted(ctx), database.UpdateProvisionerDaemonLastSeenAtParams{
+		ID:         s.ID,
+		LastSeenAt: sql.NullTime{Time: s.timeNow(), Valid: true},
+	})
 }
 
 // AcquireJob queries the database to lock a job.
@@ -204,7 +290,7 @@ func (s *server) AcquireJob(ctx context.Context, _ *proto.Empty) (*proto.Acquire
 	// database.
 	acqCtx, acqCancel := context.WithTimeout(ctx, s.acquireJobLongPollDur)
 	defer acqCancel()
-	job, err := s.Acquirer.AcquireJob(acqCtx, s.ID, s.Provisioners, s.Tags)
+	job, err := s.Acquirer.AcquireJob(acqCtx, s.OrganizationID, s.ID, s.Provisioners, s.Tags)
 	if xerrors.Is(err, context.DeadlineExceeded) {
 		s.Logger.Debug(ctx, "successful cancel")
 		return &proto.AcquiredJob{}, nil
@@ -241,7 +327,7 @@ func (s *server) AcquireJobWithCancel(stream proto.DRPCProvisionerDaemon_Acquire
 	}()
 	jec := make(chan jobAndErr, 1)
 	go func() {
-		job, err := s.Acquirer.AcquireJob(acqCtx, s.ID, s.Provisioners, s.Tags)
+		job, err := s.Acquirer.AcquireJob(acqCtx, s.OrganizationID, s.ID, s.Provisioners, s.Tags)
 		jec <- jobAndErr{job: job, err: err}
 	}()
 	var recvErr error
@@ -274,7 +360,8 @@ func (s *server) AcquireJobWithCancel(stream proto.DRPCProvisionerDaemon_Acquire
 		// in the database.  We need to mark this job as failed so the end user can retry if they want to.
 		now := dbtime.Now()
 		err := s.Database.UpdateProvisionerJobWithCompleteByID(
-			context.Background(),
+			//nolint:gocritic // Provisionerd has specific authz rules.
+			dbauthz.AsProvisionerd(context.Background()),
 			database.UpdateProvisionerJobWithCompleteByIDParams{
 				ID: je.job.ID,
 				CompletedAt: sql.NullTime{
@@ -380,6 +467,17 @@ func (s *server) acquireProtoJob(ctx context.Context, job database.ProvisionerJo
 		if err != nil {
 			return nil, failJob(fmt.Sprintf("get owner: %s", err))
 		}
+		ownerGroups, err := s.Database.GetGroupsByOrganizationAndUserID(ctx, database.GetGroupsByOrganizationAndUserIDParams{
+			UserID:         owner.ID,
+			OrganizationID: s.OrganizationID,
+		})
+		if err != nil {
+			return nil, failJob(fmt.Sprintf("get owner group names: %s", err))
+		}
+		ownerGroupNames := []string{}
+		for _, group := range ownerGroups {
+			ownerGroupNames = append(ownerGroupNames, group.Name)
+		}
 		err = s.Pubsub.Publish(codersdk.WorkspaceNotifyChannel(workspace.ID), []byte{})
 		if err != nil {
 			return nil, failJob(fmt.Sprintf("publish workspace update: %s", err))
@@ -417,10 +515,16 @@ func (s *server) acquireProtoJob(ctx context.Context, job database.ProvisionerJo
 			return nil, failJob(fmt.Sprintf("get workspace build parameters: %s", err))
 		}
 
-		externalAuthProviders := []*sdkproto.ExternalAuthProvider{}
-		for _, p := range templateVersion.ExternalAuthProviders {
+		dbExternalAuthProviders := []database.ExternalAuthProvider{}
+		err = json.Unmarshal(templateVersion.ExternalAuthProviders, &dbExternalAuthProviders)
+		if err != nil {
+			return nil, xerrors.Errorf("failed to deserialize external_auth_providers value: %w", err)
+		}
+
+		externalAuthProviders := make([]*sdkproto.ExternalAuthProvider, 0, len(dbExternalAuthProviders))
+		for _, p := range dbExternalAuthProviders {
 			link, err := s.Database.GetExternalAuthLink(ctx, database.GetExternalAuthLinkParams{
-				ProviderID: p,
+				ProviderID: p.ID,
 				UserID:     owner.ID,
 			})
 			if errors.Is(err, sql.ErrNoRows) {
@@ -431,7 +535,7 @@ func (s *server) acquireProtoJob(ctx context.Context, job database.ProvisionerJo
 			}
 			var config *externalauth.Config
 			for _, c := range s.ExternalAuthConfigs {
-				if c.ID != p {
+				if c.ID != p.ID {
 					continue
 				}
 				config = c
@@ -440,7 +544,7 @@ func (s *server) acquireProtoJob(ctx context.Context, job database.ProvisionerJo
 			// We weren't able to find a matching config for the ID!
 			if config == nil {
 				s.Logger.Warn(ctx, "workspace build job is missing external auth provider",
-					slog.F("provider_id", p),
+					slog.F("provider_id", p.ID),
 					slog.F("template_version_id", templateVersion.ID),
 					slog.F("workspace_id", workspaceBuild.WorkspaceID))
 				continue
@@ -448,13 +552,13 @@ func (s *server) acquireProtoJob(ctx context.Context, job database.ProvisionerJo
 
 			link, valid, err := config.RefreshToken(ctx, s.Database, link)
 			if err != nil {
-				return nil, failJob(fmt.Sprintf("refresh external auth link %q: %s", p, err))
+				return nil, failJob(fmt.Sprintf("refresh external auth link %q: %s", p.ID, err))
 			}
 			if !valid {
 				continue
 			}
 			externalAuthProviders = append(externalAuthProviders, &sdkproto.ExternalAuthProvider{
-				Id:          p,
+				Id:          p.ID,
 				AccessToken: link.OAuthAccessToken,
 			})
 		}
@@ -473,6 +577,8 @@ func (s *server) acquireProtoJob(ctx context.Context, job database.ProvisionerJo
 					WorkspaceName:                 workspace.Name,
 					WorkspaceOwner:                owner.Username,
 					WorkspaceOwnerEmail:           owner.Email,
+					WorkspaceOwnerName:            owner.Name,
+					WorkspaceOwnerGroups:          ownerGroupNames,
 					WorkspaceOwnerOidcAccessToken: workspaceOwnerOIDCAccessToken,
 					WorkspaceId:                   workspace.ID.String(),
 					WorkspaceOwnerId:              owner.ID.String(),
@@ -541,8 +647,8 @@ func (s *server) acquireProtoJob(ctx context.Context, job database.ProvisionerJo
 	default:
 		return nil, failJob(fmt.Sprintf("unsupported storage method: %s", job.StorageMethod))
 	}
-	if protobuf.Size(protoJob) > provisionersdk.MaxMessageSize {
-		return nil, failJob(fmt.Sprintf("payload was too big: %d > %d", protobuf.Size(protoJob), provisionersdk.MaxMessageSize))
+	if protobuf.Size(protoJob) > drpc.MaxMessageSize {
+		return nil, failJob(fmt.Sprintf("payload was too big: %d > %d", protobuf.Size(protoJob), drpc.MaxMessageSize))
 	}
 
 	return protoJob, err
@@ -905,6 +1011,7 @@ func (s *server) FailJob(ctx context.Context, failJob *proto.FailedJob) (*proto.
 					WorkspaceName: workspace.Name,
 					BuildNumber:   strconv.FormatInt(int64(build.BuildNumber), 10),
 					BuildReason:   database.BuildReason(string(build.Reason)),
+					WorkspaceID:   workspace.ID,
 				}
 
 				wriBytes, err := json.Marshal(buildResourceInfo)
@@ -914,12 +1021,12 @@ func (s *server) FailJob(ctx context.Context, failJob *proto.FailedJob) (*proto.
 
 				bag := audit.BaggageFromContext(ctx)
 
-				audit.WorkspaceBuildAudit(ctx, &audit.BuildAuditParams[database.WorkspaceBuild]{
+				audit.BackgroundAudit(ctx, &audit.BackgroundAuditParams[database.WorkspaceBuild]{
 					Audit:            *auditor,
 					Log:              s.Logger,
 					UserID:           job.InitiatorID,
 					OrganizationID:   workspace.OrganizationID,
-					JobID:            job.ID,
+					RequestID:        job.ID,
 					IP:               bag.IP,
 					Action:           auditAction,
 					Old:              previousBuild,
@@ -1048,23 +1155,49 @@ func (s *server) CompleteJob(ctx context.Context, completed *proto.CompletedJob)
 		for _, externalAuthProvider := range jobType.TemplateImport.ExternalAuthProviders {
 			contains := false
 			for _, configuredProvider := range s.ExternalAuthConfigs {
-				if configuredProvider.ID == externalAuthProvider {
+				if configuredProvider.ID == externalAuthProvider.Id {
 					contains = true
 					break
 				}
 			}
 			if !contains {
 				completedError = sql.NullString{
-					String: fmt.Sprintf("external auth provider %q is not configured", externalAuthProvider),
+					String: fmt.Sprintf("external auth provider %q is not configured", externalAuthProvider.Id),
 					Valid:  true,
 				}
 				break
 			}
 		}
 
+		// Fallback to `ExternalAuthProvidersNames` if it was specified and `ExternalAuthProviders`
+		// was not. Gives us backwards compatibility with custom provisioners that haven't been
+		// updated to use the new field yet.
+		var externalAuthProviders []database.ExternalAuthProvider
+		if providersLen := len(jobType.TemplateImport.ExternalAuthProviders); providersLen > 0 {
+			externalAuthProviders = make([]database.ExternalAuthProvider, 0, providersLen)
+			for _, provider := range jobType.TemplateImport.ExternalAuthProviders {
+				externalAuthProviders = append(externalAuthProviders, database.ExternalAuthProvider{
+					ID:       provider.Id,
+					Optional: provider.Optional,
+				})
+			}
+		} else if namesLen := len(jobType.TemplateImport.ExternalAuthProvidersNames); namesLen > 0 {
+			externalAuthProviders = make([]database.ExternalAuthProvider, 0, namesLen)
+			for _, providerID := range jobType.TemplateImport.ExternalAuthProvidersNames {
+				externalAuthProviders = append(externalAuthProviders, database.ExternalAuthProvider{
+					ID: providerID,
+				})
+			}
+		}
+
+		externalAuthProvidersMessage, err := json.Marshal(externalAuthProviders)
+		if err != nil {
+			return nil, xerrors.Errorf("failed to serialize external_auth_providers value: %w", err)
+		}
+
 		err = s.Database.UpdateTemplateVersionExternalAuthProvidersByJobID(ctx, database.UpdateTemplateVersionExternalAuthProvidersByJobIDParams{
 			JobID:                 jobID,
-			ExternalAuthProviders: jobType.TemplateImport.ExternalAuthProviders,
+			ExternalAuthProviders: json.RawMessage(externalAuthProvidersMessage),
 			UpdatedAt:             dbtime.Now(),
 		})
 		if err != nil {
@@ -1131,9 +1264,9 @@ func (s *server) CompleteJob(ctx context.Context, completed *proto.CompletedJob)
 
 			err = db.UpdateProvisionerJobWithCompleteByID(ctx, database.UpdateProvisionerJobWithCompleteByIDParams{
 				ID:        jobID,
-				UpdatedAt: dbtime.Now(),
+				UpdatedAt: now,
 				CompletedAt: sql.NullTime{
-					Time:  dbtime.Now(),
+					Time:  now,
 					Valid: true,
 				},
 				Error:     sql.NullString{},
@@ -1262,6 +1395,7 @@ func (s *server) CompleteJob(ctx context.Context, completed *proto.CompletedJob)
 				WorkspaceName: workspace.Name,
 				BuildNumber:   strconv.FormatInt(int64(workspaceBuild.BuildNumber), 10),
 				BuildReason:   database.BuildReason(string(workspaceBuild.Reason)),
+				WorkspaceID:   workspace.ID,
 			}
 
 			wriBytes, err := json.Marshal(buildResourceInfo)
@@ -1271,12 +1405,12 @@ func (s *server) CompleteJob(ctx context.Context, completed *proto.CompletedJob)
 
 			bag := audit.BaggageFromContext(ctx)
 
-			audit.WorkspaceBuildAudit(ctx, &audit.BuildAuditParams[database.WorkspaceBuild]{
+			audit.BackgroundAudit(ctx, &audit.BackgroundAuditParams[database.WorkspaceBuild]{
 				Audit:            *auditor,
 				Log:              s.Logger,
 				UserID:           job.InitiatorID,
 				OrganizationID:   workspace.OrganizationID,
-				JobID:            job.ID,
+				RequestID:        job.ID,
 				IP:               bag.IP,
 				Action:           auditAction,
 				Old:              previousBuild,
@@ -1387,13 +1521,27 @@ func InsertWorkspaceResource(ctx context.Context, db database.Store, jobID uuid.
 				Valid:  true,
 			}
 		}
-		var env pqtype.NullRawMessage
-		if prAgent.Env != nil {
-			data, err := json.Marshal(prAgent.Env)
+
+		env := make(map[string]string)
+		// For now, we only support adding extra envs, not overriding
+		// existing ones or performing other manipulations. In future
+		// we may write these to a separate table so we can perform
+		// conditional logic on the agent.
+		for _, e := range prAgent.ExtraEnvs {
+			env[e.Name] = e.Value
+		}
+		// Allow the agent defined envs to override extra envs.
+		for k, v := range prAgent.Env {
+			env[k] = v
+		}
+
+		var envJSON pqtype.NullRawMessage
+		if len(env) > 0 {
+			data, err := json.Marshal(env)
 			if err != nil {
 				return xerrors.Errorf("marshal env: %w", err)
 			}
-			env = pqtype.NullRawMessage{
+			envJSON = pqtype.NullRawMessage{
 				RawMessage: data,
 				Valid:      true,
 			}
@@ -1416,7 +1564,7 @@ func InsertWorkspaceResource(ctx context.Context, db database.Store, jobID uuid.
 			AuthToken:                authToken,
 			AuthInstanceID:           instanceID,
 			Architecture:             prAgent.Architecture,
-			EnvironmentVariables:     env,
+			EnvironmentVariables:     envJSON,
 			Directory:                prAgent.Directory,
 			OperatingSystem:          prAgent.OperatingSystem,
 			ConnectionTimeoutSeconds: prAgent.GetConnectionTimeoutSeconds(),
@@ -1425,6 +1573,7 @@ func InsertWorkspaceResource(ctx context.Context, db database.Store, jobID uuid.
 			DisplayApps:              convertDisplayApps(prAgent.GetDisplayApps()),
 			InstanceMetadata:         pqtype.NullRawMessage{},
 			ResourceMetadata:         pqtype.NullRawMessage{},
+			DisplayOrder:             int32(prAgent.Order),
 		})
 		if err != nil {
 			return xerrors.Errorf("insert agent: %w", err)
@@ -1439,6 +1588,7 @@ func InsertWorkspaceResource(ctx context.Context, db database.Store, jobID uuid.
 				Key:              md.Key,
 				Timeout:          md.Timeout,
 				Interval:         md.Interval,
+				DisplayOrder:     int32(md.Order),
 			}
 			err := db.InsertWorkspaceAgentMetadata(ctx, p)
 			if err != nil {
@@ -1548,6 +1698,7 @@ func InsertWorkspaceResource(ctx context.Context, db database.Store, jobID uuid.
 				HealthcheckInterval:  app.Healthcheck.Interval,
 				HealthcheckThreshold: app.Healthcheck.Threshold,
 				Health:               health,
+				DisplayOrder:         int32(app.Order),
 			})
 			if err != nil {
 				return xerrors.Errorf("insert app: %w", err)
@@ -1584,11 +1735,11 @@ func workspaceSessionTokenName(workspace database.Workspace) string {
 
 func (s *server) regenerateSessionToken(ctx context.Context, user database.User, workspace database.Workspace) (string, error) {
 	newkey, sessionToken, err := apikey.Generate(apikey.CreateParams{
-		UserID:           user.ID,
-		LoginType:        user.LoginType,
-		DeploymentValues: s.DeploymentValues,
-		TokenName:        workspaceSessionTokenName(workspace),
-		LifetimeSeconds:  int64(s.DeploymentValues.MaxTokenLifetime.Value().Seconds()),
+		UserID:          user.ID,
+		LoginType:       user.LoginType,
+		DefaultLifetime: s.DeploymentValues.SessionDuration.Value(),
+		TokenName:       workspaceSessionTokenName(workspace),
+		LifetimeSeconds: int64(s.DeploymentValues.MaxTokenLifetime.Value().Seconds()),
 	})
 	if err != nil {
 		return "", xerrors.Errorf("generate API key: %w", err)
@@ -1638,7 +1789,7 @@ func deleteSessionToken(ctx context.Context, db database.Store, workspace databa
 
 // obtainOIDCAccessToken returns a valid OpenID Connect access token
 // for the user if it's able to obtain one, otherwise it returns an empty string.
-func obtainOIDCAccessToken(ctx context.Context, db database.Store, oidcConfig httpmw.OAuth2Config, userID uuid.UUID) (string, error) {
+func obtainOIDCAccessToken(ctx context.Context, db database.Store, oidcConfig promoauth.OAuth2Config, userID uuid.UUID) (string, error) {
 	link, err := db.GetUserLinkByUserIDLoginType(ctx, database.GetUserLinkByUserIDLoginTypeParams{
 		UserID:    userID,
 		LoginType: database.LoginTypeOIDC,
@@ -1674,6 +1825,7 @@ func obtainOIDCAccessToken(ctx context.Context, db database.Store, oidcConfig ht
 			OAuthRefreshToken:      link.OAuthRefreshToken,
 			OAuthRefreshTokenKeyID: sql.NullString{}, // set by dbcrypt if required
 			OAuthExpiry:            link.OAuthExpiry,
+			DebugContext:           link.DebugContext,
 		})
 		if err != nil {
 			return "", xerrors.Errorf("update user link: %w", err)

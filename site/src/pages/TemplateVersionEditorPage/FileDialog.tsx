@@ -1,18 +1,24 @@
 import TextField from "@mui/material/TextField";
+import { type ChangeEvent, type FC, useState } from "react";
 import { ConfirmDialog } from "components/Dialogs/ConfirmDialog/ConfirmDialog";
 import { Stack } from "components/Stack/Stack";
-import { ChangeEvent, FC, useState } from "react";
-import Typography from "@mui/material/Typography";
-import { allowedExtensions, isAllowedFile } from "utils/templateVersion";
-import { FileTree, isFolder, validatePath } from "utils/filetree";
+import { type FileTree, isFolder, validatePath } from "utils/filetree";
 
-export const CreateFileDialog: FC<{
+interface CreateFileDialogProps {
   onClose: () => void;
   checkExists: (path: string) => boolean;
   onConfirm: (path: string) => void;
   open: boolean;
   fileTree: FileTree;
-}> = ({ checkExists, onClose, onConfirm, open, fileTree }) => {
+}
+
+export const CreateFileDialog: FC<CreateFileDialogProps> = ({
+  checkExists,
+  onClose,
+  onConfirm,
+  open,
+  fileTree,
+}) => {
   const [pathValue, setPathValue] = useState("");
   const [error, setError] = useState<string>();
   const handleChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -27,13 +33,7 @@ export const CreateFileDialog: FC<{
       setError("File already exists");
       return;
     }
-    if (!isAllowedFile(pathValue)) {
-      const extensions = allowedExtensions.join(", ");
-      setError(
-        `This extension is not allowed. You only can create files with the following extensions: ${extensions}.`,
-      );
-      return;
-    }
+
     const pathError = validatePath(pathValue, fileTree);
     if (pathError) {
       setError(pathError);
@@ -59,11 +59,11 @@ export const CreateFileDialog: FC<{
       confirmText="Create"
       title="Create File"
       description={
-        <Stack>
-          <Typography>
+        <Stack spacing={4}>
+          <p>
             Specify the path to a file to be created. This path can contain
             slashes too.
-          </Typography>
+          </p>
           <TextField
             autoFocus
             onKeyDown={(event) => {
@@ -87,12 +87,19 @@ export const CreateFileDialog: FC<{
   );
 };
 
-export const DeleteFileDialog: FC<{
+interface DeleteFileDialogProps {
   onClose: () => void;
   onConfirm: () => void;
   open: boolean;
   filename: string;
-}> = ({ onClose, onConfirm, open, filename }) => {
+}
+
+export const DeleteFileDialog: FC<DeleteFileDialogProps> = ({
+  onClose,
+  onConfirm,
+  open,
+  filename,
+}) => {
   return (
     <ConfirmDialog
       type="delete"
@@ -110,14 +117,23 @@ export const DeleteFileDialog: FC<{
   );
 };
 
-export const RenameFileDialog: FC<{
+interface RenameFileDialogProps {
   onClose: () => void;
   onConfirm: (filename: string) => void;
   checkExists: (path: string) => boolean;
   open: boolean;
   filename: string;
   fileTree: FileTree;
-}> = ({ checkExists, onClose, onConfirm, open, filename, fileTree }) => {
+}
+
+export const RenameFileDialog: FC<RenameFileDialogProps> = ({
+  checkExists,
+  onClose,
+  onConfirm,
+  open,
+  filename,
+  fileTree,
+}) => {
   const [pathValue, setPathValue] = useState(filename);
   const [error, setError] = useState<string>();
   const handleChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -132,13 +148,7 @@ export const RenameFileDialog: FC<{
       setError("File already exists");
       return;
     }
-    if (!isAllowedFile(pathValue)) {
-      const extensions = allowedExtensions.join(", ");
-      setError(
-        `This extension is not allowed. You only can rename files with the following extensions: ${extensions}.`,
-      );
-      return;
-    }
+
     //Check if a folder is renamed to a file
     const [_, extension] = pathValue.split(".");
     if (isFolder(filename, fileTree) && extension) {

@@ -233,7 +233,7 @@ monotonic numbers, and regular expressions.
 You can limit a `number` parameter to `min` and `max` boundaries.
 
 You can also specify its monotonicity as `increasing` or `decreasing` to verify
-the current and new values. Use the `monotonic` aatribute for resources that
+the current and new values. Use the `monotonic` attribute for resources that
 can't be shrunk or grown without implications, like disk volume size.
 
 ```hcl
@@ -248,6 +248,28 @@ data "coder_parameter" "instances" {
   }
 }
 ```
+
+It is possible to override the default `error` message for a `number` parameter,
+along with its associated `min` and/or `max` properties. The following message
+placeholders are available `{min}`, `{max}`, and `{value}`.
+
+```hcl
+data "coder_parameter" "instances" {
+  name        = "Instances"
+  type        = "number"
+  description = "Number of compute instances"
+  validation {
+    min       = 1
+    max       = 4
+    error     = "Sorry, we can't provision too many instances - maximum limit: {max}, wanted: {value}."
+  }
+}
+```
+
+**NOTE:** as of
+[`terraform-provider-coder` v0.19.0](https://registry.terraform.io/providers/coder/coder/0.19.0/docs),
+`options` can be specified in `number` parameters; this also works with
+validations such as `monotonic`.
 
 ### String
 
@@ -265,19 +287,14 @@ data "coder_parameter" "project_id" {
 }
 ```
 
-## Terraform template-wide variables
+## Create Autofill
 
-As parameters are intended to be used only for workspace customization purposes,
-Terraform variables can be freely managed by the template author to build
-templates. Workspace users are not able to modify template variables.
+When the template doesn't specify default values, Coder may still autofill
+parameters.
 
-```hcl
-
-variable "CLOUD_API_KEY" {
-  type        = string
-  description = "API key for the service"
-  default     = "1234567890"
-  sensitive   = true
-}
-
-```
+1. Coder will look for URL query parameters with form `param.<name>=<value>`.
+   This feature enables platform teams to create pre-filled template creation
+   links.
+2. Coder will populate recently used parameter key-value pairs for the user.
+   This feature helps reduce repetition when filling common parameters such as
+   `dotfiles_url` or `region`.

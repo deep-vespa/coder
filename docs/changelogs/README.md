@@ -13,8 +13,8 @@ git checkout main; git pull; git fetch --all
 export CODER_IGNORE_MISSING_COMMIT_METADATA=1
 export BRANCH=main
 ./scripts/release/generate_release_notes.sh \
-  --old-version=v2.3.3 \
-  --new-version=v2.3.4 \
+  --old-version=v2.8.0 \
+  --new-version=v2.9.0 \
   --ref=$(git rev-parse --short "${ref:-origin/$BRANCH}") \
-  > ./docs/changelogs/v2.3.4.md
+  > ./docs/changelogs/v2.9.0.md
 ```

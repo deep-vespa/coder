@@ -1,21 +1,22 @@
-import { useAuth } from "components/AuthProvider/AuthProvider";
-import { FC } from "react";
+import type { FC } from "react";
 import { Helmet } from "react-helmet-async";
 import { Navigate, useLocation, useNavigate } from "react-router-dom";
+import { useAuthContext } from "contexts/auth/AuthProvider";
+import { getApplicationName } from "utils/appearance";
 import { retrieveRedirect } from "utils/redirect";
 import { LoginPageView } from "./LoginPageView";
-import { getApplicationName } from "utils/appearance";
 
 export const LoginPage: FC = () => {
   const location = useLocation();
   const {
+    isLoading,
     isSignedIn,
     isConfiguringTheFirstUser,
     signIn,
     isSigningIn,
     authMethods,
     signInError,
-  } = useAuth();
+  } = useAuthContext();
   const redirectTo = retrieveRedirect(location.search);
   const applicationName = getApplicationName();
   const navigate = useNavigate();
@@ -24,7 +25,8 @@ export const LoginPage: FC = () => {
     // If the redirect is going to a workspace application, and we
     // are missing authentication, then we need to change the href location
     // to trigger a HTTP request. This allows the BE to generate the auth
-    // cookie required.
+    // cookie required.  Similarly for the OAuth2 exchange as the authorization
+    // page is served by the backend.
     // If no redirect is present, then ignore this branched logic.
     if (redirectTo !== "" && redirectTo !== "/") {
       try {
@@ -33,38 +35,42 @@ export const LoginPage: FC = () => {
         const redirectURL = new URL(redirectTo);
         if (redirectURL.host !== window.location.host) {
           window.location.href = redirectTo;
-          return <></>;
+          return null;
         }
       } catch {
         // Do nothing
       }
-      // Path based apps.
-      if (redirectTo.includes("/apps/")) {
+      // Path based apps and OAuth2.
+      if (redirectTo.includes("/apps/") || redirectTo.includes("/oauth2/")) {
         window.location.href = redirectTo;
-        return <></>;
+        return null;
       }
     }
+
     return <Navigate to={redirectTo} replace />;
-  } else if (isConfiguringTheFirstUser) {
-    return <Navigate to="/setup" replace />;
-  } else {
-    return (
-      <>
-        <Helmet>
-          <title>Sign in to {applicationName}</title>
-        </Helmet>
-        <LoginPageView
-          authMethods={authMethods}
-          error={signInError}
-          isSigningIn={isSigningIn}
-          onSignIn={async ({ email, password }) => {
-            await signIn(email, password);
-            navigate("/");
-          }}
-        />
-      </>
-    );
   }
+
+  if (isConfiguringTheFirstUser) {
+    return <Navigate to="/setup" replace />;
+  }
+
+  return (
+    <>
+      <Helmet>
+        <title>Sign in to {applicationName}</title>
+      </Helmet>
+      <LoginPageView
+        authMethods={authMethods}
+        error={signInError}
+        isLoading={isLoading}
+        isSigningIn={isSigningIn}
+        onSignIn={async ({ email, password }) => {
+          await signIn(email, password);
+          navigate("/");
+        }}
+      />
+    </>
+  );
 };
 
 export default LoginPage;

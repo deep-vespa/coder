@@ -1,18 +1,23 @@
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { http, HttpResponse } from "msw";
 import * as API from "api/api";
-import { UpdateTemplateMeta } from "api/typesGenerated";
+import type { Template, UpdateTemplateMeta } from "api/typesGenerated";
 import { Language as FooterFormLanguage } from "components/FormFooter/FormFooter";
-import { MockTemplate } from "testHelpers/entities";
+import { MockEntitlements, MockTemplate } from "testHelpers/entities";
 import {
   renderWithTemplateSettingsLayout,
   waitForLoaderToBeRemoved,
 } from "testHelpers/renderHelpers";
+import { server } from "testHelpers/server";
 import { getValidationSchema } from "./TemplateSettingsForm";
 import { TemplateSettingsPage } from "./TemplateSettingsPage";
 
 type FormValues = Required<
-  Omit<UpdateTemplateMeta, "default_ttl_ms" | "max_ttl_ms">
+  Omit<
+    UpdateTemplateMeta,
+    "default_ttl_ms" | "activity_bump_ms" | "deprecation_message"
+  >
 >;
 
 const validFormValues: FormValues = {
@@ -44,12 +49,17 @@ const validFormValues: FormValues = {
   update_workspace_last_used_at: false,
   update_workspace_dormant_at: false,
   require_active_version: false,
+  disable_everyone_group_access: false,
+  max_port_share_level: "owner",
 };
 
 const renderTemplateSettingsPage = async () => {
   renderWithTemplateSettingsLayout(<TemplateSettingsPage />, {
     route: `/templates/${MockTemplate.name}/settings`,
     path: `/templates/:template/settings`,
+    extraRoutes: [
+      { path: "/templates/:template", element: <div>Template</div> },
+    ],
   });
   await waitForLoaderToBeRemoved();
 };
@@ -77,7 +87,9 @@ const fillAndSubmitForm = async ({
   await userEvent.clear(iconField);
   await userEvent.type(iconField, icon);
 
-  const allowCancelJobsField = screen.getByRole("checkbox");
+  const allowCancelJobsField = screen.getByRole("checkbox", {
+    name: /allow users to cancel in-progress workspace jobs/i,
+  });
   // checkbox is checked by default, so it must be clicked to get unchecked
   if (!allow_user_cancel_workspace_jobs) {
     await userEvent.click(allowCancelJobsField);
@@ -117,8 +129,70 @@ describe("TemplateSettingsPage", () => {
         "Nam quis nulla. Integer malesuada. In in enim a arcu imperdiet malesuada. Sed vel lectus. Donec odio urna, tempus molestie, port a",
     };
     const validate = () => getValidationSchema().validateSync(values);
-    expect(validate).toThrowError(
-      "Please enter a description that is less than or equal to 128 characters.",
-    );
+    expect(validate).toThrowError();
+  });
+
+  describe("Deprecate template", () => {
+    it("deprecates a template when has access control", async () => {
+      server.use(
+        http.get("/api/v2/entitlements", () => {
+          return HttpResponse.json({
+            ...MockEntitlements,
+            features: API.withDefaultFeatures({
+              access_control: { enabled: true, entitlement: "entitled" },
+            }),
+          });
+        }),
+      );
+      const updateTemplateMetaSpy = jest.spyOn(API, "updateTemplateMeta");
+      const deprecationMessage = "This template is deprecated";
+
+      await renderTemplateSettingsPage();
+      await deprecateTemplate(MockTemplate, deprecationMessage);
+
+      const [templateId, data] = updateTemplateMetaSpy.mock.calls[0];
+
+      expect(templateId).toEqual(MockTemplate.id);
+      expect(data).toEqual(
+        expect.objectContaining({ deprecation_message: deprecationMessage }),
+      );
+    });
+
+    it("does not deprecate a template when does not have access control", async () => {
+      server.use(
+        http.get("/api/v2/entitlements", () => {
+          return HttpResponse.json({
+            ...MockEntitlements,
+            features: API.withDefaultFeatures({
+              access_control: { enabled: false, entitlement: "not_entitled" },
+            }),
+          });
+        }),
+      );
+      const updateTemplateMetaSpy = jest.spyOn(API, "updateTemplateMeta");
+
+      await renderTemplateSettingsPage();
+      await deprecateTemplate(
+        MockTemplate,
+        "This template should not be able to deprecate",
+      );
+
+      const [templateId, data] = updateTemplateMetaSpy.mock.calls[0];
+
+      expect(templateId).toEqual(MockTemplate.id);
+      expect(data).toEqual(
+        expect.objectContaining({ deprecation_message: "" }),
+      );
+    });
   });
 });
+
+async function deprecateTemplate(template: Template, message: string) {
+  const deprecationField = screen.getByLabelText("Deprecation Message");
+  await userEvent.type(deprecationField, message);
+
+  const submitButton = await screen.findByText(
+    FooterFormLanguage.defaultSubmitLabel,
+  );
+  await userEvent.click(submitButton);
+}

@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -29,10 +30,13 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
 	"gopkg.in/yaml.v3"
+	"tailscale.com/derp/derphttp"
+	"tailscale.com/types/key"
 
 	"cdr.dev/slog/sloggers/slogtest"
 
@@ -41,7 +45,6 @@ import (
 	"github.com/coder/coder/v2/cli/config"
 	"github.com/coder/coder/v2/coderd/coderdtest"
 	"github.com/coder/coder/v2/coderd/database/dbtestutil"
-	"github.com/coder/coder/v2/coderd/database/postgres"
 	"github.com/coder/coder/v2/coderd/telemetry"
 	"github.com/coder/coder/v2/codersdk"
 	"github.com/coder/coder/v2/cryptorand"
@@ -683,6 +686,18 @@ func TestServer(t *testing.T) {
 						require.Equal(t, http.StatusTemporaryRedirect, resp.StatusCode)
 						require.Equal(t, c.expectRedirect, resp.Header.Get("Location"))
 					}
+
+					// We should never readirect /healthz
+					respHealthz, err := client.Request(ctx, http.MethodGet, "/healthz", nil)
+					require.NoError(t, err)
+					defer respHealthz.Body.Close()
+					require.Equal(t, http.StatusOK, respHealthz.StatusCode, "/healthz should never redirect")
+
+					// We should never redirect DERP
+					respDERP, err := client.Request(ctx, http.MethodGet, "/derp", nil)
+					require.NoError(t, err)
+					defer respDERP.Body.Close()
+					require.Equal(t, http.StatusUpgradeRequired, respDERP.StatusCode, "/derp should never redirect")
 				}
 
 				// Verify TLS
@@ -924,22 +939,13 @@ func TestServer(t *testing.T) {
 	t.Run("Prometheus", func(t *testing.T) {
 		t.Parallel()
 
-		randomPort := func(t *testing.T) int {
-			random, err := net.Listen("tcp", "127.0.0.1:0")
-			require.NoError(t, err)
-			_ = random.Close()
-			tcpAddr, valid := random.Addr().(*net.TCPAddr)
-			require.True(t, valid)
-			return tcpAddr.Port
-		}
-
 		t.Run("DBMetricsDisabled", func(t *testing.T) {
 			t.Parallel()
 
 			ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
 			defer cancel()
 
-			randPort := randomPort(t)
+			randPort := testutil.RandomPort(t)
 			inv, cfg := clitest.New(t,
 				"server",
 				"--in-memory",
@@ -967,16 +973,11 @@ func TestServer(t *testing.T) {
 
 			scanner := bufio.NewScanner(res.Body)
 			hasActiveUsers := false
-			hasWorkspaces := false
 			for scanner.Scan() {
 				// This metric is manually registered to be tracked in the server. That's
 				// why we test it's tracked here.
 				if strings.HasPrefix(scanner.Text(), "coderd_api_active_users_duration_hour") {
 					hasActiveUsers = true
-					continue
-				}
-				if strings.HasPrefix(scanner.Text(), "coderd_api_workspace_latest_build_total") {
-					hasWorkspaces = true
 					continue
 				}
 				if strings.HasPrefix(scanner.Text(), "coderd_db_query_latencies_seconds") {
@@ -986,7 +987,6 @@ func TestServer(t *testing.T) {
 			}
 			require.NoError(t, scanner.Err())
 			require.True(t, hasActiveUsers)
-			require.True(t, hasWorkspaces)
 		})
 
 		t.Run("DBMetricsEnabled", func(t *testing.T) {
@@ -995,7 +995,7 @@ func TestServer(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
 			defer cancel()
 
-			randPort := randomPort(t)
+			randPort := testutil.RandomPort(t)
 			inv, cfg := clitest.New(t,
 				"server",
 				"--in-memory",
@@ -1546,6 +1546,18 @@ func TestServer(t *testing.T) {
 				// ValueSource is not going to be correct on the `want`, so just
 				// match that field.
 				wantConfig.Options[i].ValueSource = gotConfig.Options[i].ValueSource
+
+				// If there is a wrapped value with a validator, unwrap it.
+				// The underlying doesn't compare well since it compares go pointers,
+				// and not the actual value.
+				if validator, isValidator := wantConfig.Options[i].Value.(interface{ Underlying() pflag.Value }); isValidator {
+					wantConfig.Options[i].Value = validator.Underlying()
+				}
+
+				if validator, isValidator := gotConfig.Options[i].Value.(interface{ Underlying() pflag.Value }); isValidator {
+					gotConfig.Options[i].Value = validator.Underlying()
+				}
+
 				assert.Equal(
 					t, wantConfig.Options[i],
 					gotConfig.Options[i],
@@ -1565,7 +1577,7 @@ func TestServer_Production(t *testing.T) {
 		// Skip on non-Linux because it spawns a PostgreSQL instance.
 		t.SkipNow()
 	}
-	connectionURL, closeFunc, err := postgres.Open()
+	connectionURL, closeFunc, err := dbtestutil.Open()
 	require.NoError(t, err)
 	defer closeFunc()
 
@@ -1589,7 +1601,7 @@ func TestServer_Production(t *testing.T) {
 }
 
 //nolint:tparallel,paralleltest // This test cannot be run in parallel due to signal handling.
-func TestServer_Shutdown(t *testing.T) {
+func TestServer_InterruptShutdown(t *testing.T) {
 	t.Skip("This test issues an interrupt signal which will propagate to the test runner.")
 
 	if runtime.GOOS == "windows" {
@@ -1619,6 +1631,46 @@ func TestServer_Shutdown(t *testing.T) {
 	// We cannot send more signals here, because it's possible Coder
 	// has already exited, which could cause the test to fail due to interrupt.
 	err = <-serverErr
+	require.NoError(t, err)
+}
+
+func TestServer_GracefulShutdown(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		// Sending interrupt signal isn't supported on Windows!
+		t.SkipNow()
+	}
+	ctx, cancelFunc := context.WithCancel(context.Background())
+	defer cancelFunc()
+
+	root, cfg := clitest.New(t,
+		"server",
+		"--in-memory",
+		"--http-address", ":0",
+		"--access-url", "http://example.com",
+		"--provisioner-daemons", "1",
+		"--cache-dir", t.TempDir(),
+	)
+	var stopFunc context.CancelFunc
+	root = root.WithTestSignalNotifyContext(t, func(parent context.Context, signals ...os.Signal) (context.Context, context.CancelFunc) {
+		if !reflect.DeepEqual(cli.StopSignalsNoInterrupt, signals) {
+			return context.WithCancel(ctx)
+		}
+		var ctx context.Context
+		ctx, stopFunc = context.WithCancel(parent)
+		return ctx, stopFunc
+	})
+	serverErr := make(chan error, 1)
+	pty := ptytest.New(t).Attach(root)
+	go func() {
+		serverErr <- root.WithContext(ctx).Run()
+	}()
+	_ = waitAccessURL(t, cfg)
+	// It's fair to assume `stopFunc` isn't nil here, because the server
+	// has started and access URL is propagated.
+	stopFunc()
+	pty.ExpectMatch("waiting for provisioner jobs to complete")
+	err := <-serverErr
 	require.NoError(t, err)
 }
 
@@ -1716,21 +1768,7 @@ func TestServerYAMLConfig(t *testing.T) {
 	err = enc.Encode(n)
 	require.NoError(t, err)
 
-	wantByt := wantBuf.Bytes()
-
-	goldenPath := filepath.Join("testdata", "server-config.yaml.golden")
-
-	wantByt = clitest.NormalizeGoldenFile(t, wantByt)
-	if *clitest.UpdateGoldenFiles {
-		require.NoError(t, os.WriteFile(goldenPath, wantByt, 0o600))
-		return
-	}
-
-	got, err := os.ReadFile(goldenPath)
-	require.NoError(t, err)
-	got = clitest.NormalizeGoldenFile(t, got)
-
-	require.Equal(t, string(wantByt), string(got))
+	clitest.TestGoldenFile(t, "server-config.yaml", wantBuf.Bytes(), nil)
 }
 
 func TestConnectToPostgres(t *testing.T) {
@@ -1744,7 +1782,7 @@ func TestConnectToPostgres(t *testing.T) {
 
 	log := slogtest.Make(t, nil)
 
-	dbURL, closeFunc, err := postgres.Open()
+	dbURL, closeFunc, err := dbtestutil.Open()
 	require.NoError(t, err)
 	t.Cleanup(closeFunc)
 
@@ -1754,4 +1792,52 @@ func TestConnectToPostgres(t *testing.T) {
 		_ = sqlDB.Close()
 	})
 	require.NoError(t, sqlDB.PingContext(ctx))
+}
+
+func TestServer_InvalidDERP(t *testing.T) {
+	t.Parallel()
+
+	// Try to start a server with the built-in DERP server disabled and no
+	// external DERP map.
+	inv, _ := clitest.New(t,
+		"server",
+		"--in-memory",
+		"--http-address", ":0",
+		"--access-url", "http://example.com",
+		"--derp-server-enable=false",
+		"--derp-server-stun-addresses", "disable",
+		"--block-direct-connections",
+	)
+	err := inv.Run()
+	require.Error(t, err)
+	require.ErrorContains(t, err, "A valid DERP map is required for networking to work")
+}
+
+func TestServer_DisabledDERP(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancelFunc := context.WithTimeout(context.Background(), testutil.WaitShort)
+	defer cancelFunc()
+
+	// Try to start a server with the built-in DERP server disabled and an
+	// external DERP map.
+	inv, cfg := clitest.New(t,
+		"server",
+		"--in-memory",
+		"--http-address", ":0",
+		"--access-url", "http://example.com",
+		"--derp-server-enable=false",
+		"--derp-config-url", "https://controlplane.tailscale.com/derpmap/default",
+	)
+	clitest.Start(t, inv.WithContext(ctx))
+	accessURL := waitAccessURL(t, cfg)
+	derpURL, err := accessURL.Parse("/derp")
+	require.NoError(t, err)
+
+	c, err := derphttp.NewClient(key.NewNode(), derpURL.String(), func(format string, args ...any) {})
+	require.NoError(t, err)
+
+	// DERP should fail to connect
+	err = c.Connect(ctx)
+	require.Error(t, err)
 }

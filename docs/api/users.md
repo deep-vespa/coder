@@ -37,6 +37,7 @@ curl -X GET http://coder-server:8080/api/v2/users \
       "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
       "last_seen_at": "2019-08-24T14:15:22Z",
       "login_type": "",
+      "name": "string",
       "organization_ids": ["497f6eca-6276-4993-bfeb-53cbbbba6f08"],
       "roles": [
         {
@@ -45,6 +46,7 @@ curl -X GET http://coder-server:8080/api/v2/users \
         }
       ],
       "status": "active",
+      "theme_preference": "string",
       "username": "string"
     }
   ]
@@ -104,6 +106,7 @@ curl -X POST http://coder-server:8080/api/v2/users \
   "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
   "last_seen_at": "2019-08-24T14:15:22Z",
   "login_type": "",
+  "name": "string",
   "organization_ids": ["497f6eca-6276-4993-bfeb-53cbbbba6f08"],
   "roles": [
     {
@@ -112,6 +115,7 @@ curl -X POST http://coder-server:8080/api/v2/users \
     }
   ],
   "status": "active",
+  "theme_preference": "string",
   "username": "string"
 }
 ```
@@ -224,6 +228,15 @@ curl -X POST http://coder-server:8080/api/v2/users/first \
   "email": "string",
   "password": "string",
   "trial": true,
+  "trial_info": {
+    "company_name": "string",
+    "country": "string",
+    "developers": "string",
+    "first_name": "string",
+    "job_title": "string",
+    "last_name": "string",
+    "phone_number": "string"
+  },
   "username": "string"
 }
 ```
@@ -362,6 +375,7 @@ curl -X GET http://coder-server:8080/api/v2/users/{user} \
   "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
   "last_seen_at": "2019-08-24T14:15:22Z",
   "login_type": "",
+  "name": "string",
   "organization_ids": ["497f6eca-6276-4993-bfeb-53cbbbba6f08"],
   "roles": [
     {
@@ -370,6 +384,7 @@ curl -X GET http://coder-server:8080/api/v2/users/{user} \
     }
   ],
   "status": "active",
+  "theme_preference": "string",
   "username": "string"
 }
 ```
@@ -413,6 +428,7 @@ curl -X DELETE http://coder-server:8080/api/v2/users/{user} \
   "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
   "last_seen_at": "2019-08-24T14:15:22Z",
   "login_type": "",
+  "name": "string",
   "organization_ids": ["497f6eca-6276-4993-bfeb-53cbbbba6f08"],
   "roles": [
     {
@@ -421,6 +437,7 @@ curl -X DELETE http://coder-server:8080/api/v2/users/{user} \
     }
   ],
   "status": "active",
+  "theme_preference": "string",
   "username": "string"
 }
 ```
@@ -430,6 +447,120 @@ curl -X DELETE http://coder-server:8080/api/v2/users/{user} \
 | Status | Meaning                                                 | Description | Schema                                   |
 | ------ | ------------------------------------------------------- | ----------- | ---------------------------------------- |
 | 200    | [OK](https://tools.ietf.org/html/rfc7231#section-6.3.1) | OK          | [codersdk.User](schemas.md#codersdkuser) |
+
+To perform this operation, you must be authenticated. [Learn more](authentication.md).
+
+## Update user appearance settings
+
+### Code samples
+
+```shell
+# Example request using curl
+curl -X PUT http://coder-server:8080/api/v2/users/{user}/appearance \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json' \
+  -H 'Coder-Session-Token: API_KEY'
+```
+
+`PUT /users/{user}/appearance`
+
+> Body parameter
+
+```json
+{
+  "theme_preference": "string"
+}
+```
+
+### Parameters
+
+| Name   | In   | Type                                                                                                   | Required | Description             |
+| ------ | ---- | ------------------------------------------------------------------------------------------------------ | -------- | ----------------------- |
+| `user` | path | string                                                                                                 | true     | User ID, name, or me    |
+| `body` | body | [codersdk.UpdateUserAppearanceSettingsRequest](schemas.md#codersdkupdateuserappearancesettingsrequest) | true     | New appearance settings |
+
+### Example responses
+
+> 200 Response
+
+```json
+{
+  "avatar_url": "http://example.com",
+  "created_at": "2019-08-24T14:15:22Z",
+  "email": "user@example.com",
+  "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
+  "last_seen_at": "2019-08-24T14:15:22Z",
+  "login_type": "",
+  "name": "string",
+  "organization_ids": ["497f6eca-6276-4993-bfeb-53cbbbba6f08"],
+  "roles": [
+    {
+      "display_name": "string",
+      "name": "string"
+    }
+  ],
+  "status": "active",
+  "theme_preference": "string",
+  "username": "string"
+}
+```
+
+### Responses
+
+| Status | Meaning                                                 | Description | Schema                                   |
+| ------ | ------------------------------------------------------- | ----------- | ---------------------------------------- |
+| 200    | [OK](https://tools.ietf.org/html/rfc7231#section-6.3.1) | OK          | [codersdk.User](schemas.md#codersdkuser) |
+
+To perform this operation, you must be authenticated. [Learn more](authentication.md).
+
+## Get autofill build parameters for user
+
+### Code samples
+
+```shell
+# Example request using curl
+curl -X GET http://coder-server:8080/api/v2/users/{user}/autofill-parameters?template_id=string \
+  -H 'Accept: application/json' \
+  -H 'Coder-Session-Token: API_KEY'
+```
+
+`GET /users/{user}/autofill-parameters`
+
+### Parameters
+
+| Name          | In    | Type   | Required | Description              |
+| ------------- | ----- | ------ | -------- | ------------------------ |
+| `user`        | path  | string | true     | User ID, username, or me |
+| `template_id` | query | string | true     | Template ID              |
+
+### Example responses
+
+> 200 Response
+
+```json
+[
+  {
+    "name": "string",
+    "value": "string"
+  }
+]
+```
+
+### Responses
+
+| Status | Meaning                                                 | Description | Schema                                                              |
+| ------ | ------------------------------------------------------- | ----------- | ------------------------------------------------------------------- |
+| 200    | [OK](https://tools.ietf.org/html/rfc7231#section-6.3.1) | OK          | array of [codersdk.UserParameter](schemas.md#codersdkuserparameter) |
+
+<h3 id="get-autofill-build-parameters-for-user-responseschema">Response Schema</h3>
+
+Status Code **200**
+
+| Name           | Type   | Required | Restrictions | Description |
+| -------------- | ------ | -------- | ------------ | ----------- |
+| `[array item]` | array  | false    |              |             |
+| `» name`       | string | false    |              |             |
+| `» value`      | string | false    |              |             |
 
 To perform this operation, you must be authenticated. [Learn more](authentication.md).
 
@@ -862,6 +993,7 @@ curl -X GET http://coder-server:8080/api/v2/users/{user}/organizations \
   {
     "created_at": "2019-08-24T14:15:22Z",
     "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
+    "is_default": true,
     "name": "string",
     "updated_at": "2019-08-24T14:15:22Z"
   }
@@ -883,6 +1015,7 @@ Status Code **200**
 | `[array item]` | array             | false    |              |             |
 | `» created_at` | string(date-time) | true     |              |             |
 | `» id`         | string(uuid)      | true     |              |             |
+| `» is_default` | boolean           | true     |              |             |
 | `» name`       | string            | true     |              |             |
 | `» updated_at` | string(date-time) | true     |              |             |
 
@@ -916,6 +1049,7 @@ curl -X GET http://coder-server:8080/api/v2/users/{user}/organizations/{organiza
 {
   "created_at": "2019-08-24T14:15:22Z",
   "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
+  "is_default": true,
   "name": "string",
   "updated_at": "2019-08-24T14:15:22Z"
 }
@@ -984,6 +1118,7 @@ curl -X PUT http://coder-server:8080/api/v2/users/{user}/profile \
 
 ```json
 {
+  "name": "string",
   "username": "string"
 }
 ```
@@ -1007,6 +1142,7 @@ curl -X PUT http://coder-server:8080/api/v2/users/{user}/profile \
   "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
   "last_seen_at": "2019-08-24T14:15:22Z",
   "login_type": "",
+  "name": "string",
   "organization_ids": ["497f6eca-6276-4993-bfeb-53cbbbba6f08"],
   "roles": [
     {
@@ -1015,6 +1151,7 @@ curl -X PUT http://coder-server:8080/api/v2/users/{user}/profile \
     }
   ],
   "status": "active",
+  "theme_preference": "string",
   "username": "string"
 }
 ```
@@ -1058,6 +1195,7 @@ curl -X GET http://coder-server:8080/api/v2/users/{user}/roles \
   "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
   "last_seen_at": "2019-08-24T14:15:22Z",
   "login_type": "",
+  "name": "string",
   "organization_ids": ["497f6eca-6276-4993-bfeb-53cbbbba6f08"],
   "roles": [
     {
@@ -1066,6 +1204,7 @@ curl -X GET http://coder-server:8080/api/v2/users/{user}/roles \
     }
   ],
   "status": "active",
+  "theme_preference": "string",
   "username": "string"
 }
 ```
@@ -1119,6 +1258,7 @@ curl -X PUT http://coder-server:8080/api/v2/users/{user}/roles \
   "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
   "last_seen_at": "2019-08-24T14:15:22Z",
   "login_type": "",
+  "name": "string",
   "organization_ids": ["497f6eca-6276-4993-bfeb-53cbbbba6f08"],
   "roles": [
     {
@@ -1127,6 +1267,7 @@ curl -X PUT http://coder-server:8080/api/v2/users/{user}/roles \
     }
   ],
   "status": "active",
+  "theme_preference": "string",
   "username": "string"
 }
 ```
@@ -1170,6 +1311,7 @@ curl -X PUT http://coder-server:8080/api/v2/users/{user}/status/activate \
   "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
   "last_seen_at": "2019-08-24T14:15:22Z",
   "login_type": "",
+  "name": "string",
   "organization_ids": ["497f6eca-6276-4993-bfeb-53cbbbba6f08"],
   "roles": [
     {
@@ -1178,6 +1320,7 @@ curl -X PUT http://coder-server:8080/api/v2/users/{user}/status/activate \
     }
   ],
   "status": "active",
+  "theme_preference": "string",
   "username": "string"
 }
 ```
@@ -1221,6 +1364,7 @@ curl -X PUT http://coder-server:8080/api/v2/users/{user}/status/suspend \
   "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
   "last_seen_at": "2019-08-24T14:15:22Z",
   "login_type": "",
+  "name": "string",
   "organization_ids": ["497f6eca-6276-4993-bfeb-53cbbbba6f08"],
   "roles": [
     {
@@ -1229,6 +1373,7 @@ curl -X PUT http://coder-server:8080/api/v2/users/{user}/status/suspend \
     }
   ],
   "status": "active",
+  "theme_preference": "string",
   "username": "string"
 }
 ```

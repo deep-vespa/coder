@@ -1,15 +1,15 @@
-import { DialogProps } from "components/Dialogs/Dialog";
-import { FC } from "react";
-import { getFormHelpers } from "utils/formUtils";
-import { FormFields } from "components/Form/Form";
-import { useFormik } from "formik";
-import * as Yup from "yup";
-import { PublishVersionData } from "pages/TemplateVersionEditorPage/types";
-import TextField from "@mui/material/TextField";
-import { ConfirmDialog } from "components/Dialogs/ConfirmDialog/ConfirmDialog";
 import Checkbox from "@mui/material/Checkbox";
 import FormControlLabel from "@mui/material/FormControlLabel";
+import TextField from "@mui/material/TextField";
+import { useFormik } from "formik";
+import type { FC } from "react";
+import * as Yup from "yup";
+import { ConfirmDialog } from "components/Dialogs/ConfirmDialog/ConfirmDialog";
+import type { DialogProps } from "components/Dialogs/Dialog";
+import { FormFields } from "components/Form/Form";
 import { Stack } from "components/Stack/Stack";
+import type { PublishVersionData } from "pages/TemplateVersionEditorPage/types";
+import { getFormHelpers } from "utils/formUtils";
 
 export const Language = {
   versionNameLabel: "Version name",
@@ -68,44 +68,45 @@ export const PublishTemplateVersionDialog: FC<
       confirmText="Publish"
       title="Publish new version"
       description={
-        <Stack>
-          <p>You are about to publish a new version of this template.</p>
-          <FormFields>
-            <TextField
-              {...getFieldHelpers("name")}
-              label={Language.versionNameLabel}
-              autoFocus
-              disabled={isPublishing}
-            />
+        <form id="publish-version" onSubmit={form.handleSubmit}>
+          <Stack>
+            <p>You are about to publish a new version of this template.</p>
+            <FormFields>
+              <TextField
+                {...getFieldHelpers("name")}
+                label={Language.versionNameLabel}
+                autoFocus
+                disabled={isPublishing}
+              />
 
-            <TextField
-              {...getFieldHelpers("message")}
-              label="Message"
-              placeholder={Language.messagePlaceholder}
-              autoFocus
-              disabled={isPublishing}
-              multiline
-              rows={5}
-            />
+              <TextField
+                {...getFieldHelpers("message")}
+                label="Message"
+                placeholder={Language.messagePlaceholder}
+                disabled={isPublishing}
+                multiline
+                rows={5}
+              />
 
-            <FormControlLabel
-              label={Language.defaultCheckboxLabel}
-              control={
-                <Checkbox
-                  size="small"
-                  checked={form.values.isActiveVersion}
-                  onChange={async (e) => {
-                    await form.setFieldValue(
-                      "isActiveVersion",
-                      e.target.checked,
-                    );
-                  }}
-                  name="isActiveVersion"
-                />
-              }
-            />
-          </FormFields>
-        </Stack>
+              <FormControlLabel
+                label={Language.defaultCheckboxLabel}
+                control={
+                  <Checkbox
+                    size="small"
+                    checked={form.values.isActiveVersion}
+                    onChange={async (e) => {
+                      await form.setFieldValue(
+                        "isActiveVersion",
+                        e.target.checked,
+                      );
+                    }}
+                    name="isActiveVersion"
+                  />
+                }
+              />
+            </FormFields>
+          </Stack>
+        </form>
       }
     />
   );

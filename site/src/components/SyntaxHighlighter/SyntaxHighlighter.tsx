@@ -1,20 +1,27 @@
-import { ComponentProps, FC } from "react";
+import { useTheme } from "@emotion/react";
 import Editor, { DiffEditor, loader } from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
+import type { ComponentProps, FC } from "react";
 import { useCoderTheme } from "./coderTheme";
-import { makeStyles } from "@mui/styles";
 
 loader.config({ monaco });
 
-export const SyntaxHighlighter: FC<{
+interface SyntaxHighlighterProps {
   value: string;
-  language: string;
+  language?: string;
   editorProps?: ComponentProps<typeof Editor> &
     ComponentProps<typeof DiffEditor>;
   compareWith?: string;
-}> = ({ value, compareWith, language, editorProps }) => {
-  const styles = useStyles();
+}
+
+export const SyntaxHighlighter: FC<SyntaxHighlighterProps> = ({
+  value,
+  compareWith,
+  language,
+  editorProps,
+}) => {
   const hasDiff = compareWith && value !== compareWith;
+  const theme = useTheme();
   const coderTheme = useCoderTheme();
   const commonProps = {
     language,
@@ -35,7 +42,14 @@ export const SyntaxHighlighter: FC<{
   }
 
   return (
-    <div className={styles.wrapper}>
+    <div
+      data-chromatic="ignore"
+      css={{
+        padding: "8px 0",
+        height: "100%",
+        backgroundColor: theme.monaco.colors["editor.background"],
+      }}
+    >
       {hasDiff ? (
         <DiffEditor original={compareWith} modified={value} {...commonProps} />
       ) : (
@@ -44,11 +58,3 @@ export const SyntaxHighlighter: FC<{
     </div>
   );
 };
-
-const useStyles = makeStyles((theme) => ({
-  wrapper: {
-    padding: theme.spacing(1, 0),
-    background: theme.palette.background.paper,
-    height: "100%",
-  },
-}));

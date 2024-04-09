@@ -50,6 +50,13 @@ func (api *API) postOrganizations(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.Name == codersdk.DefaultOrganization {
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: fmt.Sprintf("Organization name %q is reserved.", codersdk.DefaultOrganization),
+		})
+		return
+	}
+
 	_, err := api.Database.GetOrganizationByName(ctx, req.Name)
 	if err == nil {
 		httpapi.Write(ctx, rw, http.StatusConflict, codersdk.Response{
@@ -118,5 +125,6 @@ func convertOrganization(organization database.Organization) codersdk.Organizati
 		Name:      organization.Name,
 		CreatedAt: organization.CreatedAt,
 		UpdatedAt: organization.UpdatedAt,
+		IsDefault: organization.IsDefault,
 	}
 }

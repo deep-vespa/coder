@@ -1,18 +1,17 @@
+import { css } from "@emotion/react";
+import Autocomplete from "@mui/material/Autocomplete";
 import CircularProgress from "@mui/material/CircularProgress";
 import TextField from "@mui/material/TextField";
-import Autocomplete from "@mui/material/Autocomplete";
-import Box from "@mui/material/Box";
-import { type ChangeEvent, useState } from "react";
-import { css } from "@emotion/react";
-import type { Group, User } from "api/typesGenerated";
-import { AvatarData } from "components/AvatarData/AvatarData";
-import { getGroupSubtitle } from "utils/groups";
-import { useDebouncedFunction } from "hooks/debounce";
+import { type ChangeEvent, type FC, useState } from "react";
 import { useQuery } from "react-query";
 import { templaceACLAvailable } from "api/queries/templates";
+import type { Group, ReducedUser } from "api/typesGenerated";
+import { AvatarData } from "components/AvatarData/AvatarData";
+import { useDebouncedFunction } from "hooks/debounce";
 import { prepareQuery } from "utils/filters";
+import { getGroupSubtitle } from "utils/groups";
 
-export type UserOrGroupAutocompleteValue = User | Group | null;
+export type UserOrGroupAutocompleteValue = ReducedUser | Group | null;
 
 export type UserOrGroupAutocompleteProps = {
   value: UserOrGroupAutocompleteValue;
@@ -21,13 +20,13 @@ export type UserOrGroupAutocompleteProps = {
   exclude: UserOrGroupAutocompleteValue[];
 };
 
-export const UserOrGroupAutocomplete: React.FC<
-  UserOrGroupAutocompleteProps
-> = ({ value, onChange, templateID, exclude }) => {
-  const [autoComplete, setAutoComplete] = useState<{
-    value: string;
-    open: boolean;
-  }>({
+export const UserOrGroupAutocomplete: FC<UserOrGroupAutocompleteProps> = ({
+  value,
+  onChange,
+  templateID,
+  exclude,
+}) => {
+  const [autoComplete, setAutoComplete] = useState({
     value: "",
     open: false,
   });
@@ -90,7 +89,7 @@ export const UserOrGroupAutocomplete: React.FC<
         const isOptionGroup = isGroup(option);
 
         return (
-          <Box component="li" {...props}>
+          <li {...props}>
             <AvatarData
               title={
                 isOptionGroup
@@ -100,7 +99,7 @@ export const UserOrGroupAutocomplete: React.FC<
               subtitle={isOptionGroup ? getGroupSubtitle(option) : option.email}
               src={option.avatar_url}
             />
-          </Box>
+          </li>
         );
       }}
       options={options}

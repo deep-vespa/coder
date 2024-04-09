@@ -1,20 +1,14 @@
-import { action } from "@storybook/addon-actions";
-import { UseTabResult } from "hooks/useTab";
+import type { Meta, StoryObj } from "@storybook/react";
 import {
   mockApiError,
   MockTemplate,
   MockTemplateVersion,
+  MockTemplateVersionWithMarkdownMessage,
 } from "testHelpers/entities";
 import {
   TemplateVersionPageView,
-  TemplateVersionPageViewProps,
+  type TemplateVersionPageViewProps,
 } from "./TemplateVersionPageView";
-import type { Meta, StoryObj } from "@storybook/react";
-
-const tab: UseTabResult = {
-  value: "0",
-  set: action("changeTab"),
-};
 
 const readmeContent = `---
 name:Template test
@@ -28,7 +22,6 @@ You can add instructions here
 \`\`\``;
 
 const defaultArgs: TemplateVersionPageViewProps = {
-  tab,
   templateName: MockTemplate.name,
   versionName: MockTemplateVersion.name,
   currentVersion: MockTemplateVersion,
@@ -38,7 +31,7 @@ const defaultArgs: TemplateVersionPageViewProps = {
     "some.tpl": `{{.Name}}`,
     "some.sh": `echo "Hello world"`,
   },
-  previousFiles: undefined,
+  baseFiles: undefined,
   error: undefined,
 };
 
@@ -52,6 +45,12 @@ export default meta;
 type Story = StoryObj<typeof TemplateVersionPageView>;
 
 export const Default: Story = {};
+
+export const LongVersionMessage: Story = {
+  args: {
+    currentVersion: MockTemplateVersionWithMarkdownMessage,
+  },
+};
 
 export const Error: Story = {
   args: {

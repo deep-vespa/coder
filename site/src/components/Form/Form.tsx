@@ -1,16 +1,18 @@
 import { type Interpolation, type Theme, useTheme } from "@emotion/react";
 import {
+  type ComponentProps,
   createContext,
   type FC,
+  forwardRef,
   type HTMLProps,
-  type PropsWithChildren,
+  type ReactNode,
   useContext,
 } from "react";
-import { AlphaBadge } from "components/DeploySettingsLayout/Badges";
+import { AlphaBadge, DeprecatedBadge } from "components/Badges/Badges";
 import { Stack } from "components/Stack/Stack";
 import {
   FormFooter as BaseFormFooter,
-  FormFooterProps,
+  type FormFooterProps,
   type FormFooterStyles,
 } from "../FormFooter/FormFooter";
 
@@ -34,10 +36,10 @@ export const Form: FC<FormProps> = ({ direction, ...formProps }) => {
         css={{
           display: "flex",
           flexDirection: "column",
-          gap: theme.spacing(direction === "horizontal" ? 10 : 5),
+          gap: direction === "horizontal" ? 80 : 40,
 
           [theme.breakpoints.down("md")]: {
-            gap: theme.spacing(8),
+            gap: 64,
           },
         }}
       />
@@ -67,91 +69,114 @@ export const VerticalForm: FC<HTMLProps<HTMLFormElement>> = ({
   );
 };
 
-export const FormSection: FC<
-  PropsWithChildren & {
-    title: string | JSX.Element;
-    description: string | JSX.Element;
-    classes?: {
-      root?: string;
-      sectionInfo?: string;
-      infoTitle?: string;
-    };
-    alpha?: boolean;
-  }
-> = ({ children, title, description, classes = {}, alpha = false }) => {
-  const { direction } = useContext(FormContext);
-  const theme = useTheme();
+interface FormSectionProps {
+  children?: ReactNode;
+  title: ReactNode;
+  description: ReactNode;
+  classes?: {
+    root?: string;
+    sectionInfo?: string;
+    infoTitle?: string;
+  };
+  alpha?: boolean;
+  deprecated?: boolean;
+}
 
-  return (
-    <div
-      css={{
-        display: "flex",
-        alignItems: "flex-start",
-        flexDirection: direction === "horizontal" ? "row" : "column",
-        gap: theme.spacing(direction === "horizontal" ? 15 : 3),
+export const FormSection = forwardRef<HTMLDivElement, FormSectionProps>(
+  (
+    {
+      children,
+      title,
+      description,
+      classes = {},
+      alpha = false,
+      deprecated = false,
+    },
+    ref,
+  ) => {
+    const { direction } = useContext(FormContext);
 
-        [theme.breakpoints.down("md")]: {
-          flexDirection: "column",
-          gap: theme.spacing(2),
-        },
-      }}
-      className={classes.root}
-    >
-      <div
-        css={{
-          width: "100%",
-          maxWidth: direction === "horizontal" ? 312 : undefined,
-          flexShrink: 0,
-          position: direction === "horizontal" ? "sticky" : undefined,
-          top: theme.spacing(3),
-
-          [theme.breakpoints.down("md")]: {
-            width: "100%",
-            position: "initial" as const,
-          },
-        }}
-        className={classes.sectionInfo}
+    return (
+      <section
+        ref={ref}
+        css={[
+          styles.formSection,
+          direction === "horizontal" && styles.formSectionHorizontal,
+        ]}
+        className={classes.root}
       >
-        <h2
+        <div
           css={[
-            styles.formSectionInfoTitle,
-            alpha && styles.formSectionInfoTitleAlpha,
+            styles.formSectionInfo,
+            direction === "horizontal" && styles.formSectionInfoHorizontal,
           ]}
-          className={classes.infoTitle}
+          className={classes.sectionInfo}
         >
-          {title}
-          {alpha && <AlphaBadge />}
-        </h2>
-        <div css={styles.formSectionInfoDescription}>{description}</div>
-      </div>
+          <h2 css={styles.formSectionInfoTitle} className={classes.infoTitle}>
+            {title}
+            {alpha && <AlphaBadge />}
+            {deprecated && <DeprecatedBadge />}
+          </h2>
+          <div css={styles.formSectionInfoDescription}>{description}</div>
+        </div>
 
-      {children}
-    </div>
-  );
-};
+        {children}
+      </section>
+    );
+  },
+);
 
-export const FormFields: FC<PropsWithChildren> = ({ children }) => {
+export const FormFields: FC<ComponentProps<typeof Stack>> = (props) => {
   return (
-    <Stack direction="column" spacing={2.5} css={styles.formSectionFields}>
-      {children}
-    </Stack>
+    <Stack
+      direction="column"
+      spacing={3}
+      {...props}
+      css={styles.formSectionFields}
+    />
   );
 };
 
 const styles = {
+  formSection: (theme) => ({
+    display: "flex",
+    alignItems: "flex-start",
+    flexDirection: "column",
+    gap: 24,
+
+    [theme.breakpoints.down("lg")]: {
+      flexDirection: "column",
+      gap: 16,
+    },
+  }),
+  formSectionHorizontal: {
+    flexDirection: "row",
+    gap: 120,
+  },
+  formSectionInfo: (theme) => ({
+    width: "100%",
+    flexShrink: 0,
+    top: 24,
+
+    [theme.breakpoints.down("md")]: {
+      width: "100%",
+      position: "initial" as const,
+    },
+  }),
+  formSectionInfoHorizontal: {
+    maxWidth: 312,
+    position: "sticky",
+  },
   formSectionInfoTitle: (theme) => ({
     fontSize: 20,
     color: theme.palette.text.primary,
     fontWeight: 400,
     margin: 0,
-    marginBottom: theme.spacing(1),
-  }),
-
-  formSectionInfoTitleAlpha: (theme) => ({
+    marginBottom: 8,
     display: "flex",
     flexDirection: "row",
     alignItems: "center",
-    gap: theme.spacing(1.5),
+    gap: 12,
   }),
 
   formSectionInfoDescription: (theme) => ({
@@ -166,13 +191,13 @@ const styles = {
   },
 } satisfies Record<string, Interpolation<Theme>>;
 
-export const FormFooter = (props: Exclude<FormFooterProps, "styles">) => (
+export const FormFooter: FC<Exclude<FormFooterProps, "styles">> = (props) => (
   <BaseFormFooter {...props} styles={footerStyles} />
 );
 
 const footerStyles = {
   button: (theme) => ({
-    minWidth: theme.spacing(23),
+    minWidth: 184,
 
     [theme.breakpoints.down("md")]: {
       width: "100%",
@@ -184,11 +209,11 @@ const footerStyles = {
     alignItems: "center",
     justifyContent: "flex-start",
     flexDirection: "row-reverse",
-    gap: theme.spacing(2),
+    gap: 16,
 
     [theme.breakpoints.down("md")]: {
       flexDirection: "column",
-      gap: theme.spacing(1),
+      gap: 8,
     },
   }),
 } satisfies FormFooterStyles;

@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/coder/coder/v2/coderd/database"
@@ -15,7 +16,9 @@ import (
 	"github.com/coder/coder/v2/coderd/database/dbmem"
 	"github.com/coder/coder/v2/coderd/database/dbtime"
 	"github.com/coder/coder/v2/coderd/httpmw"
+	"github.com/coder/coder/v2/coderd/rbac"
 	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/testutil"
 )
 
 func TestOrganizationParam(t *testing.T) {
@@ -100,7 +103,7 @@ func TestOrganizationParam(t *testing.T) {
 		rtr.ServeHTTP(rw, r)
 		res := rw.Result()
 		defer res.Body.Close()
-		require.Equal(t, http.StatusBadRequest, res.StatusCode)
+		require.Equal(t, http.StatusNotFound, res.StatusCode)
 	})
 
 	t.Run("NotInOrganization", func(t *testing.T) {
@@ -139,6 +142,7 @@ func TestOrganizationParam(t *testing.T) {
 	t.Run("Success", func(t *testing.T) {
 		t.Parallel()
 		var (
+			ctx     = testutil.Context(t, testutil.WaitShort)
 			db      = dbmem.New()
 			rw      = httptest.NewRecorder()
 			r, user = setupAuthentication(db)
@@ -148,9 +152,14 @@ func TestOrganizationParam(t *testing.T) {
 		_ = dbgen.OrganizationMember(t, db, database.OrganizationMember{
 			OrganizationID: organization.ID,
 			UserID:         user.ID,
+			Roles:          []string{rbac.RoleOrgMember(organization.ID)},
 		})
-		chi.RouteContext(r.Context()).URLParams.Add("organization", organization.ID.String())
-		chi.RouteContext(r.Context()).URLParams.Add("user", user.ID.String())
+		_, err := db.UpdateUserRoles(ctx, database.UpdateUserRolesParams{
+			ID:           user.ID,
+			GrantedRoles: []string{rbac.RoleTemplateAdmin()},
+		})
+		require.NoError(t, err)
+
 		rtr.Use(
 			httpmw.ExtractAPIKeyMW(httpmw.ExtractAPIKeyConfig{
 				DB:              db,
@@ -161,13 +170,62 @@ func TestOrganizationParam(t *testing.T) {
 			httpmw.ExtractOrganizationMemberParam(db),
 		)
 		rtr.Get("/", func(rw http.ResponseWriter, r *http.Request) {
-			_ = httpmw.OrganizationParam(r)
-			_ = httpmw.OrganizationMemberParam(r)
+			org := httpmw.OrganizationParam(r)
+			assert.NotZero(t, org)
+			assert.NotZero(t, org.CreatedAt)
+			// assert.NotZero(t, org.Description) // not supported
+			assert.NotZero(t, org.ID)
+			assert.NotEmpty(t, org.Name)
+			orgMem := httpmw.OrganizationMemberParam(r)
 			rw.WriteHeader(http.StatusOK)
+			assert.NotZero(t, orgMem)
+			assert.NotZero(t, orgMem.CreatedAt)
+			assert.NotZero(t, orgMem.UpdatedAt)
+			assert.Equal(t, org.ID, orgMem.OrganizationID)
+			assert.Equal(t, user.ID, orgMem.UserID)
+			assert.Equal(t, user.Username, orgMem.Username)
+			assert.Equal(t, user.AvatarURL, orgMem.AvatarURL)
+			assert.NotEmpty(t, orgMem.Roles)
+			assert.NotZero(t, orgMem.OrganizationMember)
+			assert.NotEmpty(t, orgMem.OrganizationMember.CreatedAt)
+			assert.NotEmpty(t, orgMem.OrganizationMember.UpdatedAt)
+			assert.NotEmpty(t, orgMem.OrganizationMember.UserID)
+			assert.NotEmpty(t, orgMem.OrganizationMember.Roles)
 		})
+
+		// Try by ID
+		chi.RouteContext(r.Context()).URLParams.Add("organization", organization.ID.String())
+		chi.RouteContext(r.Context()).URLParams.Add("user", user.ID.String())
 		rtr.ServeHTTP(rw, r)
 		res := rw.Result()
 		defer res.Body.Close()
-		require.Equal(t, http.StatusOK, res.StatusCode)
+		require.Equal(t, http.StatusOK, res.StatusCode, "by id")
+
+		// Try by name
+		chi.RouteContext(r.Context()).URLParams.Add("organization", organization.Name)
+		chi.RouteContext(r.Context()).URLParams.Add("user", user.ID.String())
+		rtr.ServeHTTP(rw, r)
+		res = rw.Result()
+		defer res.Body.Close()
+		require.Equal(t, http.StatusOK, res.StatusCode, "by name")
+
+		// Try by 'default'
+		chi.RouteContext(r.Context()).URLParams.Add("organization", codersdk.DefaultOrganization)
+		chi.RouteContext(r.Context()).URLParams.Add("user", user.ID.String())
+		rtr.ServeHTTP(rw, r)
+		res = rw.Result()
+		defer res.Body.Close()
+		require.Equal(t, http.StatusOK, res.StatusCode, "by default keyword")
+
+		// Try by legacy
+		// TODO: This can be removed when legacy nil uuids are no longer supported.
+		//		 This is a temporary measure to ensure as legacy provisioners use
+		//		 nil uuids as the org id and expect the default org.
+		chi.RouteContext(r.Context()).URLParams.Add("organization", uuid.Nil.String())
+		chi.RouteContext(r.Context()).URLParams.Add("user", user.ID.String())
+		rtr.ServeHTTP(rw, r)
+		res = rw.Result()
+		defer res.Body.Close()
+		require.Equal(t, http.StatusOK, res.StatusCode, "by nil uuid (legacy)")
 	})
 }

@@ -1,11 +1,11 @@
-import { type FC } from "react";
+import type { FC } from "react";
 import { Helmet } from "react-helmet-async";
 import { useQuery } from "react-query";
-import { pageTitle } from "utils/page";
 import { deploymentDAUs } from "api/queries/deployment";
 import { entitlements } from "api/queries/entitlements";
 import { availableExperiments } from "api/queries/experiments";
-import { useDeploySettings } from "components/DeploySettingsLayout/DeploySettingsLayout";
+import { pageTitle } from "utils/page";
+import { useDeploySettings } from "../DeploySettingsLayout";
 import { GeneralSettingsPageView } from "./GeneralSettingsPageView";
 
 const GeneralSettingsPage: FC = () => {

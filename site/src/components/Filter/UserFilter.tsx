@@ -1,9 +1,10 @@
-import { useMe } from "hooks";
-import { BaseOption } from "./options";
+import type { FC } from "react";
 import { getUsers } from "api/api";
-import { UseFilterMenuOptions, useFilterMenu } from "./menu";
+import { useAuthenticated } from "contexts/auth/RequireAuth";
+import { UserAvatar } from "../UserAvatar/UserAvatar";
 import { FilterSearchMenu, OptionItem } from "./filter";
-import { UserAvatar } from "components/UserAvatar/UserAvatar";
+import { type UseFilterMenuOptions, useFilterMenu } from "./menu";
+import type { BaseOption } from "./options";
 
 export type UserOption = BaseOption & {
   avatarUrl?: string;
@@ -17,7 +18,7 @@ export const useUserFilterMenu = ({
   UseFilterMenuOptions<UserOption>,
   "value" | "onChange" | "enabled"
 >) => {
-  const me = useMe();
+  const { user: me } = useAuthenticated();
 
   const addMeAsFirstOption = (options: UserOption[]) => {
     options = options.filter((option) => option.value !== me.username);
@@ -67,7 +68,11 @@ export const useUserFilterMenu = ({
 
 export type UserFilterMenu = ReturnType<typeof useUserFilterMenu>;
 
-export const UserMenu = (menu: UserFilterMenu) => {
+interface UserMenuProps {
+  menu: UserFilterMenu;
+}
+
+export const UserMenu: FC<UserMenuProps> = ({ menu }) => {
   return (
     <FilterSearchMenu
       id="users-menu"
@@ -85,13 +90,12 @@ export const UserMenu = (menu: UserFilterMenu) => {
   );
 };
 
-const UserOptionItem = ({
-  option,
-  isSelected,
-}: {
+interface UserOptionItemProps {
   option: UserOption;
   isSelected?: boolean;
-}) => {
+}
+
+const UserOptionItem: FC<UserOptionItemProps> = ({ option, isSelected }) => {
   return (
     <OptionItem
       option={option}
@@ -100,7 +104,7 @@ const UserOptionItem = ({
         <UserAvatar
           username={option.label}
           avatarURL={option.avatarUrl}
-          sx={{ width: 16, height: 16, fontSize: 8 }}
+          css={{ width: 16, height: 16, fontSize: 8 }}
         />
       }
     />

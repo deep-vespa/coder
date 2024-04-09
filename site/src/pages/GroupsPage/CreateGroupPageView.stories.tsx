@@ -1,5 +1,6 @@
-import { CreateGroupPageView } from "./CreateGroupPageView";
 import type { Meta, StoryObj } from "@storybook/react";
+import { mockApiError } from "testHelpers/entities";
+import { CreateGroupPageView } from "./CreateGroupPageView";
 
 const meta: Meta<typeof CreateGroupPageView> = {
   title: "pages/GroupsPage/CreateGroupPageView",
@@ -9,6 +10,14 @@ const meta: Meta<typeof CreateGroupPageView> = {
 export default meta;
 type Story = StoryObj<typeof CreateGroupPageView>;
 
-const Example: Story = {};
+export const Example: Story = {};
 
-export { Example as CreateGroupPageView };
+export const WithError: Story = {
+  args: {
+    error: mockApiError({
+      message: "A group named new-group already exists.",
+      validations: [{ field: "name", detail: "Group names must be unique" }],
+    }),
+    initialTouched: { name: true },
+  },
+};

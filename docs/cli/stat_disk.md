@@ -12,15 +12,6 @@ coder stat disk [flags]
 
 ## Options
 
-### -o, --output
-
-|         |                     |
-| ------- | ------------------- |
-| Type    | <code>string</code> |
-| Default | <code>text</code>   |
-
-Output format. Available formats: text, json.
-
 ### --path
 
 |         |                     |
@@ -32,9 +23,18 @@ Path for which to check disk usage.
 
 ### --prefix
 
-|         |                 |
-| ------- | --------------- | --- | --- | ---------- |
-| Type    | <code>enum[Ki   | Mi  | Gi  | Ti]</code> |
-| Default | <code>Gi</code> |
+|         |                                   |
+| ------- | --------------------------------- |
+| Type    | <code>enum[Ki\|Mi\|Gi\|Ti]</code> |
+| Default | <code>Gi</code>                   |
 
 SI Prefix for disk measurement.
+
+### -o, --output
+
+|         |                     |
+| ------- | ------------------- |
+| Type    | <code>string</code> |
+| Default | <code>text</code>   |
+
+Output format. Available formats: text, json.

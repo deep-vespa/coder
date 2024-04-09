@@ -1,14 +1,17 @@
-import { StatusOption, TemplateOption } from "./options";
 import { getTemplates } from "api/api";
-import { WorkspaceStatus } from "api/typesGenerated";
+import type { WorkspaceStatus } from "api/typesGenerated";
+import {
+  useFilterMenu,
+  type UseFilterMenuOptions,
+} from "components/Filter/menu";
 import { getDisplayWorkspaceStatus } from "utils/workspace";
-import { UseFilterMenuOptions, useFilterMenu } from "components/Filter/menu";
+import type { StatusOption, TemplateOption } from "./options";
 
 export const useTemplateFilterMenu = ({
   value,
   onChange,
-  orgId,
-}: { orgId: string } & Pick<
+  organizationId,
+}: { organizationId: string } & Pick<
   UseFilterMenuOptions<TemplateOption>,
   "value" | "onChange"
 >) => {
@@ -17,7 +20,8 @@ export const useTemplateFilterMenu = ({
     value,
     id: "template",
     getSelectedOption: async () => {
-      const templates = await getTemplates(orgId);
+      // Show all templates including deprecated
+      const templates = await getTemplates(organizationId);
       const template = templates.find((template) => template.name === value);
       if (template) {
         return {
@@ -32,7 +36,8 @@ export const useTemplateFilterMenu = ({
       return null;
     },
     getOptions: async (query) => {
-      const templates = await getTemplates(orgId);
+      // Show all templates including deprecated
+      const templates = await getTemplates(organizationId);
       const filteredTemplates = templates.filter(
         (template) =>
           template.name.toLowerCase().includes(query.toLowerCase()) ||

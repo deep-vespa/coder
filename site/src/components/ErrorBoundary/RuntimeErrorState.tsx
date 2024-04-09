@@ -1,16 +1,15 @@
+import { css, type Interpolation, type Theme } from "@emotion/react";
+import RefreshOutlined from "@mui/icons-material/RefreshOutlined";
 import Button from "@mui/material/Button";
 import Link from "@mui/material/Link";
-import RefreshOutlined from "@mui/icons-material/RefreshOutlined";
 import { type FC, useEffect, useState } from "react";
 import { Helmet } from "react-helmet-async";
-import { css } from "@emotion/css";
-import { useTheme, type Interpolation, type Theme } from "@emotion/react";
 import type { BuildInfoResponse } from "api/typesGenerated";
 import { CopyButton } from "components/CopyButton/CopyButton";
 import { CoderIcon } from "components/Icons/CoderIcon";
-import { FullScreenLoader } from "components/Loader/FullScreenLoader";
-import { Stack } from "components/Stack/Stack";
+import { Loader } from "components/Loader/Loader";
 import { Margins } from "components/Margins/Margins";
+import { Stack } from "components/Stack/Stack";
 
 const fetchDynamicallyImportedModuleError =
   "Failed to fetch dynamically imported module";
@@ -18,7 +17,6 @@ const fetchDynamicallyImportedModuleError =
 export type RuntimeErrorStateProps = { error: Error };
 
 export const RuntimeErrorState: FC<RuntimeErrorStateProps> = ({ error }) => {
-  const theme = useTheme();
   const [checkingError, setCheckingError] = useState(true);
   const [staticBuildInfo, setStaticBuildInfo] = useState<BuildInfoResponse>();
   const coderVersion = staticBuildInfo?.version;
@@ -52,7 +50,9 @@ export const RuntimeErrorState: FC<RuntimeErrorStateProps> = ({ error }) => {
       <Helmet>
         <title>Something went wrong...</title>
       </Helmet>
-      {!checkingError ? (
+      {checkingError ? (
+        <Loader fullscreen />
+      ) : (
         <Margins css={styles.root}>
           <div css={{ width: "100%" }}>
             <CoderIcon css={styles.logo} />
@@ -98,20 +98,7 @@ export const RuntimeErrorState: FC<RuntimeErrorStateProps> = ({ error }) => {
                 <div css={styles.stackHeader}>
                   Stacktrace
                   <CopyButton
-                    buttonClassName={css`
-                      background-color: transparent;
-                      border: 0;
-                      border-radius: 999px;
-                      min-height: ${theme.spacing(4)};
-                      min-width: ${theme.spacing(4)};
-                      height: ${theme.spacing(4)};
-                      width: ${theme.spacing(4)};
-
-                      & svg {
-                        width: 16px;
-                        height: 16px;
-                      }
-                    `}
+                    buttonStyles={styles.copyButton}
                     text={error.stack}
                     tooltipTitle="Copy stacktrace"
                   />
@@ -124,8 +111,6 @@ export const RuntimeErrorState: FC<RuntimeErrorStateProps> = ({ error }) => {
             )}
           </div>
         </Margins>
-      ) : (
-        <FullScreenLoader />
       )}
     </>
   );
@@ -147,38 +132,37 @@ const getStaticBuildInfo = () => {
 };
 
 const styles = {
-  root: (theme) => ({
-    paddingTop: theme.spacing(4),
-    paddingBottom: theme.spacing(4),
+  root: {
+    paddingTop: 32,
+    paddingBottom: 32,
     textAlign: "center",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
     minHeight: "100%",
-    maxWidth: theme.spacing(75),
-  }),
+    maxWidth: 600,
+  },
 
-  logo: (theme) => ({
-    fontSize: theme.spacing(8),
-  }),
+  logo: {
+    fontSize: 64,
+  },
 
-  title: (theme) => ({
-    fontSize: theme.spacing(4),
+  title: {
+    fontSize: 32,
     fontWeight: 400,
-  }),
+  },
 
   text: (theme) => ({
     fontSize: 16,
     color: theme.palette.text.secondary,
     lineHeight: "160%",
-    marginBottom: theme.spacing(4),
+    marginBottom: 32,
   }),
 
   stack: (theme) => ({
-    backgroundColor: theme.palette.background.paper,
     border: `1px solid ${theme.palette.divider}`,
     borderRadius: 4,
-    marginTop: theme.spacing(8),
+    marginTop: 64,
     display: "block",
     textAlign: "left",
   }),
@@ -188,8 +172,8 @@ const styles = {
     textTransform: "uppercase",
     fontWeight: 600,
     letterSpacing: 1,
-    padding: theme.spacing(1, 1, 1, 2),
-    backgroundColor: theme.palette.background.paperLight,
+    padding: "8px 8px 8px 16px",
+    backgroundColor: theme.palette.background.paper,
     borderBottom: `1px solid ${theme.palette.divider}`,
     color: theme.palette.text.secondary,
     display: "flex",
@@ -198,16 +182,31 @@ const styles = {
     alignItems: "center",
   }),
 
-  stackCode: (theme) => ({
-    padding: theme.spacing(2),
+  stackCode: {
+    padding: 16,
     margin: 0,
     wordWrap: "break-word",
     whiteSpace: "break-spaces",
-  }),
+  },
 
   version: (theme) => ({
-    marginTop: theme.spacing(4),
+    marginTop: 32,
     fontSize: 12,
     color: theme.palette.text.secondary,
   }),
+
+  copyButton: css`
+    background-color: transparent;
+    border: 0;
+    border-radius: 999px;
+    min-height: 32px;
+    min-width: 32px;
+    height: 32px;
+    width: 32px;
+
+    & svg {
+      width: 16px;
+      height: 16px;
+    }
+  `,
 } satisfies Record<string, Interpolation<Theme>>;

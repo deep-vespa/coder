@@ -3,6 +3,7 @@ package workspaceapps
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -13,9 +14,11 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/coder/coder/v2/coderd/database"
-	"github.com/coder/coder/v2/coderd/httpapi"
+	"github.com/coder/coder/v2/coderd/workspaceapps/appurl"
 	"github.com/coder/coder/v2/codersdk"
 )
+
+var errWorkspaceStopped = xerrors.New("stopped workspace")
 
 type AccessMethod string
 
@@ -63,7 +66,7 @@ func (r IssueTokenRequest) AppBaseURL() (*url.URL, error) {
 			return nil, xerrors.New("subdomain app hostname is required to generate subdomain app URL")
 		}
 
-		appHost := httpapi.ApplicationURL{
+		appHost := appurl.ApplicationURL{
 			Prefix:        r.AppRequest.Prefix,
 			AppSlugOrPort: r.AppRequest.AppSlugOrPort,
 			AgentName:     r.AppRequest.AgentNameOrID,
@@ -196,9 +199,6 @@ type databaseRequest struct {
 	// AppURL is the resolved URL to the workspace app. This is only set for non
 	// terminal requests.
 	AppURL *url.URL
-	// AppHealth is the health of the app. For terminal requests, this is always
-	// database.WorkspaceAppHealthHealthy.
-	AppHealth database.WorkspaceAppHealth
 	// AppSharingLevel is the sharing level of the app. This is forced to be set
 	// to AppSharingLevelOwner if the access method is terminal.
 	AppSharingLevel database.AppSharingLevel
@@ -260,10 +260,17 @@ func (r Request) getDatabase(ctx context.Context, db database.Store) (*databaseR
 	if err != nil {
 		return nil, xerrors.Errorf("get workspace agents: %w", err)
 	}
+	build, err := db.GetLatestWorkspaceBuildByWorkspaceID(ctx, workspace.ID)
+	if err != nil {
+		return nil, xerrors.Errorf("get latest workspace build: %w", err)
+	}
+	if build.Transition == database.WorkspaceTransitionStop {
+		return nil, errWorkspaceStopped
+	}
 	if len(agents) == 0 {
 		// TODO(@deansheather): return a 404 if there are no agents in the
 		// workspace, requires a different error type.
-		return nil, xerrors.New("no agents in workspace")
+		return nil, xerrors.Errorf("no agents in workspace: %w", sql.ErrNoRows)
 	}
 
 	// Get workspace apps.
@@ -283,7 +290,6 @@ func (r Request) getDatabase(ctx context.Context, db database.Store) (*databaseR
 		agentNameOrID         = r.AgentNameOrID
 		appURL                string
 		appSharingLevel       database.AppSharingLevel
-		appHealth             = database.WorkspaceAppHealthDisabled
 		portUint, portUintErr = strconv.ParseUint(r.AppSlugOrPort, 10, 16)
 	)
 	if portUintErr == nil {
@@ -308,6 +314,40 @@ func (r Request) getDatabase(ctx context.Context, db database.Store) (*databaseR
 		// This is only supported for subdomain-based applications.
 		appURL = fmt.Sprintf("http://127.0.0.1:%d", portUint)
 		appSharingLevel = database.AppSharingLevelOwner
+
+		// Port sharing authorization
+		agentName := agentNameOrID
+		id, err := uuid.Parse(agentNameOrID)
+		for _, a := range agents {
+			// if err is nil then it's an UUID
+			if err == nil && a.ID == id {
+				agentName = a.Name
+				break
+			}
+			// otherwise it's a name
+			if a.Name == agentNameOrID {
+				break
+			}
+		}
+
+		// First check if there is a port share for the port
+		ps, err := db.GetWorkspaceAgentPortShare(ctx, database.GetWorkspaceAgentPortShareParams{
+			WorkspaceID: workspace.ID,
+			AgentName:   agentName,
+			Port:        int32(portUint),
+		})
+		if err != nil {
+			if !errors.Is(err, sql.ErrNoRows) {
+				return nil, xerrors.Errorf("get workspace agent port share: %w", err)
+			}
+			// No port share found, so we keep default to owner.
+		} else {
+			if ps.Protocol == database.PortShareProtocolHttps {
+				// Apply HTTPS protocol if specified.
+				appURL = fmt.Sprintf("https://127.0.0.1:%d", portUint)
+			}
+			appSharingLevel = ps.ShareLevel
+		}
 	} else {
 		for _, app := range apps {
 			if app.Slug == r.AppSlugOrPort {
@@ -322,7 +362,6 @@ func (r Request) getDatabase(ctx context.Context, db database.Store) (*databaseR
 					appSharingLevel = database.AppSharingLevelOwner
 				}
 				appURL = app.Url.String
-				appHealth = app.Health
 				break
 			}
 		}
@@ -368,7 +407,6 @@ func (r Request) getDatabase(ctx context.Context, db database.Store) (*databaseR
 		Workspace:       workspace,
 		Agent:           agent,
 		AppURL:          appURLParsed,
-		AppHealth:       appHealth,
 		AppSharingLevel: appSharingLevel,
 	}, nil
 }
@@ -421,7 +459,6 @@ func (r Request) getDatabaseTerminal(ctx context.Context, db database.Store) (*d
 		Workspace:       workspace,
 		Agent:           agent,
 		AppURL:          nil,
-		AppHealth:       database.WorkspaceAppHealthHealthy,
 		AppSharingLevel: database.AppSharingLevelOwner,
 	}, nil
 }

@@ -1,31 +1,26 @@
 import CheckOutlined from "@mui/icons-material/CheckOutlined";
 import FileCopyOutlined from "@mui/icons-material/FileCopyOutlined";
-import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import FormControlLabel from "@mui/material/FormControlLabel";
 import Radio from "@mui/material/Radio";
 import RadioGroup from "@mui/material/RadioGroup";
+import { type FC, useEffect, useState } from "react";
+import { Helmet } from "react-helmet-async";
 import { useQuery } from "react-query";
 import { getTemplateVersionRichParameters } from "api/api";
-import { Template, TemplateVersionParameter } from "api/typesGenerated";
+import type { Template, TemplateVersionParameter } from "api/typesGenerated";
 import { FormSection, VerticalForm } from "components/Form/Form";
 import { Loader } from "components/Loader/Loader";
-import { useTemplateLayoutContext } from "pages/TemplatePage/TemplateLayout";
-import {
-  ImmutableTemplateParametersSection,
-  MutableTemplateParametersSection,
-  TemplateParametersSectionProps,
-} from "components/TemplateParameters/TemplateParameters";
+import { RichParameterInput } from "components/RichParameterInput/RichParameterInput";
 import { useClipboard } from "hooks/useClipboard";
-import { FC, useEffect, useState } from "react";
-import { Helmet } from "react-helmet-async";
+import { useTemplateLayoutContext } from "pages/TemplatePage/TemplateLayout";
 import { pageTitle } from "utils/page";
 import { getInitialRichParameterValues } from "utils/richParameters";
 import { paramsUsedToCreateWorkspace } from "utils/workspace";
 
 type ButtonValues = Record<string, string>;
 
-const TemplateEmbedPage = () => {
+const TemplateEmbedPage: FC = () => {
   const { template } = useTemplateLayoutContext();
   const { data: templateParameters } = useQuery({
     queryKey: ["template", template.id, "embed"],
@@ -47,35 +42,31 @@ const TemplateEmbedPage = () => {
   );
 };
 
-export const TemplateEmbedPageView: FC<{
+interface TemplateEmbedPageViewProps {
   template: Template;
   templateParameters?: TemplateVersionParameter[];
-}> = ({ template, templateParameters }) => {
-  const [buttonValues, setButtonValues] = useState<ButtonValues | undefined>(
-    undefined,
-  );
+}
+
+function getClipboardCopyContent(
+  templateName: string,
+  buttonValues: ButtonValues | undefined,
+): string {
   const deploymentUrl = `${window.location.protocol}//${window.location.host}`;
-  const createWorkspaceUrl = `${deploymentUrl}/templates/${template.name}/workspace`;
+  const createWorkspaceUrl = `${deploymentUrl}/templates/${templateName}/workspace`;
   const createWorkspaceParams = new URLSearchParams(buttonValues);
   const buttonUrl = `${createWorkspaceUrl}?${createWorkspaceParams.toString()}`;
-  const buttonMkdCode = `[![Open in Coder](${deploymentUrl}/open-in-coder.svg)](${buttonUrl})`;
-  const clipboard = useClipboard(buttonMkdCode);
-  const getInputProps: TemplateParametersSectionProps["getInputProps"] = (
-    parameter,
-  ) => {
-    if (!buttonValues) {
-      throw new Error("buttonValues is undefined");
-    }
-    return {
-      value: buttonValues[`param.${parameter.name}`] ?? "",
-      onChange: (value) => {
-        setButtonValues((buttonValues) => ({
-          ...buttonValues,
-          [`param.${parameter.name}`]: value,
-        }));
-      },
-    };
-  };
+
+  return `[![Open in Coder](${deploymentUrl}/open-in-coder.svg)](${buttonUrl})`;
+}
+
+export const TemplateEmbedPageView: FC<TemplateEmbedPageViewProps> = ({
+  template,
+  templateParameters,
+}) => {
+  const [buttonValues, setButtonValues] = useState<ButtonValues | undefined>();
+  const clipboard = useClipboard({
+    textToCopy: getClipboardCopyContent(template.name, buttonValues),
+  });
 
   // template parameters is async so we need to initialize the values after it
   // is loaded
@@ -101,8 +92,8 @@ export const TemplateEmbedPageView: FC<{
       {!buttonValues || !templateParameters ? (
         <Loader />
       ) : (
-        <Box display="flex" alignItems="flex-start" gap={6}>
-          <Box flex={1} maxWidth={400}>
+        <div css={{ display: "flex", alignItems: "flex-start", gap: 48 }}>
+          <div css={{ flex: 1, maxWidth: 400 }}>
             <VerticalForm>
               <FormSection
                 title="Creation mode"
@@ -131,61 +122,79 @@ export const TemplateEmbedPageView: FC<{
               </FormSection>
 
               {templateParameters.length > 0 && (
-                <>
-                  <MutableTemplateParametersSection
-                    templateParameters={templateParameters}
-                    getInputProps={getInputProps}
-                  />
-                  <ImmutableTemplateParametersSection
-                    templateParameters={templateParameters}
-                    getInputProps={getInputProps}
-                  />
-                </>
+                <div
+                  css={{ display: "flex", flexDirection: "column", gap: 36 }}
+                >
+                  {templateParameters.map((parameter) => {
+                    const parameterValue =
+                      buttonValues[`param.${parameter.name}`] ?? "";
+
+                    return (
+                      <RichParameterInput
+                        value={parameterValue}
+                        onChange={async (value) => {
+                          setButtonValues((buttonValues) => ({
+                            ...buttonValues,
+                            [`param.${parameter.name}`]: value,
+                          }));
+                        }}
+                        key={parameter.name}
+                        parameter={parameter}
+                      />
+                    );
+                  })}
+                </div>
               )}
             </VerticalForm>
-          </Box>
-          <Box
-            display="flex"
-            height={{
+          </div>
+
+          <div
+            css={(theme) => ({
               // 80px for padding, 36px is for the status bar. We want to use `vh`
               // so that it will be relative to the screen and not the parent layout.
               height: "calc(100vh - (80px + 36px))",
               top: 40,
               position: "sticky",
-            }}
-            p={8}
-            flex={1}
-            alignItems="center"
-            justifyContent="center"
-            borderRadius={1}
-            bgcolor="background.paper"
-            border={(theme) => `1px solid ${theme.palette.divider}`}
+              display: "flex",
+              padding: 64,
+              flex: 1,
+              alignItems: "center",
+              justifyContent: "center",
+              borderRadius: 8,
+              backgroundColor: theme.palette.background.paper,
+              border: `1px solid ${theme.palette.divider}`,
+            })}
           >
             <img src="/open-in-coder.svg" alt="Open in Coder button" />
-            <Box
-              p={2}
-              py={6}
-              display="flex"
-              justifyContent="center"
-              position="absolute"
-              bottom={0}
-              left={0}
-              width="100%"
+            <div
+              css={{
+                padding: "48px 16px",
+                position: "absolute",
+                bottom: 0,
+                left: 0,
+                display: "flex",
+                justifyContent: "center",
+                width: "100%",
+              }}
             >
               <Button
-                sx={{ borderRadius: 999 }}
+                css={{ borderRadius: 999 }}
                 startIcon={
-                  clipboard.isCopied ? <CheckOutlined /> : <FileCopyOutlined />
+                  clipboard.showCopiedSuccess ? (
+                    <CheckOutlined />
+                  ) : (
+                    <FileCopyOutlined />
+                  )
                 }
                 variant="contained"
-                onClick={clipboard.copy}
-                disabled={clipboard.isCopied}
+                onClick={clipboard.copyToClipboard}
+                disabled={clipboard.showCopiedSuccess}
               >
                 Copy button code
               </Button>
-            </Box>
-          </Box>
-        </Box>
+            </div>
+          </div>
+        </div>
       )}
     </>
   );

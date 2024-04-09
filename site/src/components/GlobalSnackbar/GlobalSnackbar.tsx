@@ -1,9 +1,8 @@
-import { type FC, useCallback, useState } from "react";
+import type { Interpolation, Theme } from "@emotion/react";
+import { type FC, useState } from "react";
 import { useCustomEvent } from "hooks/events";
-import type { CustomEventListener } from "utils/events";
-import { EnterpriseSnackbar } from "./EnterpriseSnackbar";
 import { ErrorIcon } from "../Icons/ErrorIcon";
-import { Typography } from "../Typography/Typography";
+import { EnterpriseSnackbar } from "./EnterpriseSnackbar";
 import {
   type AdditionalMessage,
   isNotificationList,
@@ -13,7 +12,6 @@ import {
   type NotificationMsg,
   SnackbarEventType,
 } from "./utils";
-import { type Interpolation, type Theme } from "@emotion/react";
 
 const variantFromMsgType = (type: MsgType) => {
   if (type === MsgType.Error) {
@@ -26,110 +24,90 @@ const variantFromMsgType = (type: MsgType) => {
 };
 
 export const GlobalSnackbar: FC = () => {
-  const [open, setOpen] = useState<boolean>(false);
-  const [notification, setNotification] = useState<NotificationMsg>();
+  const [notificationMsg, setNotificationMsg] = useState<NotificationMsg>();
+  useCustomEvent<NotificationMsg>(SnackbarEventType, (event) => {
+    setNotificationMsg(event.detail);
+  });
 
-  const handleNotification = useCallback<CustomEventListener<NotificationMsg>>(
-    (event) => {
-      setNotification(event.detail);
-      setOpen(true);
-    },
-    [],
-  );
-
-  useCustomEvent(SnackbarEventType, handleNotification);
-
-  const renderAdditionalMessage = (msg: AdditionalMessage, idx: number) => {
-    if (isNotificationText(msg)) {
-      return (
-        <Typography
-          key={idx}
-          gutterBottom
-          variant="body2"
-          css={styles.messageSubtitle}
-        >
-          {msg}
-        </Typography>
-      );
-    } else if (isNotificationTextPrefixed(msg)) {
-      return (
-        <Typography
-          key={idx}
-          gutterBottom
-          variant="body2"
-          css={styles.messageSubtitle}
-        >
-          <strong>{msg.prefix}:</strong> {msg.text}
-        </Typography>
-      );
-    } else if (isNotificationList(msg)) {
-      return (
-        <ul css={styles.list} key={idx}>
-          {msg.map((item, idx) => (
-            <li key={idx}>
-              <Typography variant="body2" css={styles.messageSubtitle}>
-                {item}
-              </Typography>
-            </li>
-          ))}
-        </ul>
-      );
-    }
-    return null;
-  };
-
-  if (!notification) {
+  const hasNotification = notificationMsg !== undefined;
+  if (!hasNotification) {
     return null;
   }
 
   return (
     <EnterpriseSnackbar
-      key={notification.msg}
-      open={open}
-      variant={variantFromMsgType(notification.msgType)}
+      key={notificationMsg.msg}
+      open={hasNotification}
+      variant={variantFromMsgType(notificationMsg.msgType)}
+      onClose={() => setNotificationMsg(undefined)}
+      autoHideDuration={
+        notificationMsg.msgType === MsgType.Error ? 22000 : 6000
+      }
+      anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
       message={
-        <div css={styles.messageWrapper}>
-          {notification.msgType === MsgType.Error && (
+        <div css={{ display: "flex" }}>
+          {notificationMsg.msgType === MsgType.Error && (
             <ErrorIcon css={styles.errorIcon} />
           )}
-          <div css={styles.message}>
-            <Typography variant="body1" css={styles.messageTitle}>
-              {notification.msg}
-            </Typography>
-            {notification.additionalMsgs &&
-              notification.additionalMsgs.map(renderAdditionalMessage)}
+
+          <div css={{ maxWidth: 670 }}>
+            <span css={styles.messageTitle}>{notificationMsg.msg}</span>
+
+            {notificationMsg.additionalMsgs &&
+              notificationMsg.additionalMsgs.map((msg, index) => (
+                <AdditionalMessageDisplay key={index} message={msg} />
+              ))}
           </div>
         </div>
       }
-      onClose={() => setOpen(false)}
-      autoHideDuration={notification.msgType === MsgType.Error ? 22000 : 6000}
-      anchorOrigin={{
-        vertical: "bottom",
-        horizontal: "right",
-      }}
     />
   );
 };
 
+interface AdditionalMessageDisplayProps {
+  message: AdditionalMessage;
+}
+
+const AdditionalMessageDisplay: FC<AdditionalMessageDisplayProps> = ({
+  message,
+}) => {
+  if (isNotificationText(message)) {
+    return <span css={styles.messageSubtitle}>{message}</span>;
+  }
+
+  if (isNotificationTextPrefixed(message)) {
+    return (
+      <span css={styles.messageSubtitle}>
+        <strong>{message.prefix}:</strong> {message.text}
+      </span>
+    );
+  }
+
+  if (isNotificationList(message)) {
+    return (
+      <ul css={{ paddingLeft: 0 }}>
+        {message.map((item, idx) => (
+          <li key={idx}>
+            <span css={styles.messageSubtitle}>{item}</span>
+          </li>
+        ))}
+      </ul>
+    );
+  }
+
+  return null;
+};
+
 const styles = {
-  list: {
-    paddingLeft: 0,
-  },
-  messageWrapper: {
-    display: "flex",
-  },
-  message: {
-    maxWidth: 670,
-  },
   messageTitle: {
     fontSize: 14,
     fontWeight: 600,
   },
-  messageSubtitle: (theme) => ({
-    marginTop: theme.spacing(1.5),
-  }),
+  messageSubtitle: {
+    marginTop: 12,
+  },
   errorIcon: (theme) => ({
     color: theme.palette.error.contrastText,
-    marginRight: theme.spacing(2),
+    marginRight: 16,
   }),
 } satisfies Record<string, Interpolation<Theme>>;

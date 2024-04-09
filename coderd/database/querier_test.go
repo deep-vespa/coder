@@ -363,6 +363,7 @@ func TestQueuePosition(t *testing.T) {
 	}
 
 	job, err := db.AcquireProvisionerJob(ctx, database.AcquireProvisionerJobParams{
+		OrganizationID: org.ID,
 		StartedAt: sql.NullTime{
 			Time:  dbtime.Now(),
 			Valid: true,
@@ -492,6 +493,25 @@ func TestUserChangeLoginType(t *testing.T) {
 	bob, err = db.GetUserByID(ctx, bob.ID)
 	require.NoError(t, err)
 	require.Equal(t, bobExpPass, bob.HashedPassword, "hashed password should not change")
+}
+
+func TestDefaultOrg(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.SkipNow()
+	}
+
+	sqlDB := testSQLDB(t)
+	err := migrations.Up(sqlDB)
+	require.NoError(t, err)
+	db := database.New(sqlDB)
+	ctx := context.Background()
+
+	// Should start with the default org
+	all, err := db.GetOrganizations(ctx)
+	require.NoError(t, err)
+	require.Len(t, all, 1)
+	require.True(t, all[0].IsDefault, "first org should always be default")
 }
 
 type tvArgs struct {

@@ -1,10 +1,68 @@
 import Button from "@mui/material/Button";
 import Link from "@mui/material/Link";
-import { Alert, AlertProps } from "components/Alert/Alert";
-import { useState } from "react";
+import { type FC, useState, useEffect, useRef } from "react";
+import type { WorkspaceAgent } from "api/typesGenerated";
+import { Alert, type AlertProps } from "components/Alert/Alert";
 import { docs } from "utils/docs";
+import type { ConnectionStatus } from "./types";
 
-export const ErrorScriptAlert = () => {
+type TerminalAlertsProps = {
+  agent: WorkspaceAgent | undefined;
+  status: ConnectionStatus;
+  onAlertChange: () => void;
+};
+
+export const TerminalAlerts = ({
+  agent,
+  status,
+  onAlertChange,
+}: TerminalAlertsProps) => {
+  const lifecycleState = agent?.lifecycle_state;
+  const prevLifecycleState = useRef(lifecycleState);
+  useEffect(() => {
+    prevLifecycleState.current = lifecycleState;
+  }, [lifecycleState]);
+
+  // We want to observe the children of the wrapper to detect when the alert
+  // changes. So the terminal page can resize itself.
+  //
+  // Would it be possible to just always call fit() when this component
+  // re-renders instead of using an observer?
+  //
+  // This is a good question and the why this does not work is that the .fit()
+  // needs to run after the render so in this case, I just think the mutation
+  // observer is more reliable. I could use some hacky setTimeout inside of
+  // useEffect to do that, I guess, but I don't think it would be any better.
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!wrapperRef.current) {
+      return;
+    }
+    const observer = new MutationObserver(onAlertChange);
+    observer.observe(wrapperRef.current, { childList: true });
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [onAlertChange]);
+
+  return (
+    <div ref={wrapperRef}>
+      {status === "disconnected" ? (
+        <DisconnectedAlert />
+      ) : lifecycleState === "start_error" ? (
+        <ErrorScriptAlert />
+      ) : lifecycleState === "starting" ? (
+        <LoadingScriptsAlert />
+      ) : lifecycleState === "ready" &&
+        prevLifecycleState.current === "starting" ? (
+        <LoadedScriptsAlert />
+      ) : null}
+    </div>
+  );
+};
+
+export const ErrorScriptAlert: FC = () => {
   return (
     <TerminalAlert
       severity="warning"
@@ -42,7 +100,7 @@ export const ErrorScriptAlert = () => {
   );
 };
 
-export const LoadingScriptsAlert = () => {
+export const LoadingScriptsAlert: FC = () => {
   return (
     <TerminalAlert
       dismissible
@@ -64,7 +122,7 @@ export const LoadingScriptsAlert = () => {
   );
 };
 
-export const LoadedScriptsAlert = () => {
+export const LoadedScriptsAlert: FC = () => {
   return (
     <TerminalAlert
       severity="success"
@@ -87,25 +145,24 @@ export const LoadedScriptsAlert = () => {
   );
 };
 
-const TerminalAlert = (props: AlertProps) => {
+const TerminalAlert: FC<AlertProps> = (props) => {
   return (
     <Alert
       {...props}
-      sx={{
+      css={(theme) => ({
         borderRadius: 0,
         borderWidth: 0,
         borderBottomWidth: 1,
-        borderBottomColor: (theme) => theme.palette.divider,
-        backgroundColor: (theme) => theme.palette.background.paperLight,
-        borderLeft: (theme) =>
-          `3px solid ${theme.palette[props.severity!].light}`,
+        borderBottomColor: theme.palette.divider,
+        backgroundColor: theme.palette.background.paper,
+        borderLeft: `3px solid ${theme.palette[props.severity!].light}`,
         marginBottom: 1,
-      }}
+      })}
     />
   );
 };
 
-export const DisconnectedAlert = (props: AlertProps) => {
+export const DisconnectedAlert: FC<AlertProps> = (props) => {
   return (
     <TerminalAlert
       {...props}
@@ -117,7 +174,7 @@ export const DisconnectedAlert = (props: AlertProps) => {
   );
 };
 
-const RefreshSessionButton = () => {
+const RefreshSessionButton: FC = () => {
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   return (

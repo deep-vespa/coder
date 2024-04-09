@@ -1,10 +1,11 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { renderWithAuth } from "testHelpers/renderHelpers";
-import { SchedulePage } from "./SchedulePage";
-import { server } from "testHelpers/server";
+import { HttpResponse, http } from "msw";
+import type { UpdateUserQuietHoursScheduleRequest } from "api/typesGenerated";
 import { MockUser } from "testHelpers/entities";
-import { rest } from "msw";
+import { renderWithAuth } from "testHelpers/renderHelpers";
+import { server } from "testHelpers/server";
+import { SchedulePage } from "./SchedulePage";
 
 const fillForm = async ({
   hour,
@@ -37,6 +38,7 @@ const submitForm = async () => {
 const defaultQuietHoursResponse = {
   raw_schedule: "CRON_TZ=America/Chicago 0 0 * * *",
   user_set: false,
+  user_can_set: true,
   time: "00:00",
   timezone: "America/Chicago",
   next: "", // not consumed by the frontend
@@ -52,10 +54,9 @@ const cronTests = [
 
 describe("SchedulePage", () => {
   beforeEach(() => {
-    // appear logged out
     server.use(
-      rest.get(`/api/v2/users/${MockUser.id}/quiet-hours`, (req, res, ctx) => {
-        return res(ctx.status(200), ctx.json(defaultQuietHoursResponse));
+      http.get(`/api/v2/users/${MockUser.id}/quiet-hours`, () => {
+        return HttpResponse.json(defaultQuietHoursResponse);
       }),
     );
   });
@@ -65,23 +66,20 @@ describe("SchedulePage", () => {
       "case %# has the correct expected time",
       async (test) => {
         server.use(
-          rest.put(
+          http.put(
             `/api/v2/users/${MockUser.id}/quiet-hours`,
-            async (req, res, ctx) => {
-              const data = await req.json();
-              return res(
-                ctx.status(200),
-                ctx.json({
-                  response: {},
-                  raw_schedule: data.schedule,
-                  user_set: true,
-                  time: `${test.hour.toString().padStart(2, "0")}:${test.minute
-                    .toString()
-                    .padStart(2, "0")}`,
-                  timezone: test.timezone,
-                  next: "", // This value isn't used in the UI, the UI generates it.
-                }),
-              );
+            async ({ request }) => {
+              const data =
+                (await request.json()) as UpdateUserQuietHoursScheduleRequest;
+              return HttpResponse.json({
+                raw_schedule: data.schedule,
+                user_set: true,
+                time: `${test.hour.toString().padStart(2, "0")}:${test.minute
+                  .toString()
+                  .padStart(2, "0")}`,
+                timezone: test.timezone,
+                next: "", // This value isn't used in the UI, the UI generates it.
+              });
             },
           ),
         );
@@ -100,17 +98,14 @@ describe("SchedulePage", () => {
   describe("when it is an unknown error", () => {
     it("shows a generic error message", async () => {
       server.use(
-        rest.put(
-          `/api/v2/users/${MockUser.id}/quiet-hours`,
-          (req, res, ctx) => {
-            return res(
-              ctx.status(500),
-              ctx.json({
-                message: "oh no!",
-              }),
-            );
-          },
-        ),
+        http.put(`/api/v2/users/${MockUser.id}/quiet-hours`, () => {
+          return HttpResponse.json(
+            {
+              message: "oh no!",
+            },
+            { status: 500 },
+          );
+        }),
       );
 
       renderWithAuth(<SchedulePage />);
@@ -119,6 +114,35 @@ describe("SchedulePage", () => {
 
       const errorMessage = await screen.findByText("oh no!");
       expect(errorMessage).toBeDefined();
+    });
+  });
+
+  describe("when user custom schedule is disabled", () => {
+    it("shows a warning and disables the form", async () => {
+      server.use(
+        http.get(`/api/v2/users/${MockUser.id}/quiet-hours`, () => {
+          return HttpResponse.json({
+            raw_schedule: "CRON_TZ=America/Chicago 0 0 * * *",
+            user_can_set: false,
+            user_set: false,
+            time: "00:00",
+            timezone: "America/Chicago",
+            next: "", // not consumed by the frontend
+          });
+        }),
+      );
+
+      renderWithAuth(<SchedulePage />);
+      await screen.findByText(
+        "Your administrator has disabled the ability to set a custom quiet hours schedule.",
+      );
+
+      const timeInput = screen.getByLabelText("Start time");
+      expect(timeInput).toBeDisabled();
+      const timezoneDropdown = screen.getByLabelText("Timezone");
+      expect(timezoneDropdown).toHaveClass("Mui-disabled");
+      const updateButton = screen.getByText("Update schedule");
+      expect(updateButton).toBeDisabled();
     });
   });
 });

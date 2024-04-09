@@ -22,10 +22,10 @@ Specifies whether to wait for a direct connection before testing speed.
 
 ### --direction
 
-|         |                   |
-| ------- | ----------------- | ------------ |
-| Type    | <code>enum[up     | down]</code> |
-| Default | <code>down</code> |
+|         |                             |
+| ------- | --------------------------- |
+| Type    | <code>enum[up\|down]</code> |
+| Default | <code>down</code>           |
 
 Specifies whether to run in reverse mode where the client receives and the server sends.
 
@@ -37,3 +37,11 @@ Specifies whether to run in reverse mode where the client receives and the serve
 | Default | <code>5s</code>       |
 
 Specifies the duration to monitor traffic.
+
+### --pcap-file
+
+|      |                     |
+| ---- | ------------------- |
+| Type | <code>string</code> |
+
+Specifies a file to write a network capture to.

@@ -1,11 +1,20 @@
-import Button from "@mui/material/Button";
-import IconButton from "@mui/material/IconButton";
-import Link from "@mui/material/Link";
-import Tooltip from "@mui/material/Tooltip";
+import { type Interpolation, type Theme, useTheme } from "@emotion/react";
 import CreateIcon from "@mui/icons-material/AddOutlined";
-import BuildIcon from "@mui/icons-material/BuildOutlined";
-import PreviewIcon from "@mui/icons-material/VisibilityOutlined";
+import ArrowBackOutlined from "@mui/icons-material/ArrowBackOutlined";
+import CloseOutlined from "@mui/icons-material/CloseOutlined";
+import PlayArrowOutlined from "@mui/icons-material/PlayArrowOutlined";
+import WarningOutlined from "@mui/icons-material/WarningOutlined";
+import AlertTitle from "@mui/material/AlertTitle";
+import Button from "@mui/material/Button";
+import ButtonGroup from "@mui/material/ButtonGroup";
+import IconButton from "@mui/material/IconButton";
+import Tooltip from "@mui/material/Tooltip";
+import { type FC, useCallback, useEffect, useRef, useState } from "react";
 import {
+  Link as RouterLink,
+  unstable_usePrompt as usePrompt,
+} from "react-router-dom";
+import type {
   ProvisionerJobLog,
   Template,
   TemplateVersion,
@@ -13,23 +22,31 @@ import {
   VariableValue,
   WorkspaceResource,
 } from "api/typesGenerated";
-import { Link as RouterLink } from "react-router-dom";
 import { Alert, AlertDetail } from "components/Alert/Alert";
-import { Avatar } from "components/Avatar/Avatar";
-import { AvatarData } from "components/AvatarData/AvatarData";
-import { TemplateResourcesTable } from "components/TemplateResourcesTable/TemplateResourcesTable";
-import { WorkspaceBuildLogs } from "components/WorkspaceBuildLogs/WorkspaceBuildLogs";
-import { PublishVersionData } from "pages/TemplateVersionEditorPage/types";
-import { type FC, useCallback, useEffect, useRef, useState } from "react";
+import { Sidebar } from "components/FullPageLayout/Sidebar";
+import {
+  Topbar,
+  TopbarAvatar,
+  TopbarButton,
+  TopbarData,
+  TopbarDivider,
+  TopbarIconButton,
+} from "components/FullPageLayout/Topbar";
+import { Loader } from "components/Loader/Loader";
+import { isBinaryData } from "modules/templates/TemplateFiles/isBinaryData";
+import { TemplateFileTree } from "modules/templates/TemplateFiles/TemplateFileTree";
+import { TemplateResourcesTable } from "modules/templates/TemplateResourcesTable/TemplateResourcesTable";
+import { WorkspaceBuildLogs } from "modules/workspaces/WorkspaceBuildLogs/WorkspaceBuildLogs";
+import type { PublishVersionData } from "pages/TemplateVersionEditorPage/types";
+import { MONOSPACE_FONT_FAMILY } from "theme/constants";
 import {
   createFile,
   existsFile,
-  FileTree,
-  getFileContent,
+  type FileTree,
+  getFileText,
   isFolder,
   moveFile,
   removeFile,
-  traverse,
   updateFile,
 } from "utils/filetree";
 import {
@@ -37,32 +54,27 @@ import {
   DeleteFileDialog,
   RenameFileDialog,
 } from "./FileDialog";
-import { FileTreeView } from "./FileTreeView";
 import { MissingTemplateVariablesDialog } from "./MissingTemplateVariablesDialog";
 import { MonacoEditor } from "./MonacoEditor";
+import { ProvisionerTagsPopover } from "./ProvisionerTagsPopover";
 import { PublishTemplateVersionDialog } from "./PublishTemplateVersionDialog";
-import {
-  getStatus,
-  TemplateVersionStatusBadge,
-} from "./TemplateVersionStatusBadge";
-import AlertTitle from "@mui/material/AlertTitle";
-import { DashboardFullPage } from "components/Dashboard/DashboardLayout";
-import { type Interpolation, type Theme, useTheme } from "@emotion/react";
+import { TemplateVersionStatusBadge } from "./TemplateVersionStatusBadge";
+
+type Tab = "logs" | "resources" | undefined; // Undefined is to hide the tab
 
 export interface TemplateVersionEditorProps {
   template: Template;
   templateVersion: TemplateVersion;
-  isBuildingNewVersion: boolean;
   defaultFileTree: FileTree;
   buildLogs?: ProvisionerJobLog[];
   resources?: WorkspaceResource[];
-  disablePreview: boolean;
-  disableUpdate: boolean;
-  onPreview: (files: FileTree) => void;
+  isBuilding: boolean;
+  canPublish: boolean;
+  onPreview: (files: FileTree) => Promise<void>;
   onPublish: () => void;
   onConfirmPublish: (data: PublishVersionData) => void;
   onCancelPublish: () => void;
-  publishingError: unknown;
+  publishingError?: unknown;
   publishedVersion?: TemplateVersion;
   onCreateWorkspace: () => void;
   isAskingPublishParameters: boolean;
@@ -71,28 +83,18 @@ export interface TemplateVersionEditorProps {
   missingVariables?: TemplateVersionVariable[];
   onSubmitMissingVariableValues: (values: VariableValue[]) => void;
   onCancelSubmitMissingVariableValues: () => void;
+  defaultTab?: Tab;
+  provisionerTags: Record<string, string>;
+  onUpdateProvisionerTags: (tags: Record<string, string>) => void;
+  activePath: string | undefined;
+  onActivePathChange: (path: string | undefined) => void;
 }
 
-const topbarHeight = 80;
-
-const findInitialFile = (fileTree: FileTree): string | undefined => {
-  let initialFile: string | undefined;
-
-  traverse(fileTree, (content, filename, path) => {
-    if (filename.endsWith(".tf")) {
-      initialFile = path;
-    }
-  });
-
-  return initialFile;
-};
-
 export const TemplateVersionEditor: FC<TemplateVersionEditorProps> = ({
-  disablePreview,
-  disableUpdate,
+  isBuilding,
+  canPublish,
   template,
   templateVersion,
-  isBuildingNewVersion,
   defaultFileTree,
   onPreview,
   onPublish,
@@ -109,29 +111,28 @@ export const TemplateVersionEditor: FC<TemplateVersionEditorProps> = ({
   missingVariables,
   onSubmitMissingVariableValues,
   onCancelSubmitMissingVariableValues,
+  defaultTab,
+  provisionerTags,
+  onUpdateProvisionerTags,
+  activePath,
+  onActivePathChange,
 }) => {
   const theme = useTheme();
-  // If resources are provided, show them by default!
-  // This is for Storybook!
-  const [selectedTab, setSelectedTab] = useState(() => (resources ? 1 : 0));
+  const [selectedTab, setSelectedTab] = useState<Tab>(defaultTab);
   const [fileTree, setFileTree] = useState(defaultFileTree);
   const [createFileOpen, setCreateFileOpen] = useState(false);
   const [deleteFileOpen, setDeleteFileOpen] = useState<string>();
   const [renameFileOpen, setRenameFileOpen] = useState<string>();
   const [dirty, setDirty] = useState(false);
-  const [activePath, setActivePath] = useState<string | undefined>(() =>
-    findInitialFile(fileTree),
-  );
 
-  const triggerPreview = useCallback(() => {
-    onPreview(fileTree);
-    // Switch to the build log!
-    setSelectedTab(0);
+  const triggerPreview = useCallback(async () => {
+    await onPreview(fileTree);
+    setSelectedTab("logs");
   }, [fileTree, onPreview]);
 
   // Stop ctrl+s from saving files and make ctrl+enter trigger a preview.
   useEffect(() => {
-    const keyListener = (event: KeyboardEvent) => {
+    const keyListener = async (event: KeyboardEvent) => {
       if (!(navigator.platform.match("Mac") ? event.metaKey : event.ctrlKey)) {
         return;
       }
@@ -142,7 +143,7 @@ export const TemplateVersionEditor: FC<TemplateVersionEditorProps> = ({
           break;
         case "Enter":
           event.preventDefault();
-          triggerPreview();
+          await triggerPreview();
           break;
       }
     };
@@ -159,94 +160,202 @@ export const TemplateVersionEditor: FC<TemplateVersionEditorProps> = ({
       previousVersion.current = templateVersion;
       return;
     }
+
     if (
       ["running", "pending"].includes(previousVersion.current.job.status) &&
       templateVersion.job.status === "succeeded"
     ) {
-      setSelectedTab(1);
       setDirty(false);
     }
     previousVersion.current = templateVersion;
   }, [templateVersion]);
 
-  const hasIcon = template.icon && template.icon !== "";
-  const showBuildLogs = Boolean(buildLogs);
-  const editorValue = getFileContent(activePath ?? "", fileTree) as string;
+  const editorValue = activePath ? getFileText(activePath, fileTree) : "";
+  const isEditorValueBinary =
+    typeof editorValue === "string" ? isBinaryData(editorValue) : false;
 
+  // Auto scroll
+  const logsContentRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    window.dispatchEvent(new Event("resize"));
-  }, [showBuildLogs]);
+    if (logsContentRef.current) {
+      logsContentRef.current.scrollTop = logsContentRef.current.scrollHeight;
+    }
+  }, [buildLogs]);
+
+  useLeaveSiteWarning(dirty);
+
+  const canBuild = !isBuilding;
 
   return (
     <>
-      <DashboardFullPage
-        css={{
-          background: theme.palette.background.default,
-        }}
-      >
-        <div css={styles.topbar} data-testid="topbar">
-          <div css={styles.topbarSides}>
-            <Link
-              component={RouterLink}
-              underline="none"
-              to={`/templates/${template.name}`}
-            >
-              <AvatarData
-                title={template.display_name || template.name}
-                subtitle={template.description}
-                avatar={
-                  hasIcon && (
-                    <Avatar src={template.icon} variant="square" fitImage />
-                  )
-                }
-              />
-            </Link>
+      <div css={{ height: "100%", display: "flex", flexDirection: "column" }}>
+        <Topbar
+          css={{
+            display: "grid",
+            gridTemplateColumns: "1fr 2fr 1fr",
+          }}
+          data-testid="topbar"
+        >
+          <div>
+            <Tooltip title="Back to the template">
+              <TopbarIconButton
+                component={RouterLink}
+                to={`/templates/${template.name}`}
+              >
+                <ArrowBackOutlined />
+              </TopbarIconButton>
+            </Tooltip>
           </div>
 
-          {publishedVersion && (
-            <Alert
-              severity="success"
-              dismissible
-              actions={
-                <Button variant="text" size="small" onClick={onCreateWorkspace}>
-                  Create a workspace
-                </Button>
-              }
-            >
-              Successfully published {publishedVersion.name}!
-            </Alert>
-          )}
+          <TopbarData>
+            <TopbarAvatar src={template.icon} />
+            <RouterLink
+              to={`/templates/${template.name}`}
+              css={{
+                color: theme.palette.text.primary,
+                textDecoration: "none",
 
-          <div css={styles.topbarSides}>
-            {isBuildingNewVersion && (
-              <TemplateVersionStatusBadge version={templateVersion} />
-            )}
-
-            <Button
-              title="Build template (Ctrl + Enter)"
-              disabled={disablePreview}
-              onClick={() => {
-                triggerPreview();
+                "&:hover": {
+                  textDecoration: "underline",
+                },
               }}
             >
-              Build template
-            </Button>
+              {template.display_name || template.name}
+            </RouterLink>
+            <TopbarDivider />
+            <span css={{ color: theme.palette.text.secondary }}>
+              {templateVersion.name}
+            </span>
+          </TopbarData>
 
-            <Button
+          <div
+            css={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "flex-end",
+              gap: 8,
+              paddingRight: 16,
+            }}
+          >
+            <TemplateVersionStatusBadge version={templateVersion} />
+
+            <ButtonGroup
+              variant="outlined"
+              css={{
+                // Workaround to make the border transitions smoothly on button groups
+                "& > button:hover + button": {
+                  borderLeft: "1px solid #FFF",
+                },
+              }}
+              disabled={!canBuild}
+            >
+              <TopbarButton
+                startIcon={
+                  <PlayArrowOutlined
+                    css={{ color: theme.palette.success.light }}
+                  />
+                }
+                title="Build template (Ctrl + Enter)"
+                disabled={!canBuild}
+                onClick={async () => {
+                  await triggerPreview();
+                }}
+              >
+                Build
+              </TopbarButton>
+              <ProvisionerTagsPopover
+                tags={provisionerTags}
+                onSubmit={({ key, value }) => {
+                  onUpdateProvisionerTags({
+                    ...provisionerTags,
+                    [key]: value,
+                  });
+                }}
+                onDelete={(key) => {
+                  const newTags = { ...provisionerTags };
+                  delete newTags[key];
+                  onUpdateProvisionerTags(newTags);
+                }}
+              />
+            </ButtonGroup>
+
+            <TopbarButton
               variant="contained"
-              disabled={dirty || disableUpdate}
+              disabled={dirty || !canPublish}
               onClick={onPublish}
             >
-              Publish version
-            </Button>
+              Publish
+            </TopbarButton>
           </div>
-        </div>
+        </Topbar>
 
-        <div css={styles.sidebarAndEditor}>
-          <div css={styles.sidebar}>
-            <div css={styles.sidebarTitle}>
-              Template files
-              <div css={styles.sidebarActions}>
+        <div
+          css={{
+            display: "flex",
+            flex: 1,
+            flexBasis: 0,
+            overflow: "hidden",
+            position: "relative",
+          }}
+        >
+          {publishedVersion && (
+            <div
+              // We need this to reset the dismissable state of the component
+              // when the published version changes
+              key={publishedVersion.id}
+              css={{
+                position: "absolute",
+                width: "100%",
+                display: "flex",
+                justifyContent: "center",
+                padding: 12,
+                zIndex: 10,
+              }}
+            >
+              <Alert
+                severity="success"
+                dismissible
+                actions={
+                  <Button
+                    variant="text"
+                    size="small"
+                    onClick={onCreateWorkspace}
+                  >
+                    Create a workspace
+                  </Button>
+                }
+              >
+                Successfully published {publishedVersion.name}!
+              </Alert>
+            </div>
+          )}
+
+          <Sidebar>
+            <div
+              css={{
+                height: 42,
+                padding: "0 8px 0 16px",
+                display: "flex",
+                alignItems: "center",
+              }}
+            >
+              <span
+                css={{
+                  color: theme.palette.text.primary,
+                  fontSize: 13,
+                }}
+              >
+                Files
+              </span>
+
+              <div
+                css={{
+                  marginLeft: "auto",
+                  "& svg": {
+                    fill: theme.palette.text.primary,
+                  },
+                }}
+              >
                 <Tooltip title="Create File" placement="top">
                   <IconButton
                     aria-label="Create File"
@@ -255,7 +364,7 @@ export const TemplateVersionEditor: FC<TemplateVersionEditorProps> = ({
                       event.currentTarget.blur();
                     }}
                   >
-                    <CreateIcon />
+                    <CreateIcon css={{ width: 16, height: 16 }} />
                   </IconButton>
                 </Tooltip>
               </div>
@@ -268,7 +377,7 @@ export const TemplateVersionEditor: FC<TemplateVersionEditorProps> = ({
                 checkExists={(path) => existsFile(path, fileTree)}
                 onConfirm={(path) => {
                   setFileTree((fileTree) => createFile(path, fileTree, ""));
-                  setActivePath(path);
+                  onActivePathChange(path);
                   setCreateFileOpen(false);
                   setDirty(true);
                 }}
@@ -283,7 +392,7 @@ export const TemplateVersionEditor: FC<TemplateVersionEditorProps> = ({
                   );
                   setDeleteFileOpen(undefined);
                   if (activePath === deleteFileOpen) {
-                    setActivePath(undefined);
+                    onActivePathChange(undefined);
                   }
                   setDirty(true);
                 }}
@@ -306,143 +415,213 @@ export const TemplateVersionEditor: FC<TemplateVersionEditorProps> = ({
                   setFileTree((fileTree) =>
                     moveFile(renameFileOpen, newPath, fileTree),
                   );
-                  setActivePath(newPath);
+                  onActivePathChange(newPath);
                   setRenameFileOpen(undefined);
                   setDirty(true);
                 }}
               />
             </div>
-            <FileTreeView
+            <TemplateFileTree
               fileTree={fileTree}
               onDelete={(file) => setDeleteFileOpen(file)}
               onSelect={(filePath) => {
                 if (!isFolder(filePath, fileTree)) {
-                  setActivePath(filePath);
+                  onActivePathChange(filePath);
                 }
               }}
               onRename={(file) => setRenameFileOpen(file)}
               activePath={activePath}
             />
-          </div>
+          </Sidebar>
 
           <div
             css={{
-              display: "grid",
+              display: "flex",
+              flexDirection: "column",
               width: "100%",
-              gridTemplateColumns: showBuildLogs ? "1fr 1fr" : "1fr 0fr",
               minHeight: "100%",
               overflow: "hidden",
             }}
           >
-            <div css={styles.editor} data-chromatic="ignore">
+            <div css={{ flex: 1, overflowY: "auto" }} data-chromatic="ignore">
               {activePath ? (
-                <MonacoEditor
-                  value={editorValue}
-                  path={activePath}
-                  onChange={(value) => {
-                    if (!activePath) {
-                      return;
-                    }
-                    setFileTree((fileTree) =>
-                      updateFile(activePath, value, fileTree),
-                    );
-                    setDirty(true);
-                  }}
-                />
+                isEditorValueBinary ? (
+                  <div
+                    role="alert"
+                    css={{
+                      width: "100%",
+                      height: "100%",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      padding: 40,
+                    }}
+                  >
+                    <div
+                      css={{
+                        display: "flex",
+                        flexDirection: "column",
+                        alignItems: "center",
+                        maxWidth: 420,
+                        textAlign: "center",
+                      }}
+                    >
+                      <WarningOutlined
+                        css={{
+                          fontSize: 48,
+                          color: theme.roles.warning.fill.outline,
+                        }}
+                      />
+                      <p
+                        css={{
+                          margin: 0,
+                          padding: 0,
+                          marginTop: 24,
+                        }}
+                      >
+                        The file is not displayed in the text editor because it
+                        is either binary or uses an unsupported text encoding.
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <MonacoEditor
+                    value={editorValue}
+                    path={activePath}
+                    onChange={(value) => {
+                      if (!activePath) {
+                        return;
+                      }
+                      setFileTree((fileTree) =>
+                        updateFile(activePath, value, fileTree),
+                      );
+                      setDirty(true);
+                    }}
+                  />
+                )
               ) : (
                 <div>No file opened</div>
               )}
             </div>
 
-            <div css={styles.panelWrapper}>
-              <div css={styles.tabs}>
-                <button
-                  css={styles.tab}
-                  className={selectedTab === 0 ? "active" : ""}
-                  onClick={() => {
-                    setSelectedTab(0);
+            <div
+              css={{
+                borderTop: `1px solid ${theme.palette.divider}`,
+                overflow: "hidden",
+                display: "flex",
+                flexDirection: "column",
+              }}
+            >
+              <div
+                css={{
+                  display: "flex",
+                  alignItems: "center",
+                  borderBottom: selectedTab
+                    ? `1px solid ${theme.palette.divider}`
+                    : 0,
+                }}
+              >
+                <div
+                  css={{
+                    display: "flex",
+
+                    "& .MuiTab-root": {
+                      padding: 0,
+                      fontSize: 14,
+                      textTransform: "none",
+                      letterSpacing: "unset",
+                    },
                   }}
                 >
-                  {templateVersion.job.status !== "succeeded" ? (
-                    getStatus(templateVersion).icon
-                  ) : (
-                    <BuildIcon />
-                  )}
-                  Build Log
-                </button>
-
-                {!disableUpdate && (
                   <button
+                    disabled={!buildLogs}
                     css={styles.tab}
-                    className={selectedTab === 1 ? "active" : ""}
+                    className={selectedTab === "logs" ? "active" : ""}
                     onClick={() => {
-                      setSelectedTab(1);
+                      setSelectedTab("logs");
                     }}
                   >
-                    <PreviewIcon />
-                    Workspace Preview
+                    Output
                   </button>
+
+                  <button
+                    disabled={!canPublish}
+                    css={styles.tab}
+                    className={selectedTab === "resources" ? "active" : ""}
+                    onClick={() => {
+                      setSelectedTab("resources");
+                    }}
+                  >
+                    Resources
+                  </button>
+                </div>
+
+                {selectedTab && (
+                  <IconButton
+                    onClick={() => {
+                      setSelectedTab(undefined);
+                    }}
+                    css={{
+                      marginLeft: "auto",
+                      width: 36,
+                      height: 36,
+                      borderRadius: 0,
+                    }}
+                  >
+                    <CloseOutlined css={{ width: 16, height: 16 }} />
+                  </IconButton>
                 )}
               </div>
 
-              <div
-                css={[
-                  styles.panel,
-                  {
-                    display: selectedTab !== 0 ? "none" : "flex",
-                    flexDirection: "column",
-                  },
-                ]}
-              >
-                {templateVersion.job.error && (
-                  <div>
-                    <Alert
-                      severity="error"
-                      sx={{
-                        borderRadius: 0,
-                        border: 0,
-                        borderBottom: (theme) =>
-                          `1px solid ${theme.palette.divider}`,
-                        borderLeft: (theme) =>
-                          `2px solid ${theme.palette.error.main}`,
-                      }}
-                    >
-                      <AlertTitle>Error during the build</AlertTitle>
-                      <AlertDetail>{templateVersion.job.error}</AlertDetail>
-                    </Alert>
-                  </div>
-                )}
+              {selectedTab === "logs" && (
+                <div
+                  css={[styles.logs, styles.tabContent]}
+                  ref={logsContentRef}
+                >
+                  {templateVersion.job.error && (
+                    <div>
+                      <Alert
+                        severity="error"
+                        css={{
+                          borderRadius: 0,
+                          border: 0,
+                          borderBottom: `1px solid ${theme.palette.divider}`,
+                          borderLeft: `2px solid ${theme.palette.error.main}`,
+                        }}
+                      >
+                        <AlertTitle>Error during the build</AlertTitle>
+                        <AlertDetail>{templateVersion.job.error}</AlertDetail>
+                      </Alert>
+                    </div>
+                  )}
 
-                {buildLogs && buildLogs.length > 0 && (
-                  <WorkspaceBuildLogs
-                    sx={{ borderRadius: 0, border: 0 }}
-                    hideTimestamps
-                    logs={buildLogs}
-                  />
-                )}
-              </div>
+                  {buildLogs && buildLogs.length > 0 ? (
+                    <WorkspaceBuildLogs
+                      css={styles.buildLogs}
+                      hideTimestamps
+                      logs={buildLogs}
+                    />
+                  ) : (
+                    <Loader css={{ height: "100%" }} />
+                  )}
+                </div>
+              )}
 
-              <div
-                css={[
-                  styles.panel,
-                  {
-                    paddingBottom: theme.spacing(2),
-                    display: selectedTab !== 1 ? "none" : undefined,
-                  },
-                ]}
-              >
-                {resources && (
-                  <TemplateResourcesTable
-                    resources={resources.filter(
-                      (r) => r.workspace_transition === "start",
-                    )}
-                  />
-                )}
-              </div>
+              {selectedTab === "resources" && (
+                <div css={[styles.resources, styles.tabContent]}>
+                  {resources && (
+                    <TemplateResourcesTable
+                      resources={resources.filter(
+                        (r) => r.workspace_transition === "start",
+                      )}
+                    />
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </div>
-      </DashboardFullPage>
+      </div>
 
       <PublishTemplateVersionDialog
         key={templateVersion.name}
@@ -464,86 +643,48 @@ export const TemplateVersionEditor: FC<TemplateVersionEditorProps> = ({
   );
 };
 
+const useLeaveSiteWarning = (enabled: boolean) => {
+  const MESSAGE =
+    "You have unpublished changes. Are you sure you want to leave?";
+
+  // This works for regular browser actions like close tab and back button
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (enabled) {
+        e.preventDefault();
+        return MESSAGE;
+      }
+    };
+
+    window.addEventListener("beforeunload", onBeforeUnload);
+
+    return () => {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+    };
+  }, [enabled]);
+
+  // This is used for react router navigation that is not triggered by the
+  // browser
+  usePrompt({
+    message: MESSAGE,
+    when: ({ nextLocation }) => {
+      // We need to check the path because we change the URL when new template
+      // version is created during builds
+      return enabled && !nextLocation.pathname.endsWith("/edit");
+    },
+  });
+};
+
 const styles = {
-  topbar: (theme) => ({
-    padding: theme.spacing(2),
-    borderBottom: `1px solid ${theme.palette.divider}`,
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    height: topbarHeight,
-    background: theme.palette.background.paper,
-  }),
-  topbarSides: (theme) => ({
-    display: "flex",
-    alignItems: "center",
-    gap: theme.spacing(2),
-  }),
-  sidebarAndEditor: {
-    display: "flex",
-    flex: 1,
-    flexBasis: 0,
-    overflow: "hidden",
-  },
-  sidebar: (theme) => ({
-    minWidth: 256,
-    backgroundColor: theme.palette.background.paper,
-    borderRight: `1px solid ${theme.palette.divider}`,
-  }),
-  sidebarTitle: (theme) => ({
-    fontSize: 10,
-    textTransform: "uppercase",
-    padding: theme.spacing(1, 2),
-    color: theme.palette.text.primary,
-    fontWeight: 500,
-    letterSpacing: "0.5px",
-    display: "flex",
-    alignItems: "center",
-  }),
-  sidebarActions: (theme) => ({
-    marginLeft: "auto",
-    "& svg": {
-      fill: theme.palette.text.primary,
-    },
-  }),
-  editor: {
-    flex: 1,
-  },
-  panelWrapper: (theme) => ({
-    flex: 1,
-    borderLeft: `1px solid ${theme.palette.divider}`,
-    overflow: "hidden",
-    display: "flex",
-    flexDirection: "column",
-  }),
-  panel: {
-    overflowY: "auto",
-    height: "100%",
-
-    // Hack to access customize resource-card from here
-    "& .resource-card": {
-      border: 0,
-    },
-  },
-  tabs: (theme) => ({
-    borderBottom: `1px solid ${theme.palette.divider}`,
-    display: "flex",
-    boxShadow: "#000000 0 6px 6px -6px inset",
-
-    "& .MuiTab-root": {
-      padding: 0,
-      fontSize: 14,
-      textTransform: "none",
-      letterSpacing: "unset",
-    },
-  }),
   tab: (theme) => ({
-    cursor: "pointer",
-    padding: theme.spacing(1.5),
+    "&:not(:disabled)": {
+      cursor: "pointer",
+    },
+    padding: 12,
     fontSize: 10,
     textTransform: "uppercase",
     letterSpacing: "0.5px",
-    fontWeight: 600,
+    fontWeight: 500,
     background: "transparent",
     fontFamily: "inherit",
     border: 0,
@@ -567,16 +708,21 @@ const styles = {
         display: "block",
         width: "100%",
         height: 1,
-        backgroundColor: theme.palette.text.primary,
+        backgroundColor: theme.palette.primary.main,
         bottom: -1,
         position: "absolute",
       },
     },
 
-    "&:hover": {
+    "&:not(:disabled):hover": {
       color: theme.palette.text.primary,
     },
+
+    "&:disabled": {
+      color: theme.palette.text.disabled,
+    },
   }),
+
   tabBar: (theme) => ({
     padding: "8px 16px",
     position: "sticky",
@@ -591,4 +737,59 @@ const styles = {
       borderTop: `1px solid ${theme.palette.divider}`,
     },
   }),
+
+  tabContent: {
+    height: 280,
+    overflowY: "auto",
+  },
+
+  logs: {
+    display: "flex",
+    height: "100%",
+    flexDirection: "column",
+  },
+
+  buildLogs: {
+    borderRadius: 0,
+    border: 0,
+
+    // Hack to update logs header and lines
+    "& .logs-header": {
+      border: 0,
+      padding: "8px 16px",
+      fontFamily: MONOSPACE_FONT_FAMILY,
+
+      "&:first-of-type": {
+        paddingTop: 16,
+      },
+
+      "&:last-child": {
+        paddingBottom: 16,
+      },
+    },
+
+    "& .logs-line": {
+      paddingLeft: 16,
+    },
+
+    "& .logs-container": {
+      border: "0 !important",
+    },
+  },
+
+  resources: {
+    // Hack to access customize resource-card from here
+    "& .resource-card": {
+      borderLeft: 0,
+      borderRight: 0,
+
+      "&:first-of-type": {
+        borderTop: 0,
+      },
+
+      "&:last-child": {
+        borderBottom: 0,
+      },
+    },
+  },
 } satisfies Record<string, Interpolation<Theme>>;

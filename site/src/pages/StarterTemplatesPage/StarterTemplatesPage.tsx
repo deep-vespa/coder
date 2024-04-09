@@ -1,17 +1,19 @@
-import { useOrganizationId } from "hooks/useOrganizationId";
-import { FC } from "react";
+import type { FC } from "react";
 import { Helmet } from "react-helmet-async";
-import { pageTitle } from "utils/page";
-import { StarterTemplatesPageView } from "./StarterTemplatesPageView";
 import { useQuery } from "react-query";
 import { templateExamples } from "api/queries/templates";
+import type { TemplateExample } from "api/typesGenerated";
+import { useAuthenticated } from "contexts/auth/RequireAuth";
+import { pageTitle } from "utils/page";
 import { getTemplatesByTag } from "utils/starterTemplates";
+import { StarterTemplatesPageView } from "./StarterTemplatesPageView";
 
 const StarterTemplatesPage: FC = () => {
-  const organizationId = useOrganizationId();
+  const { organizationId } = useAuthenticated();
   const templateExamplesQuery = useQuery(templateExamples(organizationId));
   const starterTemplatesByTag = templateExamplesQuery.data
-    ? getTemplatesByTag(templateExamplesQuery.data)
+    ? // Currently, the scratch template should not be displayed on the starter templates page.
+      getTemplatesByTag(removeScratchExample(templateExamplesQuery.data))
     : undefined;
 
   return (
@@ -26,6 +28,10 @@ const StarterTemplatesPage: FC = () => {
       />
     </>
   );
+};
+
+const removeScratchExample = (data: TemplateExample[]) => {
+  return data.filter((example) => example.id !== "scratch");
 };
 
 export default StarterTemplatesPage;

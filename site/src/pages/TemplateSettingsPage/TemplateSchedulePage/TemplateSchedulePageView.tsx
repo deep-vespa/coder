@@ -1,4 +1,4 @@
-import { type ComponentProps, type FC } from "react";
+import type { ComponentProps, FC } from "react";
 import type { Template, UpdateTemplateMeta } from "api/typesGenerated";
 import { PageHeader, PageHeaderTitle } from "components/PageHeader/PageHeader";
 import { TemplateScheduleForm } from "./TemplateScheduleForm";
@@ -13,8 +13,6 @@ export interface TemplateSchedulePageViewProps {
     typeof TemplateScheduleForm
   >["initialTouched"];
   allowAdvancedScheduling: boolean;
-  allowWorkspaceActions: boolean;
-  allowAutostopRequirement: boolean;
 }
 
 export const TemplateSchedulePageView: FC<TemplateSchedulePageViewProps> = ({
@@ -23,8 +21,6 @@ export const TemplateSchedulePageView: FC<TemplateSchedulePageViewProps> = ({
   onSubmit,
   isSubmitting,
   allowAdvancedScheduling,
-  allowWorkspaceActions,
-  allowAutostopRequirement,
   submitError,
   initialTouched,
 }) => {
@@ -36,8 +32,6 @@ export const TemplateSchedulePageView: FC<TemplateSchedulePageViewProps> = ({
 
       <TemplateScheduleForm
         allowAdvancedScheduling={allowAdvancedScheduling}
-        allowWorkspaceActions={allowWorkspaceActions}
-        allowAutostopRequirement={allowAutostopRequirement}
         initialTouched={initialTouched}
         isSubmitting={isSubmitting}
         template={template}

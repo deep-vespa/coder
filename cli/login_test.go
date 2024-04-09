@@ -3,6 +3,8 @@ package cli_test
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"runtime"
 	"testing"
 
@@ -14,6 +16,7 @@ import (
 	"github.com/coder/coder/v2/cli/clitest"
 	"github.com/coder/coder/v2/cli/cliui"
 	"github.com/coder/coder/v2/coderd/coderdtest"
+	"github.com/coder/coder/v2/codersdk"
 	"github.com/coder/coder/v2/pty/ptytest"
 )
 
@@ -34,6 +37,39 @@ func TestLogin(t *testing.T) {
 		err := root.Run()
 		errMsg := fmt.Sprintf("Failed to check server %q for first user, is the URL correct and is coder accessible from your browser?", badLoginURL)
 		require.ErrorContains(t, err, errMsg)
+	})
+
+	t.Run("InitialUserNonCoderURLFail", func(t *testing.T) {
+		t.Parallel()
+
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte("Not Found"))
+		}))
+		defer ts.Close()
+
+		badLoginURL := ts.URL
+		root, _ := clitest.New(t, "login", badLoginURL)
+		err := root.Run()
+		errMsg := fmt.Sprintf("Failed to check server %q for first user, is the URL correct and is coder accessible from your browser?", badLoginURL)
+		require.ErrorContains(t, err, errMsg)
+	})
+
+	t.Run("InitialUserNonCoderURLSuccess", func(t *testing.T) {
+		t.Parallel()
+
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set(codersdk.BuildVersionHeader, "something")
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte("Not Found"))
+		}))
+		defer ts.Close()
+
+		badLoginURL := ts.URL
+		root, _ := clitest.New(t, "login", badLoginURL)
+		err := root.Run()
+		// this means we passed the check for a valid coder server
+		require.ErrorContains(t, err, "the initial user cannot be created in non-interactive mode")
 	})
 
 	t.Run("InitialUserTTY", func(t *testing.T) {
@@ -80,6 +116,7 @@ func TestLogin(t *testing.T) {
 
 		clitest.Start(t, inv)
 
+		pty.ExpectMatch(fmt.Sprintf("Attempting to authenticate with flag URL: '%s'", client.URL.String()))
 		matches := []string{
 			"first user?", "yes",
 			"username", "testuser",
@@ -169,6 +206,7 @@ func TestLogin(t *testing.T) {
 			assert.NoError(t, err)
 		}()
 
+		pty.ExpectMatch(fmt.Sprintf("Attempting to authenticate with argument URL: '%s'", client.URL.String()))
 		pty.ExpectMatch("Paste your token here:")
 		pty.WriteLine(client.SessionToken())
 		if runtime.GOOS != "windows" {
@@ -176,6 +214,52 @@ func TestLogin(t *testing.T) {
 			pty.ExpectMatch(client.SessionToken())
 		}
 		pty.ExpectMatch("Welcome to Coder")
+		<-doneChan
+	})
+
+	t.Run("ExistingUserURLSavedInConfig", func(t *testing.T) {
+		t.Parallel()
+		client := coderdtest.New(t, nil)
+		url := client.URL.String()
+		coderdtest.CreateFirstUser(t, client)
+
+		inv, root := clitest.New(t, "login", "--no-open")
+		clitest.SetupConfig(t, client, root)
+
+		doneChan := make(chan struct{})
+		pty := ptytest.New(t).Attach(inv)
+		go func() {
+			defer close(doneChan)
+			err := inv.Run()
+			assert.NoError(t, err)
+		}()
+
+		pty.ExpectMatch(fmt.Sprintf("Attempting to authenticate with config URL: '%s'", url))
+		pty.ExpectMatch("Paste your token here:")
+		pty.WriteLine(client.SessionToken())
+		<-doneChan
+	})
+
+	t.Run("ExistingUserURLSavedInEnv", func(t *testing.T) {
+		t.Parallel()
+		client := coderdtest.New(t, nil)
+		url := client.URL.String()
+		coderdtest.CreateFirstUser(t, client)
+
+		inv, _ := clitest.New(t, "login", "--no-open")
+		inv.Environ.Set("CODER_URL", url)
+
+		doneChan := make(chan struct{})
+		pty := ptytest.New(t).Attach(inv)
+		go func() {
+			defer close(doneChan)
+			err := inv.Run()
+			assert.NoError(t, err)
+		}()
+
+		pty.ExpectMatch(fmt.Sprintf("Attempting to authenticate with environment URL: '%s'", url))
+		pty.ExpectMatch("Paste your token here:")
+		pty.WriteLine(client.SessionToken())
 		<-doneChan
 	})
 

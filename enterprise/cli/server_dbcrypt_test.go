@@ -14,10 +14,9 @@ import (
 	"github.com/coder/coder/v2/coderd/database"
 	"github.com/coder/coder/v2/coderd/database/dbgen"
 	"github.com/coder/coder/v2/coderd/database/dbtestutil"
-	"github.com/coder/coder/v2/coderd/database/postgres"
-	"github.com/coder/coder/v2/cryptorand"
 	"github.com/coder/coder/v2/enterprise/dbcrypt"
 	"github.com/coder/coder/v2/pty/ptytest"
+	"github.com/coder/coder/v2/testutil"
 )
 
 // TestServerDBCrypt tests end-to-end encryption, decryption, and deletion
@@ -33,7 +32,7 @@ func TestServerDBCrypt(t *testing.T) {
 	t.Cleanup(cancel)
 
 	// Setup a postgres database.
-	connectionURL, closePg, err := postgres.Open()
+	connectionURL, closePg, err := dbtestutil.Open()
 	require.NoError(t, err)
 	t.Cleanup(closePg)
 	t.Cleanup(func() { dbtestutil.DumpOnFailure(t, connectionURL) })
@@ -50,7 +49,7 @@ func TestServerDBCrypt(t *testing.T) {
 	users := genData(t, db)
 
 	// Setup an initial cipher A
-	keyA := mustString(t, 32)
+	keyA := testutil.MustRandString(t, 32)
 	cipherA, err := dbcrypt.NewCiphers([]byte(keyA))
 	require.NoError(t, err)
 
@@ -87,7 +86,7 @@ func TestServerDBCrypt(t *testing.T) {
 	}
 
 	// Re-encrypt all existing data with a new cipher.
-	keyB := mustString(t, 32)
+	keyB := testutil.MustRandString(t, 32)
 	cipherBA, err := dbcrypt.NewCiphers([]byte(keyB), []byte(keyA))
 	require.NoError(t, err)
 
@@ -160,7 +159,7 @@ func TestServerDBCrypt(t *testing.T) {
 	}
 
 	// Re-encrypt all existing data with a new cipher.
-	keyC := mustString(t, 32)
+	keyC := testutil.MustRandString(t, 32)
 	cipherC, err := dbcrypt.NewCiphers([]byte(keyC))
 	require.NoError(t, err)
 
@@ -222,7 +221,7 @@ func genData(t *testing.T, db database.Store) []database.User {
 	for _, status := range database.AllUserStatusValues() {
 		for _, loginType := range database.AllLoginTypeValues() {
 			for _, deleted := range []bool{false, true} {
-				randName := mustString(t, 32)
+				randName := testutil.MustRandString(t, 32)
 				usr := dbgen.User(t, db, database.User{
 					Username:  randName,
 					Email:     randName + "@notcoder.com",
@@ -236,27 +235,23 @@ func genData(t *testing.T, db database.Store) []database.User {
 					OAuthAccessToken:  "access-" + usr.ID.String(),
 					OAuthRefreshToken: "refresh-" + usr.ID.String(),
 				})
-				// Fun fact: our schema allows _all_ login types to have
-				// a user_link. Even though I'm not sure how it could occur
-				// in practice, making sure to test all combinations here.
-				_ = dbgen.UserLink(t, db, database.UserLink{
-					UserID:            usr.ID,
-					LoginType:         usr.LoginType,
-					OAuthAccessToken:  "access-" + usr.ID.String(),
-					OAuthRefreshToken: "refresh-" + usr.ID.String(),
-				})
+				// Deleted users cannot have user_links
+				if !deleted {
+					// Fun fact: our schema allows _all_ login types to have
+					// a user_link. Even though I'm not sure how it could occur
+					// in practice, making sure to test all combinations here.
+					_ = dbgen.UserLink(t, db, database.UserLink{
+						UserID:            usr.ID,
+						LoginType:         usr.LoginType,
+						OAuthAccessToken:  "access-" + usr.ID.String(),
+						OAuthRefreshToken: "refresh-" + usr.ID.String(),
+					})
+				}
 				users = append(users, usr)
 			}
 		}
 	}
 	return users
-}
-
-func mustString(t *testing.T, n int) string {
-	t.Helper()
-	s, err := cryptorand.String(n)
-	require.NoError(t, err)
-	return s
 }
 
 func requireEncryptedEquals(t *testing.T, c dbcrypt.Cipher, expected, actual string) {

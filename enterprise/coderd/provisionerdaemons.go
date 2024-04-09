@@ -2,12 +2,10 @@ package coderd
 
 import (
 	"context"
-	"crypto/subtle"
 	"database/sql"
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -24,6 +22,9 @@ import (
 	"cdr.dev/slog"
 	"github.com/coder/coder/v2/coderd"
 	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/database/db2sdk"
+	"github.com/coder/coder/v2/coderd/database/dbauthz"
+	"github.com/coder/coder/v2/coderd/database/dbtime"
 	"github.com/coder/coder/v2/coderd/httpapi"
 	"github.com/coder/coder/v2/coderd/httpmw"
 	"github.com/coder/coder/v2/coderd/provisionerdserver"
@@ -32,6 +33,7 @@ import (
 	"github.com/coder/coder/v2/coderd/util/ptr"
 	"github.com/coder/coder/v2/codersdk"
 	"github.com/coder/coder/v2/provisionerd/proto"
+	"github.com/coder/coder/v2/provisionersdk"
 )
 
 func (api *API) provisionerDaemonsEnabledMW(next http.Handler) http.Handler {
@@ -83,11 +85,8 @@ func (api *API) provisionerDaemons(rw http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	apiDaemons := make([]codersdk.ProvisionerDaemon, 0)
-	for _, daemon := range daemons {
-		apiDaemons = append(apiDaemons, convertProvisionerDaemon(daemon))
-	}
-	httpapi.Write(ctx, rw, http.StatusOK, apiDaemons)
+
+	httpapi.Write(ctx, rw, http.StatusOK, db2sdk.List(daemons, db2sdk.ProvisionerDaemon))
 }
 
 type provisionerDaemonAuth struct {
@@ -101,27 +100,25 @@ func (p *provisionerDaemonAuth) authorize(r *http.Request, tags map[string]strin
 	ctx := r.Context()
 	apiKey, ok := httpmw.APIKeyOptional(r)
 	if ok {
-		tags = provisionerdserver.MutateTags(apiKey.UserID, tags)
-		if tags[provisionerdserver.TagScope] == provisionerdserver.ScopeUser {
+		tags = provisionersdk.MutateTags(apiKey.UserID, tags)
+		if tags[provisionersdk.TagScope] == provisionersdk.ScopeUser {
 			// Any authenticated user can create provisioner daemons scoped
 			// for jobs that they own,
 			return tags, true
 		}
 		ua := httpmw.UserAuthorization(r)
-		if err := p.authorizer.Authorize(ctx, ua.Actor, rbac.ActionCreate, rbac.ResourceProvisionerDaemon); err == nil {
+		if err := p.authorizer.Authorize(ctx, ua, rbac.ActionCreate, rbac.ResourceProvisionerDaemon); err == nil {
 			// User is allowed to create provisioner daemons
 			return tags, true
 		}
 	}
 
 	// Check for PSK
-	if p.psk != "" {
-		psk := r.Header.Get(codersdk.ProvisionerDaemonPSK)
-		if subtle.ConstantTimeCompare([]byte(p.psk), []byte(psk)) == 1 {
-			// If using PSK auth, the daemon is, by definition, scoped to the organization.
-			tags[provisionerdserver.TagScope] = provisionerdserver.ScopeOrganization
-			return tags, true
-		}
+	provAuth := httpmw.ProvisionerDaemonAuthenticated(r)
+	if provAuth {
+		// If using PSK auth, the daemon is, by definition, scoped to the organization.
+		tags = provisionersdk.MutateTags(uuid.Nil, tags)
+		return tags, true
 	}
 	return nil, false
 }
@@ -137,6 +134,7 @@ func (p *provisionerDaemonAuth) authorize(r *http.Request, tags map[string]strin
 // @Router /organizations/{organization}/provisionerdaemons/serve [get]
 func (api *API) provisionerDaemonServe(rw http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	organization := httpmw.OrganizationParam(r)
 
 	tags := map[string]string{}
 	if r.URL.Query().Has("tag") {
@@ -178,11 +176,21 @@ func (api *API) provisionerDaemonServe(rw http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	name := namesgenerator.GetRandomName(10)
+	if vals, ok := r.URL.Query()["name"]; ok && len(vals) > 0 {
+		name = vals[0]
+	} else {
+		api.Logger.Warn(ctx, "unnamed provisioner daemon")
+	}
+
 	tags, authorized := api.provisionerDaemonAuth.authorize(r, tags)
 	if !authorized {
 		api.Logger.Warn(ctx, "unauthorized provisioner daemon serve request", slog.F("tags", tags))
 		httpapi.Write(ctx, rw, http.StatusForbidden,
-			codersdk.Response{Message: "You aren't allowed to create provisioner daemons"})
+			codersdk.Response{
+				Message: fmt.Sprintf("You aren't allowed to create provisioner daemons with scope %q", tags[provisionersdk.TagScope]),
+			},
+		)
 		return
 	}
 	api.Logger.Debug(ctx, "provisioner authorized", slog.F("tags", tags))
@@ -196,7 +204,7 @@ func (api *API) provisionerDaemonServe(rw http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	provisioners := make([]database.ProvisionerType, 0)
+	provisioners := make([]database.ProvisionerType, 0, len(provisionersMap))
 	for p := range provisionersMap {
 		switch p {
 		case codersdk.ProvisionerTypeTerraform:
@@ -206,12 +214,58 @@ func (api *API) provisionerDaemonServe(rw http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	name := namesgenerator.GetRandomName(1)
 	log := api.Logger.With(
 		slog.F("name", name),
 		slog.F("provisioners", provisioners),
 		slog.F("tags", tags),
 	)
+
+	authCtx := ctx
+	if r.Header.Get(codersdk.ProvisionerDaemonPSK) != "" {
+		//nolint:gocritic // PSK auth means no actor in request,
+		// so use system restricted.
+		authCtx = dbauthz.AsSystemRestricted(ctx)
+	}
+
+	versionHdrVal := r.Header.Get(codersdk.BuildVersionHeader)
+
+	apiVersion := "1.0"
+	if qv := r.URL.Query().Get("version"); qv != "" {
+		apiVersion = qv
+	}
+
+	if err := proto.CurrentVersion.Validate(apiVersion); err != nil {
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: "Incompatible or unparsable version",
+			Validations: []codersdk.ValidationError{
+				{Field: "version", Detail: err.Error()},
+			},
+		})
+		return
+	}
+
+	// Create the daemon in the database.
+	now := dbtime.Now()
+	daemon, err := api.Database.UpsertProvisionerDaemon(authCtx, database.UpsertProvisionerDaemonParams{
+		Name:           name,
+		Provisioners:   provisioners,
+		Tags:           tags,
+		CreatedAt:      now,
+		LastSeenAt:     sql.NullTime{Time: now, Valid: true},
+		Version:        versionHdrVal,
+		APIVersion:     apiVersion,
+		OrganizationID: organization.ID,
+	})
+	if err != nil {
+		if !xerrors.Is(err, context.Canceled) {
+			log.Error(ctx, "create provisioner daemon", slog.Error(err))
+			httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+				Message: "Internal error creating provisioner daemon.",
+				Detail:  err.Error(),
+			})
+		}
+		return
+	}
 
 	api.AGPL.WebsocketWaitMutex.Lock()
 	api.AGPL.WebsocketWaitGroup.Add(1)
@@ -247,7 +301,7 @@ func (api *API) provisionerDaemonServe(rw http.ResponseWriter, r *http.Request) 
 	// the same connection.
 	config := yamux.DefaultConfig()
 	config.LogOutput = io.Discard
-	ctx, wsNetConn := websocketNetConn(ctx, conn, websocket.MessageBinary)
+	ctx, wsNetConn := codersdk.WebsocketNetConn(ctx, conn, websocket.MessageBinary)
 	defer wsNetConn.Close()
 	session, err := yamux.Server(wsNetConn, config)
 	if err != nil {
@@ -256,11 +310,14 @@ func (api *API) provisionerDaemonServe(rw http.ResponseWriter, r *http.Request) 
 	}
 	mux := drpcmux.New()
 	logger := api.Logger.Named(fmt.Sprintf("ext-provisionerd-%s", name))
+	srvCtx, srvCancel := context.WithCancel(ctx)
+	defer srvCancel()
 	logger.Info(ctx, "starting external provisioner daemon")
 	srv, err := provisionerdserver.NewServer(
-		api.ctx,
+		srvCtx,
 		api.AccessURL,
-		id,
+		daemon.ID,
+		organization.ID,
 		logger,
 		provisioners,
 		tags,
@@ -300,65 +357,11 @@ func (api *API) provisionerDaemonServe(rw http.ResponseWriter, r *http.Request) 
 		},
 	})
 	err = server.Serve(ctx, session)
+	srvCancel()
 	logger.Info(ctx, "provisioner daemon disconnected", slog.Error(err))
 	if err != nil && !xerrors.Is(err, io.EOF) {
 		_ = conn.Close(websocket.StatusInternalError, httpapi.WebsocketCloseSprintf("serve: %s", err))
 		return
 	}
 	_ = conn.Close(websocket.StatusGoingAway, "")
-}
-
-func convertProvisionerDaemon(daemon database.ProvisionerDaemon) codersdk.ProvisionerDaemon {
-	result := codersdk.ProvisionerDaemon{
-		ID:        daemon.ID,
-		CreatedAt: daemon.CreatedAt,
-		UpdatedAt: daemon.UpdatedAt,
-		Name:      daemon.Name,
-		Tags:      daemon.Tags,
-	}
-	for _, provisionerType := range daemon.Provisioners {
-		result.Provisioners = append(result.Provisioners, codersdk.ProvisionerType(provisionerType))
-	}
-	return result
-}
-
-// wsNetConn wraps net.Conn created by websocket.NetConn(). Cancel func
-// is called if a read or write error is encountered.
-type wsNetConn struct {
-	cancel context.CancelFunc
-	net.Conn
-}
-
-func (c *wsNetConn) Read(b []byte) (n int, err error) {
-	n, err = c.Conn.Read(b)
-	if err != nil {
-		c.cancel()
-	}
-	return n, err
-}
-
-func (c *wsNetConn) Write(b []byte) (n int, err error) {
-	n, err = c.Conn.Write(b)
-	if err != nil {
-		c.cancel()
-	}
-	return n, err
-}
-
-func (c *wsNetConn) Close() error {
-	defer c.cancel()
-	return c.Conn.Close()
-}
-
-// websocketNetConn wraps websocket.NetConn and returns a context that
-// is tied to the parent context and the lifetime of the conn. Any error
-// during read or write will cancel the context, but not close the
-// conn. Close should be called to release context resources.
-func websocketNetConn(ctx context.Context, conn *websocket.Conn, msgType websocket.MessageType) (context.Context, net.Conn) {
-	ctx, cancel := context.WithCancel(ctx)
-	nc := websocket.NetConn(ctx, conn, msgType)
-	return ctx, &wsNetConn{
-		cancel: cancel,
-		Conn:   nc,
-	}
 }

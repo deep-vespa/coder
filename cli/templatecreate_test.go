@@ -7,66 +7,16 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/coder/coder/v2/cli/clitest"
 	"github.com/coder/coder/v2/coderd/coderdtest"
 	"github.com/coder/coder/v2/coderd/database"
-	"github.com/coder/coder/v2/codersdk"
 	"github.com/coder/coder/v2/provisioner/echo"
 	"github.com/coder/coder/v2/provisionersdk/proto"
 	"github.com/coder/coder/v2/pty/ptytest"
 	"github.com/coder/coder/v2/testutil"
 )
-
-func completeWithAgent() *echo.Responses {
-	return &echo.Responses{
-		Parse: echo.ParseComplete,
-		ProvisionPlan: []*proto.Response{
-			{
-				Type: &proto.Response_Plan{
-					Plan: &proto.PlanComplete{
-						Resources: []*proto.Resource{
-							{
-								Type: "compute",
-								Name: "main",
-								Agents: []*proto.Agent{
-									{
-										Name:            "smith",
-										OperatingSystem: "linux",
-										Architecture:    "i386",
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-		ProvisionApply: []*proto.Response{
-			{
-				Type: &proto.Response_Apply{
-					Apply: &proto.ApplyComplete{
-						Resources: []*proto.Resource{
-							{
-								Type: "compute",
-								Name: "main",
-								Agents: []*proto.Agent{
-									{
-										Name:            "smith",
-										OperatingSystem: "linux",
-										Architecture:    "i386",
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-}
 
 func TestTemplateCreate(t *testing.T) {
 	t.Parallel()
@@ -246,68 +196,6 @@ func TestTemplateCreate(t *testing.T) {
 		require.NoError(t, err, "Template must be recreated without error")
 	})
 
-	t.Run("WithVariablesFileWithoutRequiredValue", func(t *testing.T) {
-		t.Parallel()
-
-		client := coderdtest.New(t, &coderdtest.Options{IncludeProvisionerDaemon: true})
-		coderdtest.CreateFirstUser(t, client)
-
-		templateVariables := []*proto.TemplateVariable{
-			{
-				Name:        "first_variable",
-				Description: "This is the first variable.",
-				Type:        "string",
-				Required:    true,
-				Sensitive:   true,
-			},
-			{
-				Name:         "second_variable",
-				Description:  "This is the first variable",
-				Type:         "string",
-				DefaultValue: "abc",
-				Required:     false,
-				Sensitive:    true,
-			},
-		}
-		source := clitest.CreateTemplateVersionSource(t,
-			createEchoResponsesWithTemplateVariables(templateVariables))
-		tempDir := t.TempDir()
-		removeTmpDirUntilSuccessAfterTest(t, tempDir)
-		variablesFile, _ := os.CreateTemp(tempDir, "variables*.yaml")
-		_, _ = variablesFile.WriteString(`second_variable: foobar`)
-
-		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
-		defer cancel()
-
-		inv, root := clitest.New(t, "templates", "create", "my-template", "--directory", source, "--test.provisioner", string(database.ProvisionerTypeEcho), "--variables-file", variablesFile.Name())
-		clitest.SetupConfig(t, client, root)
-		inv = inv.WithContext(ctx)
-		pty := ptytest.New(t).Attach(inv)
-
-		// We expect the cli to return an error, so we have to handle it
-		// ourselves.
-		go func() {
-			cancel()
-			err := inv.Run()
-			assert.Error(t, err)
-		}()
-
-		matches := []struct {
-			match string
-			write string
-		}{
-			{match: "Upload", write: "yes"},
-		}
-		for _, m := range matches {
-			pty.ExpectMatch(m.match)
-			if len(m.write) > 0 {
-				pty.WriteLine(m.write)
-			}
-		}
-
-		<-ctx.Done()
-	})
-
 	t.Run("WithVariablesFileWithTheRequiredValue", func(t *testing.T) {
 		t.Parallel()
 
@@ -398,14 +286,8 @@ func TestTemplateCreate(t *testing.T) {
 	t.Run("RequireActiveVersionInvalid", func(t *testing.T) {
 		t.Parallel()
 
-		dv := coderdtest.DeploymentValues(t)
-		dv.Experiments = []string{
-			string(codersdk.ExperimentTemplateUpdatePolicies),
-		}
-
 		client := coderdtest.New(t, &coderdtest.Options{
 			IncludeProvisionerDaemon: true,
-			DeploymentValues:         dv,
 		})
 		coderdtest.CreateFirstUser(t, client)
 		source := clitest.CreateTemplateVersionSource(t, completeWithAgent())
@@ -423,17 +305,5 @@ func TestTemplateCreate(t *testing.T) {
 		err := inv.Run()
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "your deployment appears to be an AGPL deployment, so you cannot set enterprise-only flags")
-	})
-}
-
-// Need this for Windows because of a known issue with Go:
-// https://github.com/golang/go/issues/52986
-func removeTmpDirUntilSuccessAfterTest(t *testing.T, tempDir string) {
-	t.Helper()
-	t.Cleanup(func() {
-		err := os.RemoveAll(tempDir)
-		for err != nil {
-			err = os.RemoveAll(tempDir)
-		}
 	})
 }

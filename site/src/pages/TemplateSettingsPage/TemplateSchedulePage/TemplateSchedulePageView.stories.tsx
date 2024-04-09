@@ -1,8 +1,8 @@
 import { action } from "@storybook/addon-actions";
-import { Meta, StoryObj } from "@storybook/react";
+import type { Meta, StoryObj } from "@storybook/react";
+import { QueryClient, QueryClientProvider } from "react-query";
 import { MockTemplate } from "testHelpers/entities";
 import { TemplateSchedulePageView } from "./TemplateSchedulePageView";
-import { QueryClient, QueryClientProvider } from "react-query";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -31,7 +31,6 @@ type Story = StoryObj<typeof TemplateSchedulePageView>;
 
 const defaultArgs = {
   allowAdvancedScheduling: true,
-  allowWorkspaceActions: true,
   template: MockTemplate,
   onSubmit: action("onSubmit"),
   onCancel: action("cancel"),

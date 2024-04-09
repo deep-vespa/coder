@@ -12,6 +12,14 @@ coder restart [flags] <workspace>
 
 ## Options
 
+### -y, --yes
+
+|      |                   |
+| ---- | ----------------- |
+| Type | <code>bool</code> |
+
+Bypass prompts.
+
 ### --build-option
 
 |             |                                  |
@@ -29,10 +37,28 @@ Build option value in the format "name=value".
 
 Prompt for one-time build options defined with ephemeral parameters.
 
-### -y, --yes
+### --parameter
+
+|             |                                    |
+| ----------- | ---------------------------------- |
+| Type        | <code>string-array</code>          |
+| Environment | <code>$CODER_RICH_PARAMETER</code> |
+
+Rich parameter value in the format "name=value".
+
+### --rich-parameter-file
+
+|             |                                         |
+| ----------- | --------------------------------------- |
+| Type        | <code>string</code>                     |
+| Environment | <code>$CODER_RICH_PARAMETER_FILE</code> |
+
+Specify a file path with values for rich parameters defined in the template.
+
+### --always-prompt
 
 |      |                   |
 | ---- | ----------------- |
 | Type | <code>bool</code> |
 
-Bypass prompts.
+Always prompt all parameters. Does not pull parameter values from existing workspace.

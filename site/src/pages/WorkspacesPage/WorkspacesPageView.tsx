@@ -1,25 +1,34 @@
-import { Template, Workspace } from "api/typesGenerated";
-import { PaginationWidgetBase } from "components/PaginationWidget/PaginationWidgetBase";
-import { ComponentProps, FC } from "react";
-import { Margins } from "components/Margins/Margins";
-import { PageHeader, PageHeaderTitle } from "components/PageHeader/PageHeader";
-import { Stack } from "components/Stack/Stack";
-import { WorkspaceHelpTooltip } from "./WorkspaceHelpTooltip";
-import { WorkspacesTable } from "pages/WorkspacesPage/WorkspacesTable";
-import { useLocalStorage } from "hooks";
-import { DormantWorkspaceBanner, Count } from "components/WorkspaceDeletion";
-import { ErrorAlert } from "components/Alert/ErrorAlert";
-import { WorkspacesFilter } from "./filter/filter";
-import { hasError, isApiValidationError } from "api/errors";
-import {
-  PaginationStatus,
-  TableToolbar,
-} from "components/TableToolbar/TableToolbar";
-import Box from "@mui/material/Box";
-import Button from "@mui/material/Button";
+import CloudQueue from "@mui/icons-material/CloudQueue";
 import DeleteOutlined from "@mui/icons-material/DeleteOutlined";
+import KeyboardArrowDownOutlined from "@mui/icons-material/KeyboardArrowDownOutlined";
+import PlayArrowOutlined from "@mui/icons-material/PlayArrowOutlined";
+import StopOutlined from "@mui/icons-material/StopOutlined";
+import LoadingButton from "@mui/lab/LoadingButton";
+import Button from "@mui/material/Button";
+import Divider from "@mui/material/Divider";
+import type { ComponentProps } from "react";
+import type { UseQueryResult } from "react-query";
+import { hasError, isApiValidationError } from "api/errors";
+import type { Template, Workspace } from "api/typesGenerated";
+import { ErrorAlert } from "components/Alert/ErrorAlert";
+import { EmptyState } from "components/EmptyState/EmptyState";
+import { Margins } from "components/Margins/Margins";
+import {
+  MoreMenu,
+  MoreMenuContent,
+  MoreMenuItem,
+  MoreMenuTrigger,
+} from "components/MoreMenu/MoreMenu";
+import { PageHeader, PageHeaderTitle } from "components/PageHeader/PageHeader";
+import { PaginationHeader } from "components/PaginationWidget/PaginationHeader";
+import { PaginationWidgetBase } from "components/PaginationWidget/PaginationWidgetBase";
+import { Stack } from "components/Stack/Stack";
+import { TableToolbar } from "components/TableToolbar/TableToolbar";
+import { WorkspacesTable } from "pages/WorkspacesPage/WorkspacesTable";
+import { mustUpdateWorkspace } from "utils/workspace";
+import { WorkspacesFilter } from "./filter/filter";
+import { WorkspaceHelpTooltip } from "./WorkspaceHelpTooltip";
 import { WorkspacesButton } from "./WorkspacesButton";
-import { UseQueryResult } from "react-query";
 
 export const Language = {
   pageTitle: "Workspaces",
@@ -36,7 +45,6 @@ type TemplateQuery = UseQueryResult<Template[]>;
 export interface WorkspacesPageViewProps {
   error: unknown;
   workspaces?: Workspace[];
-  dormantWorkspaces?: Workspace[];
   checkedWorkspaces: Workspace[];
   count?: number;
   filterProps: ComponentProps<typeof WorkspacesFilter>;
@@ -45,18 +53,20 @@ export interface WorkspacesPageViewProps {
   onPageChange: (page: number) => void;
   onUpdateWorkspace: (workspace: Workspace) => void;
   onCheckChange: (checkedWorkspaces: Workspace[]) => void;
+  isRunningBatchAction: boolean;
   onDeleteAll: () => void;
+  onUpdateAll: () => void;
+  onStartAll: () => void;
+  onStopAll: () => void;
   canCheckWorkspaces: boolean;
-
   templatesFetchStatus: TemplateQuery["status"];
   templates: TemplateQuery["data"];
+  canCreateTemplate: boolean;
+  canChangeVersions: boolean;
 }
 
-export const WorkspacesPageView: FC<
-  React.PropsWithChildren<WorkspacesPageViewProps>
-> = ({
+export const WorkspacesPageView = ({
   workspaces,
-  dormantWorkspaces,
   error,
   limit,
   count,
@@ -67,18 +77,20 @@ export const WorkspacesPageView: FC<
   checkedWorkspaces,
   onCheckChange,
   onDeleteAll,
+  onUpdateAll,
+  onStopAll,
+  onStartAll,
+  isRunningBatchAction,
   canCheckWorkspaces,
   templates,
   templatesFetchStatus,
-}) => {
-  const { saveLocal } = useLocalStorage();
-
-  const workspacesDeletionScheduled = dormantWorkspaces
-    ?.filter((workspace) => workspace.deleting_at)
-    .map((workspace) => workspace.id);
-
-  const hasDormantWorkspace =
-    dormantWorkspaces !== undefined && dormantWorkspaces.length > 0;
+  canCreateTemplate,
+  canChangeVersions,
+}: WorkspacesPageViewProps) => {
+  // Let's say the user has 5 workspaces, but tried to hit page 100, which does
+  // not exist. In this case, the page is not valid and we want to show a better
+  // error message.
+  const invalidPageNumber = page !== 1 && workspaces?.length === 0;
 
   return (
     <Margins>
@@ -104,66 +116,120 @@ export const WorkspacesPageView: FC<
         {hasError(error) && !isApiValidationError(error) && (
           <ErrorAlert error={error} />
         )}
-        {/* <DormantWorkspaceBanner/> determines its own visibility */}
-        <DormantWorkspaceBanner
-          workspaces={dormantWorkspaces}
-          shouldRedisplayBanner={hasDormantWorkspace}
-          onDismiss={() =>
-            saveLocal(
-              "dismissedWorkspaceList",
-              JSON.stringify(workspacesDeletionScheduled),
-            )
-          }
-          count={Count.Multiple}
-        />
-
         <WorkspacesFilter error={error} {...filterProps} />
       </Stack>
 
       <TableToolbar>
         {checkedWorkspaces.length > 0 ? (
           <>
-            <Box>
+            <div>
               Selected <strong>{checkedWorkspaces.length}</strong> of{" "}
               <strong>{workspaces?.length}</strong>{" "}
               {workspaces?.length === 1 ? "workspace" : "workspaces"}
-            </Box>
+            </div>
 
-            <Box sx={{ marginLeft: "auto" }}>
-              <Button
-                size="small"
-                startIcon={<DeleteOutlined />}
-                onClick={onDeleteAll}
-              >
-                Delete selected
-              </Button>
-            </Box>
+            <MoreMenu>
+              <MoreMenuTrigger>
+                <LoadingButton
+                  loading={isRunningBatchAction}
+                  loadingPosition="end"
+                  variant="text"
+                  size="small"
+                  css={{ borderRadius: 9999, marginLeft: "auto" }}
+                  endIcon={<KeyboardArrowDownOutlined />}
+                >
+                  Actions
+                </LoadingButton>
+              </MoreMenuTrigger>
+              <MoreMenuContent>
+                <MoreMenuItem
+                  onClick={onStartAll}
+                  disabled={
+                    !checkedWorkspaces?.every(
+                      (w) =>
+                        w.latest_build.status === "stopped" &&
+                        !mustUpdateWorkspace(w, canChangeVersions),
+                    )
+                  }
+                >
+                  <PlayArrowOutlined /> Start
+                </MoreMenuItem>
+                <MoreMenuItem
+                  onClick={onStopAll}
+                  disabled={
+                    !checkedWorkspaces?.every(
+                      (w) => w.latest_build.status === "running",
+                    )
+                  }
+                >
+                  <StopOutlined /> Stop
+                </MoreMenuItem>
+                <Divider />
+                <MoreMenuItem onClick={onUpdateAll}>
+                  <CloudQueue /> Update&hellip;
+                </MoreMenuItem>
+                <MoreMenuItem danger onClick={onDeleteAll}>
+                  <DeleteOutlined /> Delete&hellip;
+                </MoreMenuItem>
+              </MoreMenuContent>
+            </MoreMenu>
           </>
         ) : (
-          <PaginationStatus
-            isLoading={!workspaces && !error}
-            showing={workspaces?.length ?? 0}
-            total={count ?? 0}
-            label="workspaces"
-          />
+          !invalidPageNumber && (
+            <PaginationHeader
+              paginationUnitLabel="workspaces"
+              limit={limit}
+              totalRecords={count}
+              currentOffsetStart={(page - 1) * limit + 1}
+              css={{ paddingBottom: "0" }}
+            />
+          )
         )}
       </TableToolbar>
 
-      <WorkspacesTable
-        workspaces={workspaces}
-        isUsingFilter={filterProps.filter.used}
-        onUpdateWorkspace={onUpdateWorkspace}
-        checkedWorkspaces={checkedWorkspaces}
-        onCheckChange={onCheckChange}
-        canCheckWorkspaces={canCheckWorkspaces}
-      />
-      {count !== undefined && (
-        <PaginationWidgetBase
-          count={count}
-          limit={limit}
-          onChange={onPageChange}
-          page={page}
+      {invalidPageNumber ? (
+        <EmptyState
+          css={(theme) => ({
+            border: `1px solid ${theme.palette.divider}`,
+            borderRadius: theme.shape.borderRadius,
+          })}
+          message="Page not found"
+          description="The page you are trying to access does not exist."
+          cta={
+            <Button
+              onClick={() => {
+                onPageChange(1);
+              }}
+            >
+              Back to the first page
+            </Button>
+          }
         />
+      ) : (
+        <WorkspacesTable
+          canCreateTemplate={canCreateTemplate}
+          workspaces={workspaces}
+          isUsingFilter={filterProps.filter.used}
+          onUpdateWorkspace={onUpdateWorkspace}
+          checkedWorkspaces={checkedWorkspaces}
+          onCheckChange={onCheckChange}
+          canCheckWorkspaces={canCheckWorkspaces}
+          templates={templates}
+        />
+      )}
+
+      {count !== undefined && (
+        // Temporary styling stopgap before component is migrated to using
+        // PaginationContainer (which renders PaginationWidgetBase using CSS
+        // flexbox gaps)
+        <div css={{ paddingTop: "16px" }}>
+          <PaginationWidgetBase
+            totalRecords={count}
+            pageSize={limit}
+            onPageChange={onPageChange}
+            currentPage={page}
+          />
+        </div>
       )}
     </Margins>
   );

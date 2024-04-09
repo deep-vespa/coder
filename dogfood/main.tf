@@ -11,25 +11,45 @@ terraform {
 }
 
 locals {
-  // These are Tailscale IP addresses. Ask Dean or Kyle for help.
+  // These are cluster service addresses mapped to Tailscale nodes. Ask Dean or
+  // Kyle for help.
   docker_host = {
-    ""              = "tcp://100.94.74.63:2375"
-    "us-pittsburgh" = "tcp://100.94.74.63:2375"
-    "eu-helsinki"   = "tcp://100.117.102.81:2375"
-    "ap-sydney"     = "tcp://100.87.194.110:2375"
-    "sa-saopaulo"   = "tcp://100.99.64.123:2375"
-    "eu-paris"      = "tcp://100.74.161.61:2375"
+    ""              = "tcp://dogfood-ts-cdr-dev.tailscale.svc.cluster.local:2375"
+    "us-pittsburgh" = "tcp://dogfood-ts-cdr-dev.tailscale.svc.cluster.local:2375"
+    "eu-helsinki"   = "tcp://reinhard-hel-cdr-dev.tailscale.svc.cluster.local:2375"
+    "ap-sydney"     = "tcp://hildegard-sydney-cdr-dev.tailscale.svc.cluster.local:2375"
+    "sa-saopaulo"   = "tcp://oberstein-sao-cdr-dev.tailscale.svc.cluster.local:2375"
+    "za-jnb"        = "tcp://greenhill-jnb-cdr-dev.tailscale.svc.cluster.local:2375"
   }
 
-  repo_dir = replace(data.coder_parameter.repo_dir.value, "/^~\\//", "/home/coder/")
+  repo_base_dir  = data.coder_parameter.repo_base_dir.value == "~" ? "/home/coder" : replace(data.coder_parameter.repo_base_dir.value, "/^~\\//", "/home/coder/")
+  repo_dir       = replace(module.git-clone.repo_dir, "/^~\\//", "/home/coder/")
+  container_name = "coder-${data.coder_workspace.me.owner}-${lower(data.coder_workspace.me.name)}"
 }
 
-data "coder_parameter" "repo_dir" {
+data "coder_parameter" "repo_base_dir" {
   type        = "string"
-  name        = "Coder Repository Directory"
-  default     = "~/coder"
-  description = "The directory specified will be created and [coder/coder](https://github.com/coder/coder) will be automatically cloned into it 🪄."
+  name        = "Coder Repository Base Directory"
+  default     = "~"
+  description = "The directory specified will be created (if missing) and [coder/coder](https://github.com/coder/coder) will be automatically cloned into [base directory]/coder 🪄."
   mutable     = true
+}
+
+data "coder_parameter" "image_type" {
+  type        = "string"
+  name        = "Coder Image"
+  default     = "codercom/oss-dogfood:latest"
+  description = "The Docker image used to run your workspace. Choose between nix and non-nix images."
+  option {
+    icon  = "/icon/coder.svg"
+    name  = "Dogfood (Default)"
+    value = "codercom/oss-dogfood:latest"
+  }
+  option {
+    icon  = "/icon/nix.svg"
+    name  = "Dogfood Nix (Experimental)"
+    value = "codercom/oss-dogfood-nix:latest"
+  }
 }
 
 data "coder_parameter" "region" {
@@ -57,6 +77,11 @@ data "coder_parameter" "region" {
     name  = "São Paulo"
     value = "sa-saopaulo"
   }
+  option {
+    icon  = "/emojis/1f1ff-1f1e6.png"
+    name  = "Johannesburg"
+    value = "za-jnb"
+  }
 }
 
 provider "docker" {
@@ -72,36 +97,42 @@ data "coder_external_auth" "github" {
 data "coder_workspace" "me" {}
 
 module "slackme" {
-  source           = "https://registry.coder.com/modules/slackme"
+  source           = "registry.coder.com/modules/slackme/coder"
+  version          = "1.0.2"
   agent_id         = coder_agent.dev.id
   auth_provider_id = "slack"
 }
 
 module "dotfiles" {
-  source   = "https://registry.coder.com/modules/dotfiles"
+  source   = "registry.coder.com/modules/dotfiles/coder"
+  version  = "1.0.2"
   agent_id = coder_agent.dev.id
 }
 
 module "git-clone" {
-  source   = "https://registry.coder.com/modules/git-clone"
+  source   = "registry.coder.com/modules/git-clone/coder"
+  version  = "1.0.2"
   agent_id = coder_agent.dev.id
   url      = "https://github.com/coder/coder"
-  path     = local.repo_dir
+  base_dir = local.repo_base_dir
 }
 
 module "personalize" {
-  source   = "https://registry.coder.com/modules/personalize"
+  source   = "registry.coder.com/modules/personalize/coder"
+  version  = "1.0.2"
   agent_id = coder_agent.dev.id
 }
 
 module "code-server" {
-  source   = "https://registry.coder.com/modules/code-server"
+  source   = "registry.coder.com/modules/code-server/coder"
+  version  = "1.0.8"
   agent_id = coder_agent.dev.id
   folder   = local.repo_dir
 }
 
 module "jetbrains_gateway" {
-  source         = "https://registry.coder.com/modules/jetbrains-gateway"
+  source         = "registry.coder.com/modules/jetbrains-gateway/coder"
+  version        = "1.0.9"
   agent_id       = coder_agent.dev.id
   agent_name     = "dev"
   folder         = local.repo_dir
@@ -109,35 +140,27 @@ module "jetbrains_gateway" {
   default        = "GO"
 }
 
-module "vscode-desktop" {
-  source   = "https://registry.coder.com/modules/vscode-desktop"
-  agent_id = coder_agent.dev.id
-  folder   = local.repo_dir
-}
-
 module "filebrowser" {
-  source   = "https://registry.coder.com/modules/filebrowser"
+  source   = "registry.coder.com/modules/filebrowser/coder"
+  version  = "1.0.8"
   agent_id = coder_agent.dev.id
 }
 
 module "coder-login" {
-  source   = "https://registry.coder.com/modules/coder-login"
+  source   = "registry.coder.com/modules/coder-login/coder"
+  version  = "1.0.2"
   agent_id = coder_agent.dev.id
 }
 
 resource "coder_agent" "dev" {
   arch = "amd64"
   os   = "linux"
-  dir  = data.coder_parameter.repo_dir.value
+  dir  = local.repo_dir
   env = {
     GITHUB_TOKEN : data.coder_external_auth.github.access_token,
     OIDC_TOKEN : data.coder_workspace.me.owner_oidc_access_token,
   }
   startup_script_behavior = "blocking"
-
-  display_apps {
-    vscode = false
-  }
 
   # The following metadata blocks are optional. They are used to display
   # information about your workspace in the dashboard. You can remove them
@@ -216,10 +239,21 @@ resource "coder_agent" "dev" {
     timeout      = 5
   }
 
-  startup_script_timeout = 60
-  startup_script         = <<-EOT
+  startup_script = <<-EOT
     set -eux -o pipefail
+
+    # Allow synchronization between scripts.
+    trap 'touch /tmp/.coder-startup-script.done' EXIT
+
+    # Start Docker service
     sudo service docker start
+    # Install playwright dependencies
+    # We want to use the playwright version from site/package.json
+    # Check if the directory exists At workspace creation as the coder_script runs in parallel so clone might not exist yet.
+    while ! [[ -f "${local.repo_dir}/site/package.json" ]]; do
+      sleep 1
+    done
+    cd "${local.repo_dir}/site" && pnpm install && pnpm playwright:install
   EOT
 }
 
@@ -250,20 +284,17 @@ resource "docker_volume" "home_volume" {
   }
 }
 
-locals {
-  container_name = "coder-${data.coder_workspace.me.owner}-${lower(data.coder_workspace.me.name)}"
-  registry_name  = "codercom/oss-dogfood"
-}
 data "docker_registry_image" "dogfood" {
-  // This is temporarily pinned to a pre-nix version of the image at commit
-  // 6cdf1c73c until the Nix kinks are worked out.
-  name = "${local.registry_name}:pre-nix"
+  name = data.coder_parameter.image_type.value
 }
 
 resource "docker_image" "dogfood" {
-  name = "${local.registry_name}@${data.docker_registry_image.dogfood.sha256_digest}"
+  name = "${data.coder_parameter.image_type.value}@${data.docker_registry_image.dogfood.sha256_digest}"
   pull_triggers = [
-    data.docker_registry_image.dogfood.sha256_digest
+    data.docker_registry_image.dogfood.sha256_digest,
+    sha1(join("", [for f in fileset(path.module, "files/*") : filesha1(f)])),
+    filesha1("Dockerfile"),
+    filesha1("Dockerfile.nix"),
   ]
   keep_locally = true
 }

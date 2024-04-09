@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react";
+import { QueryClient, QueryClientProvider } from "react-query";
 import { MockToken } from "testHelpers/entities";
 import { ConfirmDeleteDialog } from "./ConfirmDeleteDialog";
-import { QueryClient, QueryClientProvider } from "react-query";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -32,8 +32,6 @@ export const DeleteDialog: Story = {
   args: {
     queryKey: ["tokens"],
     token: MockToken,
-    setToken: () => {
-      return null;
-    },
+    setToken: () => null,
   },
 };

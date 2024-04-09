@@ -9,23 +9,29 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/golang-jwt/jwt/v4"
 	"github.com/google/go-github/v43/github"
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/xerrors"
 
+	"cdr.dev/slog"
 	"cdr.dev/slog/sloggers/slogtest"
 	"github.com/coder/coder/v2/coderd"
 	"github.com/coder/coder/v2/coderd/audit"
 	"github.com/coder/coder/v2/coderd/coderdtest"
 	"github.com/coder/coder/v2/coderd/coderdtest/oidctest"
 	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/database/dbauthz"
 	"github.com/coder/coder/v2/coderd/database/dbgen"
 	"github.com/coder/coder/v2/coderd/database/dbtestutil"
+	"github.com/coder/coder/v2/coderd/promoauth"
 	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/cryptorand"
 	"github.com/coder/coder/v2/testutil"
 )
 
@@ -205,6 +211,7 @@ func TestUserOAuth2Github(t *testing.T) {
 				},
 				AuthenticatedUser: func(ctx context.Context, client *http.Client) (*github.User, error) {
 					return &github.User{
+						ID:    github.Int64(100),
 						Login: github.String("kyle"),
 					}, nil
 				},
@@ -264,7 +271,9 @@ func TestUserOAuth2Github(t *testing.T) {
 					}}, nil
 				},
 				AuthenticatedUser: func(ctx context.Context, client *http.Client) (*github.User, error) {
-					return &github.User{}, nil
+					return &github.User{
+						ID: github.Int64(100),
+					}, nil
 				},
 				ListEmails: func(ctx context.Context, client *http.Client) ([]*github.UserEmail, error) {
 					return []*github.UserEmail{{
@@ -295,7 +304,9 @@ func TestUserOAuth2Github(t *testing.T) {
 					}}, nil
 				},
 				AuthenticatedUser: func(ctx context.Context, client *http.Client) (*github.User, error) {
-					return &github.User{}, nil
+					return &github.User{
+						ID: github.Int64(100),
+					}, nil
 				},
 				ListEmails: func(ctx context.Context, client *http.Client) ([]*github.UserEmail, error) {
 					return []*github.UserEmail{{
@@ -390,6 +401,7 @@ func TestUserOAuth2Github(t *testing.T) {
 				},
 				AuthenticatedUser: func(ctx context.Context, client *http.Client) (*github.User, error) {
 					return &github.User{
+						ID:    github.Int64(100),
 						Login: github.String("kyle"),
 					}, nil
 				},
@@ -442,6 +454,7 @@ func TestUserOAuth2Github(t *testing.T) {
 				},
 				AuthenticatedUser: func(ctx context.Context, client *http.Client) (*github.User, error) {
 					return &github.User{
+						ID:    github.Int64(100),
 						Login: github.String("mathias"),
 					}, nil
 				},
@@ -494,6 +507,7 @@ func TestUserOAuth2Github(t *testing.T) {
 				},
 				AuthenticatedUser: func(ctx context.Context, client *http.Client) (*github.User, error) {
 					return &github.User{
+						ID:    github.Int64(100),
 						Login: github.String("mathias"),
 					}, nil
 				},
@@ -532,6 +546,7 @@ func TestUserOAuth2Github(t *testing.T) {
 				},
 				AuthenticatedUser: func(ctx context.Context, client *http.Client) (*github.User, error) {
 					return &github.User{
+						ID:    github.Int64(100),
 						Login: github.String("mathias"),
 					}, nil
 				},
@@ -574,6 +589,7 @@ func TestUserOAuth2Github(t *testing.T) {
 				},
 				AuthenticatedUser: func(ctx context.Context, client *http.Client) (*github.User, error) {
 					return &github.User{
+						ID:    github.Int64(100),
 						Login: github.String("kyle"),
 					}, nil
 				},
@@ -590,6 +606,126 @@ func TestUserOAuth2Github(t *testing.T) {
 		resp := oauth2Callback(t, client)
 
 		require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	})
+
+	// The bug only is exercised when a deleted user with the same linked_id exists.
+	// Still related open issues:
+	// - https://github.com/coder/coder/issues/12116
+	// - https://github.com/coder/coder/issues/12115
+	t.Run("ChangedEmail", func(t *testing.T) {
+		t.Parallel()
+
+		fake := oidctest.NewFakeIDP(t,
+			oidctest.WithServing(),
+			oidctest.WithCallbackPath("/api/v2/users/oauth2/github/callback"),
+		)
+		const ghID = int64(7777)
+		auditor := audit.NewMock()
+		coderEmail := &github.UserEmail{
+			Email:    github.String("alice@coder.com"),
+			Verified: github.Bool(true),
+			Primary:  github.Bool(true),
+		}
+		gmailEmail := &github.UserEmail{
+			Email:    github.String("alice@gmail.com"),
+			Verified: github.Bool(true),
+			Primary:  github.Bool(false),
+		}
+		emails := []*github.UserEmail{
+			gmailEmail,
+			coderEmail,
+		}
+
+		owner, db := coderdtest.NewWithDatabase(t, &coderdtest.Options{
+			Auditor: auditor,
+			GithubOAuth2Config: &coderd.GithubOAuth2Config{
+				AllowSignups:  true,
+				AllowEveryone: true,
+				OAuth2Config:  promoauth.NewFactory(prometheus.NewRegistry()).NewGithub("test-github", fake.OIDCConfig(t, []string{})),
+				ListOrganizationMemberships: func(ctx context.Context, client *http.Client) ([]*github.Membership, error) {
+					return []*github.Membership{}, nil
+				},
+				TeamMembership: func(ctx context.Context, client *http.Client, org, team, username string) (*github.Membership, error) {
+					return nil, xerrors.New("no teams")
+				},
+				AuthenticatedUser: func(ctx context.Context, client *http.Client) (*github.User, error) {
+					return &github.User{
+						Login: github.String("alice"),
+						ID:    github.Int64(ghID),
+					}, nil
+				},
+				ListEmails: func(ctx context.Context, client *http.Client) ([]*github.UserEmail, error) {
+					return emails, nil
+				},
+			},
+		})
+		first := coderdtest.CreateFirstUser(t, owner)
+
+		ctx := testutil.Context(t, testutil.WaitLong)
+		ownerUser, err := owner.User(context.Background(), "me")
+		require.NoError(t, err)
+
+		// Create the user, then delete the user, then create again.
+		// This causes the email change to fail.
+		client := codersdk.New(owner.URL)
+
+		client, _ = fake.Login(t, client, jwt.MapClaims{})
+		deleted, err := client.User(ctx, "me")
+		require.NoError(t, err)
+
+		err = owner.DeleteUser(ctx, deleted.ID)
+		require.NoError(t, err)
+		// Check no user links for the user
+		links, err := db.GetUserLinksByUserID(dbauthz.As(ctx, coderdtest.AuthzUserSubject(ownerUser, first.OrganizationID)), deleted.ID)
+		require.NoError(t, err)
+		require.Empty(t, links)
+
+		// Make sure a user_link cannot be created with a deleted user.
+		// nolint:gocritic // Unit test
+		_, err = db.InsertUserLink(dbauthz.AsSystemRestricted(ctx), database.InsertUserLinkParams{
+			UserID:            deleted.ID,
+			LoginType:         "github",
+			LinkedID:          "100",
+			OAuthAccessToken:  "random",
+			OAuthRefreshToken: "random",
+			OAuthExpiry:       time.Now(),
+			DebugContext:      []byte(`{}`),
+		})
+		require.ErrorContains(t, err, "Cannot create user_link for deleted user")
+
+		// Create the user again.
+		client, _ = fake.Login(t, client, jwt.MapClaims{})
+		user, err := client.User(ctx, "me")
+		require.NoError(t, err)
+		userID := user.ID
+		require.Equal(t, user.Email, *coderEmail.Email)
+
+		// Now the user is registered, let's change their primary email.
+		coderEmail.Primary = github.Bool(false)
+		gmailEmail.Primary = github.Bool(true)
+
+		client, _ = fake.Login(t, client, jwt.MapClaims{})
+		user, err = client.User(ctx, "me")
+		require.NoError(t, err)
+
+		require.Equal(t, user.ID, userID, "user_id is different, a new user was likely created")
+		require.Equal(t, user.Email, *gmailEmail.Email)
+
+		// Entirely change emails.
+		newEmail := "alice@newdomain.com"
+		emails = []*github.UserEmail{
+			{
+				Email:    github.String("alice@newdomain.com"),
+				Primary:  github.Bool(true),
+				Verified: github.Bool(true),
+			},
+		}
+		client, _ = fake.Login(t, client, jwt.MapClaims{})
+		user, err = client.User(ctx, "me")
+		require.NoError(t, err)
+
+		require.Equal(t, user.ID, userID, "user_id is different, a new user was likely created")
+		require.Equal(t, user.Email, newEmail)
 	})
 }
 
@@ -608,191 +744,243 @@ func TestUserOIDC(t *testing.T) {
 		StatusCode          int
 		IgnoreEmailVerified bool
 		IgnoreUserInfo      bool
-	}{{
-		Name: "EmailOnly",
-		IDTokenClaims: jwt.MapClaims{
-			"email": "kyle@kwc.io",
+	}{
+		{
+			Name: "EmailOnly",
+			IDTokenClaims: jwt.MapClaims{
+				"email": "kyle@kwc.io",
+			},
+			AllowSignups: true,
+			StatusCode:   http.StatusOK,
+			Username:     "kyle",
 		},
-		AllowSignups: true,
-		StatusCode:   http.StatusOK,
-		Username:     "kyle",
-	}, {
-		Name: "EmailNotVerified",
-		IDTokenClaims: jwt.MapClaims{
-			"email":          "kyle@kwc.io",
-			"email_verified": false,
+		{
+			Name: "EmailNotVerified",
+			IDTokenClaims: jwt.MapClaims{
+				"email":          "kyle@kwc.io",
+				"email_verified": false,
+			},
+			AllowSignups: true,
+			StatusCode:   http.StatusForbidden,
 		},
-		AllowSignups: true,
-		StatusCode:   http.StatusForbidden,
-	}, {
-		Name: "EmailNotAString",
-		IDTokenClaims: jwt.MapClaims{
-			"email":          3.14159,
-			"email_verified": false,
+		{
+			Name: "EmailNotAString",
+			IDTokenClaims: jwt.MapClaims{
+				"email":          3.14159,
+				"email_verified": false,
+			},
+			AllowSignups: true,
+			StatusCode:   http.StatusBadRequest,
 		},
-		AllowSignups: true,
-		StatusCode:   http.StatusBadRequest,
-	}, {
-		Name: "EmailNotVerifiedIgnored",
-		IDTokenClaims: jwt.MapClaims{
-			"email":          "kyle@kwc.io",
-			"email_verified": false,
+		{
+			Name: "EmailNotVerifiedIgnored",
+			IDTokenClaims: jwt.MapClaims{
+				"email":          "kyle@kwc.io",
+				"email_verified": false,
+			},
+			AllowSignups:        true,
+			StatusCode:          http.StatusOK,
+			Username:            "kyle",
+			IgnoreEmailVerified: true,
 		},
-		AllowSignups:        true,
-		StatusCode:          http.StatusOK,
-		Username:            "kyle",
-		IgnoreEmailVerified: true,
-	}, {
-		Name: "NotInRequiredEmailDomain",
-		IDTokenClaims: jwt.MapClaims{
-			"email":          "kyle@kwc.io",
-			"email_verified": true,
+		{
+			Name: "NotInRequiredEmailDomain",
+			IDTokenClaims: jwt.MapClaims{
+				"email":          "kyle@kwc.io",
+				"email_verified": true,
+			},
+			AllowSignups: true,
+			EmailDomain: []string{
+				"coder.com",
+			},
+			StatusCode: http.StatusForbidden,
 		},
-		AllowSignups: true,
-		EmailDomain: []string{
-			"coder.com",
+		{
+			Name: "EmailDomainCaseInsensitive",
+			IDTokenClaims: jwt.MapClaims{
+				"email":          "kyle@KWC.io",
+				"email_verified": true,
+			},
+			AllowSignups: true,
+			EmailDomain: []string{
+				"kwc.io",
+			},
+			StatusCode: http.StatusOK,
 		},
-		StatusCode: http.StatusForbidden,
-	}, {
-		Name: "EmailDomainCaseInsensitive",
-		IDTokenClaims: jwt.MapClaims{
-			"email":          "kyle@KWC.io",
-			"email_verified": true,
+		{
+			Name: "EmailDomainSubset",
+			IDTokenClaims: jwt.MapClaims{
+				"email":          "colin@gmail.com",
+				"email_verified": true,
+			},
+			AllowSignups: true,
+			EmailDomain: []string{
+				"mail.com",
+			},
+			StatusCode: http.StatusForbidden,
 		},
-		AllowSignups: true,
-		EmailDomain: []string{
-			"kwc.io",
+		{
+			Name:          "EmptyClaims",
+			IDTokenClaims: jwt.MapClaims{},
+			AllowSignups:  true,
+			StatusCode:    http.StatusBadRequest,
 		},
-		StatusCode: http.StatusOK,
-	}, {
-		Name:          "EmptyClaims",
-		IDTokenClaims: jwt.MapClaims{},
-		AllowSignups:  true,
-		StatusCode:    http.StatusBadRequest,
-	}, {
-		Name: "NoSignups",
-		IDTokenClaims: jwt.MapClaims{
-			"email":          "kyle@kwc.io",
-			"email_verified": true,
+		{
+			Name: "NoSignups",
+			IDTokenClaims: jwt.MapClaims{
+				"email":          "kyle@kwc.io",
+				"email_verified": true,
+			},
+			StatusCode: http.StatusForbidden,
 		},
-		StatusCode: http.StatusForbidden,
-	}, {
-		Name: "UsernameFromEmail",
-		IDTokenClaims: jwt.MapClaims{
-			"email":          "kyle@kwc.io",
-			"email_verified": true,
+		{
+			Name: "UsernameFromEmail",
+			IDTokenClaims: jwt.MapClaims{
+				"email":          "kyle@kwc.io",
+				"email_verified": true,
+			},
+			Username:     "kyle",
+			AllowSignups: true,
+			StatusCode:   http.StatusOK,
 		},
-		Username:     "kyle",
-		AllowSignups: true,
-		StatusCode:   http.StatusOK,
-	}, {
-		Name: "UsernameFromClaims",
-		IDTokenClaims: jwt.MapClaims{
-			"email":              "kyle@kwc.io",
-			"email_verified":     true,
-			"preferred_username": "hotdog",
+		{
+			Name: "UsernameFromClaims",
+			IDTokenClaims: jwt.MapClaims{
+				"email":              "kyle@kwc.io",
+				"email_verified":     true,
+				"preferred_username": "hotdog",
+			},
+			Username:     "hotdog",
+			AllowSignups: true,
+			StatusCode:   http.StatusOK,
 		},
-		Username:     "hotdog",
-		AllowSignups: true,
-		StatusCode:   http.StatusOK,
-	}, {
-		// Services like Okta return the email as the username:
-		// https://developer.okta.com/docs/reference/api/oidc/#base-claims-always-present
-		Name: "UsernameAsEmail",
-		IDTokenClaims: jwt.MapClaims{
-			"email":              "kyle@kwc.io",
-			"email_verified":     true,
-			"preferred_username": "kyle@kwc.io",
+		{
+			// Services like Okta return the email as the username:
+			// https://developer.okta.com/docs/reference/api/oidc/#base-claims-always-present
+			Name: "UsernameAsEmail",
+			IDTokenClaims: jwt.MapClaims{
+				"email":              "kyle@kwc.io",
+				"email_verified":     true,
+				"preferred_username": "kyle@kwc.io",
+			},
+			Username:     "kyle",
+			AllowSignups: true,
+			StatusCode:   http.StatusOK,
 		},
-		Username:     "kyle",
-		AllowSignups: true,
-		StatusCode:   http.StatusOK,
-	}, {
-		// See: https://github.com/coder/coder/issues/4472
-		Name: "UsernameIsEmail",
-		IDTokenClaims: jwt.MapClaims{
-			"preferred_username": "kyle@kwc.io",
+		{
+			// See: https://github.com/coder/coder/issues/4472
+			Name: "UsernameIsEmail",
+			IDTokenClaims: jwt.MapClaims{
+				"preferred_username": "kyle@kwc.io",
+			},
+			Username:     "kyle",
+			AllowSignups: true,
+			StatusCode:   http.StatusOK,
 		},
-		Username:     "kyle",
-		AllowSignups: true,
-		StatusCode:   http.StatusOK,
-	}, {
-		Name: "WithPicture",
-		IDTokenClaims: jwt.MapClaims{
-			"email":              "kyle@kwc.io",
-			"email_verified":     true,
-			"preferred_username": "kyle",
-			"picture":            "/example.png",
+		{
+			Name: "WithPicture",
+			IDTokenClaims: jwt.MapClaims{
+				"email":              "kyle@kwc.io",
+				"email_verified":     true,
+				"preferred_username": "kyle",
+				"picture":            "/example.png",
+			},
+			Username:     "kyle",
+			AllowSignups: true,
+			AvatarURL:    "/example.png",
+			StatusCode:   http.StatusOK,
 		},
-		Username:     "kyle",
-		AllowSignups: true,
-		AvatarURL:    "/example.png",
-		StatusCode:   http.StatusOK,
-	}, {
-		Name: "WithUserInfoClaims",
-		IDTokenClaims: jwt.MapClaims{
-			"email":          "kyle@kwc.io",
-			"email_verified": true,
+		{
+			Name: "WithUserInfoClaims",
+			IDTokenClaims: jwt.MapClaims{
+				"email":          "kyle@kwc.io",
+				"email_verified": true,
+			},
+			UserInfoClaims: jwt.MapClaims{
+				"preferred_username": "potato",
+				"picture":            "/example.png",
+			},
+			Username:     "potato",
+			AllowSignups: true,
+			AvatarURL:    "/example.png",
+			StatusCode:   http.StatusOK,
 		},
-		UserInfoClaims: jwt.MapClaims{
-			"preferred_username": "potato",
-			"picture":            "/example.png",
+		{
+			Name: "GroupsDoesNothing",
+			IDTokenClaims: jwt.MapClaims{
+				"email":  "coolin@coder.com",
+				"groups": []string{"pingpong"},
+			},
+			AllowSignups: true,
+			StatusCode:   http.StatusOK,
 		},
-		Username:     "potato",
-		AllowSignups: true,
-		AvatarURL:    "/example.png",
-		StatusCode:   http.StatusOK,
-	}, {
-		Name: "GroupsDoesNothing",
-		IDTokenClaims: jwt.MapClaims{
-			"email":  "coolin@coder.com",
-			"groups": []string{"pingpong"},
+		{
+			Name: "UserInfoOverridesIDTokenClaims",
+			IDTokenClaims: jwt.MapClaims{
+				"email":          "internaluser@internal.domain",
+				"email_verified": false,
+			},
+			UserInfoClaims: jwt.MapClaims{
+				"email":              "externaluser@external.domain",
+				"email_verified":     true,
+				"preferred_username": "user",
+			},
+			Username:            "user",
+			AllowSignups:        true,
+			IgnoreEmailVerified: false,
+			StatusCode:          http.StatusOK,
 		},
-		AllowSignups: true,
-		StatusCode:   http.StatusOK,
-	}, {
-		Name: "UserInfoOverridesIDTokenClaims",
-		IDTokenClaims: jwt.MapClaims{
-			"email":          "internaluser@internal.domain",
-			"email_verified": false,
+		{
+			Name: "InvalidUserInfo",
+			IDTokenClaims: jwt.MapClaims{
+				"email":          "internaluser@internal.domain",
+				"email_verified": false,
+			},
+			UserInfoClaims: jwt.MapClaims{
+				"email": 1,
+			},
+			AllowSignups:        true,
+			IgnoreEmailVerified: false,
+			StatusCode:          http.StatusInternalServerError,
 		},
-		UserInfoClaims: jwt.MapClaims{
-			"email":              "externaluser@external.domain",
-			"email_verified":     true,
-			"preferred_username": "user",
+		{
+			Name: "IgnoreUserInfo",
+			IDTokenClaims: jwt.MapClaims{
+				"email":              "user@internal.domain",
+				"email_verified":     true,
+				"preferred_username": "user",
+			},
+			UserInfoClaims: jwt.MapClaims{
+				"email":              "user.mcname@external.domain",
+				"preferred_username": "Mr. User McName",
+			},
+			Username:       "user",
+			IgnoreUserInfo: true,
+			AllowSignups:   true,
+			StatusCode:     http.StatusOK,
 		},
-		Username:            "user",
-		AllowSignups:        true,
-		IgnoreEmailVerified: false,
-		StatusCode:          http.StatusOK,
-	}, {
-		Name: "InvalidUserInfo",
-		IDTokenClaims: jwt.MapClaims{
-			"email":          "internaluser@internal.domain",
-			"email_verified": false,
+		{
+			Name: "HugeIDToken",
+			IDTokenClaims: inflateClaims(t, jwt.MapClaims{
+				"email":          "user@domain.tld",
+				"email_verified": true,
+			}, 65536),
+			Username:     "user",
+			AllowSignups: true,
+			StatusCode:   http.StatusOK,
 		},
-		UserInfoClaims: jwt.MapClaims{
-			"email": 1,
+		{
+			Name: "HugeClaims",
+			IDTokenClaims: jwt.MapClaims{
+				"email":          "user@domain.tld",
+				"email_verified": true,
+			},
+			UserInfoClaims: inflateClaims(t, jwt.MapClaims{}, 65536),
+			Username:       "user",
+			AllowSignups:   true,
+			StatusCode:     http.StatusOK,
 		},
-		AllowSignups:        true,
-		IgnoreEmailVerified: false,
-		StatusCode:          http.StatusInternalServerError,
-	}, {
-		Name: "IgnoreUserInfo",
-		IDTokenClaims: jwt.MapClaims{
-			"email":              "user@internal.domain",
-			"email_verified":     true,
-			"preferred_username": "user",
-		},
-		UserInfoClaims: jwt.MapClaims{
-			"email":              "user.mcname@external.domain",
-			"preferred_username": "Mr. User McName",
-		},
-		Username:       "user",
-		IgnoreUserInfo: true,
-		AllowSignups:   true,
-		StatusCode:     http.StatusOK,
-	}} {
+	} {
 		tc := tc
 		t.Run(tc.Name, func(t *testing.T) {
 			t.Parallel()
@@ -811,7 +999,7 @@ func TestUserOIDC(t *testing.T) {
 			})
 
 			auditor := audit.NewMock()
-			logger := slogtest.Make(t, &slogtest.Options{IgnoreErrors: true})
+			logger := slogtest.Make(t, &slogtest.Options{IgnoreErrors: true}).Leveled(slog.LevelDebug)
 			owner := coderdtest.New(t, &coderdtest.Options{
 				Auditor:    auditor,
 				OIDCConfig: cfg,
@@ -1141,4 +1329,14 @@ func authCookieValue(cookies []*http.Cookie) string {
 		}
 	}
 	return ""
+}
+
+// inflateClaims 'inflates' a jwt.MapClaims from a seed by
+// adding a ridiculously large key-value pair of length size.
+func inflateClaims(t testing.TB, seed jwt.MapClaims, size int) jwt.MapClaims {
+	t.Helper()
+	junk, err := cryptorand.String(size)
+	require.NoError(t, err)
+	seed["random_data"] = junk
+	return seed
 }

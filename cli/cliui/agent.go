@@ -2,13 +2,17 @@ package cliui
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"golang.org/x/xerrors"
 
 	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/tailnet"
 )
 
 var errAgentShuttingDown = xerrors.New("agent is shutting down")
@@ -200,28 +204,28 @@ func Agent(ctx context.Context, writer io.Writer, agentID uuid.UUID, opts AgentO
 
 			switch agent.LifecycleState {
 			case codersdk.WorkspaceAgentLifecycleReady:
-				sw.Complete(stage, agent.ReadyAt.Sub(*agent.StartedAt))
+				sw.Complete(stage, safeDuration(sw, agent.ReadyAt, agent.StartedAt))
 			case codersdk.WorkspaceAgentLifecycleStartTimeout:
 				sw.Fail(stage, 0)
 				sw.Log(time.Time{}, codersdk.LogLevelWarn, "Warning: A startup script timed out and your workspace may be incomplete.")
 			case codersdk.WorkspaceAgentLifecycleStartError:
-				sw.Fail(stage, agent.ReadyAt.Sub(*agent.StartedAt))
+				sw.Fail(stage, safeDuration(sw, agent.ReadyAt, agent.StartedAt))
 				// Use zero time (omitted) to separate these from the startup logs.
 				sw.Log(time.Time{}, codersdk.LogLevelWarn, "Warning: A startup script exited with an error and your workspace may be incomplete.")
-				sw.Log(time.Time{}, codersdk.LogLevelWarn, troubleshootingMessage(agent, "https://coder.com/docs/v2/latest/templates#startup-script-exited-with-an-error"))
+				sw.Log(time.Time{}, codersdk.LogLevelWarn, troubleshootingMessage(agent, "https://coder.com/docs/v2/latest/templates/troubleshooting#startup-script-exited-with-an-error"))
 			default:
 				switch {
 				case agent.LifecycleState.Starting():
 					// Use zero time (omitted) to separate these from the startup logs.
 					sw.Log(time.Time{}, codersdk.LogLevelWarn, "Notice: The startup scripts are still running and your workspace may be incomplete.")
-					sw.Log(time.Time{}, codersdk.LogLevelWarn, troubleshootingMessage(agent, "https://coder.com/docs/v2/latest/templates#your-workspace-may-be-incomplete"))
+					sw.Log(time.Time{}, codersdk.LogLevelWarn, troubleshootingMessage(agent, "https://coder.com/docs/v2/latest/templates/troubleshooting#your-workspace-may-be-incomplete"))
 					// Note: We don't complete or fail the stage here, it's
 					// intentionally left open to indicate this stage didn't
 					// complete.
 				case agent.LifecycleState.ShuttingDown():
 					// We no longer know if the startup script failed or not,
 					// but we need to tell the user something.
-					sw.Complete(stage, agent.ReadyAt.Sub(*agent.StartedAt))
+					sw.Complete(stage, safeDuration(sw, agent.ReadyAt, agent.StartedAt))
 					return errAgentShuttingDown
 				}
 			}
@@ -236,15 +240,15 @@ func Agent(ctx context.Context, writer io.Writer, agentID uuid.UUID, opts AgentO
 			stage := "The workspace agent lost connection"
 			sw.Start(stage)
 			sw.Log(time.Now(), codersdk.LogLevelWarn, "Wait for it to reconnect or restart your workspace.")
-			sw.Log(time.Now(), codersdk.LogLevelWarn, troubleshootingMessage(agent, "https://coder.com/docs/v2/latest/templates#agent-connection-issues"))
+			sw.Log(time.Now(), codersdk.LogLevelWarn, troubleshootingMessage(agent, "https://coder.com/docs/v2/latest/templates/troubleshooting#agent-connection-issues"))
 
-			disconnectedAt := *agent.DisconnectedAt
+			disconnectedAt := agent.DisconnectedAt
 			for agent.Status == codersdk.WorkspaceAgentDisconnected {
 				if agent, err = fetch(); err != nil {
 					return xerrors.Errorf("fetch: %w", err)
 				}
 			}
-			sw.Complete(stage, agent.LastConnectedAt.Sub(disconnectedAt))
+			sw.Complete(stage, safeDuration(sw, agent.LastConnectedAt, disconnectedAt))
 		}
 	}
 }
@@ -257,8 +261,79 @@ func troubleshootingMessage(agent codersdk.WorkspaceAgent, url string) string {
 	return m
 }
 
+// safeDuration returns a-b. If a or b is nil, it returns 0.
+// This is because we often dereference a time pointer, which can
+// cause a panic. These dereferences are used to calculate durations,
+// which are not critical, and therefor should not break things
+// when it fails.
+// A panic has been observed in a test.
+func safeDuration(sw *stageWriter, a, b *time.Time) time.Duration {
+	if a == nil || b == nil {
+		if sw != nil {
+			// Ideally the message includes which fields are <nil>, but you can
+			// use the surrounding log lines to figure that out. And passing more
+			// params makes this unwieldy.
+			sw.Log(time.Now(), codersdk.LogLevelWarn, "Warning: Failed to calculate duration from a time being <nil>.")
+		}
+		return 0
+	}
+	return a.Sub(*b)
+}
+
 type closeFunc func() error
 
 func (c closeFunc) Close() error {
 	return c()
+}
+
+func PeerDiagnostics(w io.Writer, d tailnet.PeerDiagnostics) {
+	if d.PreferredDERP > 0 {
+		rn, ok := d.DERPRegionNames[d.PreferredDERP]
+		if !ok {
+			rn = "unknown"
+		}
+		_, _ = fmt.Fprintf(w, "✔ preferred DERP region: %d (%s)\n", d.PreferredDERP, rn)
+	} else {
+		_, _ = fmt.Fprint(w, "✘ not connected to DERP\n")
+	}
+	if d.SentNode {
+		_, _ = fmt.Fprint(w, "✔ sent local data to Coder networking coodinator\n")
+	} else {
+		_, _ = fmt.Fprint(w, "✘ have not sent local data to Coder networking coordinator\n")
+	}
+	if d.ReceivedNode != nil {
+		dp := d.ReceivedNode.DERP
+		dn := ""
+		// should be 127.3.3.40:N where N is the DERP region
+		ap := strings.Split(dp, ":")
+		if len(ap) == 2 {
+			dp = ap[1]
+			di, err := strconv.Atoi(dp)
+			if err == nil {
+				var ok bool
+				dn, ok = d.DERPRegionNames[di]
+				if ok {
+					dn = fmt.Sprintf("(%s)", dn)
+				} else {
+					dn = "(unknown)"
+				}
+			}
+		}
+		_, _ = fmt.Fprintf(w,
+			"✔ received remote agent data from Coder networking coordinator\n    preferred DERP region: %s %s\n    endpoints: %s\n",
+			dp, dn, strings.Join(d.ReceivedNode.Endpoints, ", "))
+	} else {
+		_, _ = fmt.Fprint(w, "✘ have not received remote agent data from Coder networking coordinator\n")
+	}
+	if !d.LastWireguardHandshake.IsZero() {
+		ago := time.Since(d.LastWireguardHandshake)
+		symbol := "✔"
+		// wireguard is supposed to refresh handshake on 5 minute intervals
+		if ago > 5*time.Minute {
+			symbol = "⚠"
+		}
+		_, _ = fmt.Fprintf(w, "%s Wireguard handshake %s ago\n", symbol, ago.Round(time.Second))
+	} else {
+		_, _ = fmt.Fprint(w, "✘ Wireguard is not connected\n")
+	}
 }

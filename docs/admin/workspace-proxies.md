@@ -1,13 +1,5 @@
 # Workspace Proxies
 
-> Workspace proxies are in an
-> [experimental state](../contributing/feature-stages.md#experimental-features)
-> and the behavior is subject to change. Use
-> [GitHub issues](https://github.com/coder/coder) to leave feedback. This
-> experiment must be specifically enabled with the `--experiments="moons"`
-> option on both coderd and the workspace proxy. If you have all experiements
-> enabled, you have to add moons as well. `--experiments="*,moons"`
-
 Workspace proxies provide low-latency experiences for geo-distributed teams.
 
 Coder's networking does a best effort to make direct connections to a workspace.
@@ -130,10 +122,6 @@ coder:
     - name: CODER_WILDCARD_ACCESS_URL
       value: "*.<app_hostname_of_proxy>"
 
-    # enables new paid features that are in alpha state
-    - name: CODER_EXPERIMENTS
-      value: "*,moons"
-
   tls:
     secretNames:
       - kubernetes-wsproxy-secret
@@ -157,6 +145,28 @@ and up the deployment's replicas.
 ```bash
 # Set configuration options via environment variables, a config file, or cmd flags
 coder wsproxy server
+```
+
+### Running as a system service
+
+If you've installed Coder via a [system package](../install/index.md), you can
+configure the workspace proxy by settings in
+`/etc/coder.d/coder-workspace-proxy.env`
+
+To run workspace proxy as a system service on the host:
+
+```bash
+# Use systemd to start workspace proxy now and on reboot
+sudo systemctl enable --now coder-workspace-proxy
+
+# View the logs to ensure a successful start
+journalctl -u coder-workspace-proxy.service -b
+```
+
+To restart workspace proxy after applying system changes:
+
+```shell
+sudo systemctl restart coder-workspace-proxy
 ```
 
 ### Running in Docker
@@ -196,3 +206,14 @@ goes offline, the session will fall back to the primary proxy. This could take
 up to 60 seconds.
 
 ![Workspace proxy picker](../images/admin/workspace-proxy-picker.png)
+
+## Step 3: Observability
+
+Coder workspace proxy exports metrics via the HTTP endpoint, which can be
+enabled using either the environment variable `CODER_PROMETHEUS_ENABLE` or the
+flag `--prometheus-enable`.
+
+The Prometheus endpoint address is `http://localhost:2112/` by default. You can
+use either the environment variable `CODER_PROMETHEUS_ADDRESS` or the flag
+`--prometheus-address <network-interface>:<port>` to select a different listen
+address.

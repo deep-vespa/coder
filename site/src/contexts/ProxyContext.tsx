@@ -1,18 +1,17 @@
-import { useQuery } from "react-query";
-import { getWorkspaceProxies, getWorkspaceProxyRegions } from "api/api";
-import { Region, WorkspaceProxy } from "api/typesGenerated";
-import { useDashboard } from "components/Dashboard/DashboardProvider";
 import {
   createContext,
-  FC,
-  PropsWithChildren,
+  type FC,
+  type PropsWithChildren,
   useCallback,
   useContext,
   useEffect,
   useState,
 } from "react";
-import { ProxyLatencyReport, useProxyLatency } from "./useProxyLatency";
-import { usePermissions } from "hooks/usePermissions";
+import { useQuery } from "react-query";
+import { getWorkspaceProxies, getWorkspaceProxyRegions } from "api/api";
+import type { Region, WorkspaceProxy } from "api/typesGenerated";
+import { useAuthenticated } from "contexts/auth/RequireAuth";
+import { type ProxyLatencyReport, useProxyLatency } from "./useProxyLatency";
 
 export interface ProxyContextValue {
   // proxy is **always** the workspace proxy that should be used.
@@ -85,9 +84,6 @@ export const ProxyContext = createContext<ProxyContextValue | undefined>(
  * ProxyProvider interacts with local storage to indicate the preferred workspace proxy.
  */
 export const ProxyProvider: FC<PropsWithChildren> = ({ children }) => {
-  const dashboard = useDashboard();
-  const experimentEnabled = dashboard?.experiments.includes("moons");
-
   // Using a useState so the caller always has the latest user saved
   // proxy.
   const [userSavedProxy, setUserSavedProxy] = useState(loadUserSelectedProxy());
@@ -120,7 +116,7 @@ export const ProxyProvider: FC<PropsWithChildren> = ({ children }) => {
     }
   });
 
-  const permissions = usePermissions();
+  const { permissions } = useAuthenticated();
   const query = async (): Promise<Region[]> => {
     const endpoint = permissions.editWorkspaceProxies
       ? getWorkspaceProxies
@@ -176,13 +172,7 @@ export const ProxyProvider: FC<PropsWithChildren> = ({ children }) => {
         proxyLatencies,
         refetchProxyLatencies,
         userProxy: userSavedProxy,
-        proxy: experimentEnabled
-          ? proxy
-          : {
-              // If the experiment is disabled, then call 'getPreferredProxy' with the regions from
-              // the api call. The default behavior is to use the `primary` proxy.
-              ...getPreferredProxy(proxiesResp || []),
-            },
+        proxy: proxy,
         proxies: proxiesResp,
         isLoading: proxiesLoading,
         isFetched: proxiesFetched,
@@ -320,11 +310,11 @@ const computeUsableURLS = (proxy?: Region): PreferredProxy => {
 // Local storage functions
 
 export const clearUserSelectedProxy = (): void => {
-  window.localStorage.removeItem("user-selected-proxy");
+  localStorage.removeItem("user-selected-proxy");
 };
 
 export const saveUserSelectedProxy = (saved: Region): void => {
-  window.localStorage.setItem("user-selected-proxy", JSON.stringify(saved));
+  localStorage.setItem("user-selected-proxy", JSON.stringify(saved));
 };
 
 export const loadUserSelectedProxy = (): Region | undefined => {

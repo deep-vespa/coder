@@ -20,6 +20,14 @@ coder templates pull [flags] <name> [destination]
 
 Output the template as a tar archive to stdout.
 
+### --zip
+
+|      |                   |
+| ---- | ----------------- |
+| Type | <code>bool</code> |
+
+Output the template as a zip archive to stdout.
+
 ### --version
 
 |      |                     |

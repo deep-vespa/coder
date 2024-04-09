@@ -15,28 +15,33 @@ export const DefaultTTLHelperText = (props: { ttl?: number }) => {
 
   return (
     <span>
-      Workspaces will default to stopping after {ttl} {hours(ttl)} without
-      activity.
+      Workspaces will default to stopping after {ttl} {hours(ttl)} after being
+      started.
     </span>
   );
 };
 
-export const MaxTTLHelperText = (props: { ttl?: number }) => {
-  const { ttl = 0 } = props;
+export const ActivityBumpHelperText = (props: { bump?: number }) => {
+  const { bump = 0 } = props;
 
   // Error will show once field is considered touched
-  if (ttl < 0) {
+  if (bump < 0) {
     return null;
   }
 
-  if (ttl === 0) {
-    return <span>Workspaces may run indefinitely.</span>;
+  if (bump === 0) {
+    return (
+      <span>
+        Workspaces will not have their stop time automatically extended based on
+        user activity. Users can still manually delay the stop time.
+      </span>
+    );
   }
 
   return (
     <span>
-      Workspaces must stop within {ttl} {hours(ttl)} of starting, regardless of
-      any active connections.
+      Workspaces will be automatically bumped by {bump} {hours(bump)} when user
+      activity is detected.
     </span>
   );
 };

@@ -1,26 +1,33 @@
-import { useQuery, useMutation } from "react-query";
+import type { FC } from "react";
+import { useQuery } from "react-query";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   templateVersionLogs,
   JobError,
-  createTemplate,
   templateExamples,
   templateVersionVariables,
 } from "api/queries/templates";
 import { ErrorAlert } from "components/Alert/ErrorAlert";
-import { useOrganizationId } from "hooks";
-import { useNavigate, useSearchParams } from "react-router-dom";
-import { CreateTemplateForm } from "./CreateTemplateForm";
 import { Loader } from "components/Loader/Loader";
-import { useDashboard } from "components/Dashboard/DashboardProvider";
+import { useAuthenticated } from "contexts/auth/RequireAuth";
+import { useDashboard } from "modules/dashboard/useDashboard";
+import { CreateTemplateForm } from "./CreateTemplateForm";
+import type { CreateTemplatePageViewProps } from "./types";
 import {
   firstVersionFromExample,
   getFormPermissions,
   newTemplate,
 } from "./utils";
 
-export const ImportStarterTemplateView = () => {
+export const ImportStarterTemplateView: FC<CreateTemplatePageViewProps> = ({
+  onCreateTemplate,
+  onOpenBuildLogsDrawer,
+  variablesSectionRef,
+  error,
+  isCreating,
+}) => {
   const navigate = useNavigate();
-  const organizationId = useOrganizationId();
+  const { organizationId } = useAuthenticated();
   const [searchParams] = useSearchParams();
   const templateExamplesQuery = useQuery(templateExamples(organizationId));
   const templateExample = templateExamplesQuery.data?.find(
@@ -33,19 +40,17 @@ export const ImportStarterTemplateView = () => {
   const dashboard = useDashboard();
   const formPermissions = getFormPermissions(dashboard.entitlements);
 
-  const createTemplateMutation = useMutation(createTemplate());
-  const createError = createTemplateMutation.error;
-  const isJobError = createError instanceof JobError;
+  const isJobError = error instanceof JobError;
   const templateVersionLogsQuery = useQuery({
-    ...templateVersionLogs(isJobError ? createError.version.id : ""),
+    ...templateVersionLogs(isJobError ? error.version.id : ""),
     enabled: isJobError,
   });
 
   const missedVariables = useQuery({
-    ...templateVersionVariables(isJobError ? createError.version.id : ""),
+    ...templateVersionVariables(isJobError ? error.version.id : ""),
+    keepPreviousData: true,
     enabled:
-      isJobError &&
-      createError.job.error_code === "REQUIRED_TEMPLATE_VARIABLES",
+      isJobError && error.job.error_code === "REQUIRED_TEMPLATE_VARIABLES",
   });
 
   if (isLoading) {
@@ -59,15 +64,17 @@ export const ImportStarterTemplateView = () => {
   return (
     <CreateTemplateForm
       {...formPermissions}
+      variablesSectionRef={variablesSectionRef}
+      onOpenBuildLogsDrawer={onOpenBuildLogsDrawer}
       starterTemplate={templateExample!}
       variables={missedVariables.data}
-      error={createTemplateMutation.error}
-      isSubmitting={createTemplateMutation.isLoading}
+      error={error}
+      isSubmitting={isCreating}
       onCancel={() => navigate(-1)}
-      jobError={isJobError ? createError.job.error : undefined}
+      jobError={isJobError ? error.job.error : undefined}
       logs={templateVersionLogsQuery.data}
       onSubmit={async (formData) => {
-        const template = await createTemplateMutation.mutateAsync({
+        await onCreateTemplate({
           organizationId,
           version: firstVersionFromExample(
             templateExample!,
@@ -75,7 +82,6 @@ export const ImportStarterTemplateView = () => {
           ),
           template: newTemplate(formData),
         });
-        navigate(`/templates/${template.name}`);
       }}
     />
   );

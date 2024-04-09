@@ -1,6 +1,6 @@
 import dayjs from "dayjs";
 import duration from "dayjs/plugin/duration";
-import { Workspace } from "api/typesGenerated";
+import type { Workspace } from "api/typesGenerated";
 import * as Mocks from "testHelpers/entities";
 import {
   deadlineExtensionMax,
@@ -84,6 +84,8 @@ describe("util/schedule", () => {
       new Date("2023-09-06T15:00:00.000+10:00"),
     );
 
-    expect(quietHoursStart).toBe("12:00AM tomorrow (in 9 hours)");
+    expect(quietHoursStart).toBe(
+      "12:00AM tomorrow (in 9 hours) in Australia/Sydney",
+    );
   });
 });

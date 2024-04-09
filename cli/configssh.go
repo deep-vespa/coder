@@ -13,19 +13,21 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/cli/safeexec"
 	"github.com/pkg/diff"
 	"github.com/pkg/diff/write"
+	"golang.org/x/exp/constraints"
 	"golang.org/x/exp/slices"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/xerrors"
 
-	"github.com/coder/coder/v2/cli/clibase"
 	"github.com/coder/coder/v2/cli/cliui"
 	"github.com/coder/coder/v2/coderd/util/slice"
 	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/serpent"
 )
 
 const (
@@ -46,9 +48,12 @@ const (
 // sshConfigOptions represents options that can be stored and read
 // from the coder config in ~/.ssh/coder.
 type sshConfigOptions struct {
-	waitEnum       string
-	userHostPrefix string
-	sshOptions     []string
+	waitEnum         string
+	userHostPrefix   string
+	sshOptions       []string
+	disableAutostart bool
+	header           []string
+	headerCommand    string
 }
 
 // addOptions expects options in the form of "option=value" or "option value".
@@ -98,15 +103,25 @@ func (o *sshConfigOptions) addOption(option string) error {
 }
 
 func (o sshConfigOptions) equal(other sshConfigOptions) bool {
-	// Compare without side-effects or regard to order.
-	opt1 := slices.Clone(o.sshOptions)
-	sort.Strings(opt1)
-	opt2 := slices.Clone(other.sshOptions)
-	sort.Strings(opt2)
-	if !slices.Equal(opt1, opt2) {
+	if !slicesSortedEqual(o.sshOptions, other.sshOptions) {
 		return false
 	}
-	return o.waitEnum == other.waitEnum && o.userHostPrefix == other.userHostPrefix
+	if !slicesSortedEqual(o.header, other.header) {
+		return false
+	}
+	return o.waitEnum == other.waitEnum && o.userHostPrefix == other.userHostPrefix && o.disableAutostart == other.disableAutostart && o.headerCommand == other.headerCommand
+}
+
+// slicesSortedEqual compares two slices without side-effects or regard to order.
+func slicesSortedEqual[S ~[]E, E constraints.Ordered](a, b S) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	a = slices.Clone(a)
+	slices.Sort(a)
+	b = slices.Clone(b)
+	slices.Sort(b)
+	return slices.Equal(a, b)
 }
 
 func (o sshConfigOptions) asList() (list []string) {
@@ -116,9 +131,19 @@ func (o sshConfigOptions) asList() (list []string) {
 	if o.userHostPrefix != "" {
 		list = append(list, fmt.Sprintf("ssh-host-prefix: %s", o.userHostPrefix))
 	}
+	if o.disableAutostart {
+		list = append(list, fmt.Sprintf("disable-autostart: %v", o.disableAutostart))
+	}
 	for _, opt := range o.sshOptions {
 		list = append(list, fmt.Sprintf("ssh-option: %s", opt))
 	}
+	for _, h := range o.header {
+		list = append(list, fmt.Sprintf("header: %s", h))
+	}
+	if o.headerCommand != "" {
+		list = append(list, fmt.Sprintf("header-command: %s", o.headerCommand))
+	}
+
 	return list
 }
 
@@ -190,7 +215,7 @@ func sshPrepareWorkspaceConfigs(ctx context.Context, client *codersdk.Client) (r
 	}
 }
 
-func (r *RootCmd) configSSH() *clibase.Cmd {
+func (r *RootCmd) configSSH() *serpent.Command {
 	var (
 		sshConfigFile       string
 		sshConfigOpts       sshConfigOptions
@@ -201,7 +226,7 @@ func (r *RootCmd) configSSH() *clibase.Cmd {
 		coderCliPath        string
 	)
 	client := new(codersdk.Client)
-	cmd := &clibase.Cmd{
+	cmd := &serpent.Command{
 		Annotations: workspaceCommand,
 		Use:         "config-ssh",
 		Short:       "Add an SSH Host entry for your workspaces \"ssh coder.workspace\"",
@@ -215,16 +240,18 @@ func (r *RootCmd) configSSH() *clibase.Cmd {
 				Command:     "coder config-ssh --dry-run",
 			},
 		),
-		Middleware: clibase.Chain(
-			clibase.RequireNArgs(0),
+		Middleware: serpent.Chain(
+			serpent.RequireNArgs(0),
 			r.InitClient(client),
 		),
-		Handler: func(inv *clibase.Invocation) error {
+		Handler: func(inv *serpent.Invocation) error {
 			if sshConfigOpts.waitEnum != "auto" && skipProxyCommand {
 				// The wait option is applied to the ProxyCommand. If the user
 				// specifies skip-proxy-command, then wait cannot be applied.
 				return xerrors.Errorf("cannot specify both --skip-proxy-command and --wait")
 			}
+			sshConfigOpts.header = r.header
+			sshConfigOpts.headerCommand = r.headerCommand
 
 			recvWorkspaceConfigs := sshPrepareWorkspaceConfigs(inv.Context(), client)
 
@@ -388,13 +415,24 @@ func (r *RootCmd) configSSH() *clibase.Cmd {
 					}
 
 					if !skipProxyCommand {
+						rootFlags := fmt.Sprintf("--global-config %s", escapedGlobalConfig)
+						for _, h := range sshConfigOpts.header {
+							rootFlags += fmt.Sprintf(" --header %q", h)
+						}
+						if sshConfigOpts.headerCommand != "" {
+							rootFlags += fmt.Sprintf(" --header-command %q", sshConfigOpts.headerCommand)
+						}
+
 						flags := ""
 						if sshConfigOpts.waitEnum != "auto" {
 							flags += " --wait=" + sshConfigOpts.waitEnum
 						}
+						if sshConfigOpts.disableAutostart {
+							flags += " --disable-autostart=true"
+						}
 						defaultOptions = append(defaultOptions, fmt.Sprintf(
-							"ProxyCommand %s --global-config %s ssh --stdio%s %s",
-							escapedCoderBinary, escapedGlobalConfig, flags, workspaceHostname,
+							"ProxyCommand %s %s ssh --stdio%s %s",
+							escapedCoderBinary, rootFlags, flags, workspaceHostname,
 						))
 					}
 
@@ -500,13 +538,13 @@ func (r *RootCmd) configSSH() *clibase.Cmd {
 		},
 	}
 
-	cmd.Options = clibase.OptionSet{
+	cmd.Options = serpent.OptionSet{
 		{
 			Flag:        "ssh-config-file",
 			Env:         "CODER_SSH_CONFIG_FILE",
 			Default:     sshDefaultConfigFileName,
 			Description: "Specifies the path to an SSH config.",
-			Value:       clibase.StringOf(&sshConfigFile),
+			Value:       serpent.StringOf(&sshConfigFile),
 		},
 		{
 			Flag:    "coder-binary-path",
@@ -514,7 +552,7 @@ func (r *RootCmd) configSSH() *clibase.Cmd {
 			Default: "",
 			Description: "Optionally specify the absolute path to the coder binary used in ProxyCommand. " +
 				"By default, the binary invoking this command ('config ssh') is used.",
-			Value: clibase.Validate(clibase.StringOf(&coderCliPath), func(value *clibase.String) error {
+			Value: serpent.Validate(serpent.StringOf(&coderCliPath), func(value *serpent.String) error {
 				if runtime.GOOS == goosWindows {
 					// For some reason filepath.IsAbs() does not work on windows.
 					return nil
@@ -531,40 +569,47 @@ func (r *RootCmd) configSSH() *clibase.Cmd {
 			FlagShorthand: "o",
 			Env:           "CODER_SSH_CONFIG_OPTS",
 			Description:   "Specifies additional SSH options to embed in each host stanza.",
-			Value:         clibase.StringArrayOf(&sshConfigOpts.sshOptions),
+			Value:         serpent.StringArrayOf(&sshConfigOpts.sshOptions),
 		},
 		{
 			Flag:          "dry-run",
 			FlagShorthand: "n",
 			Env:           "CODER_SSH_DRY_RUN",
 			Description:   "Perform a trial run with no changes made, showing a diff at the end.",
-			Value:         clibase.BoolOf(&dryRun),
+			Value:         serpent.BoolOf(&dryRun),
 		},
 		{
 			Flag:        "skip-proxy-command",
 			Env:         "CODER_SSH_SKIP_PROXY_COMMAND",
 			Description: "Specifies whether the ProxyCommand option should be skipped. Useful for testing.",
-			Value:       clibase.BoolOf(&skipProxyCommand),
+			Value:       serpent.BoolOf(&skipProxyCommand),
 			Hidden:      true,
 		},
 		{
 			Flag:        "use-previous-options",
 			Env:         "CODER_SSH_USE_PREVIOUS_OPTIONS",
 			Description: "Specifies whether or not to keep options from previous run of config-ssh.",
-			Value:       clibase.BoolOf(&usePreviousOpts),
+			Value:       serpent.BoolOf(&usePreviousOpts),
 		},
 		{
 			Flag:        "ssh-host-prefix",
 			Env:         "CODER_CONFIGSSH_SSH_HOST_PREFIX",
 			Description: "Override the default host prefix.",
-			Value:       clibase.StringOf(&sshConfigOpts.userHostPrefix),
+			Value:       serpent.StringOf(&sshConfigOpts.userHostPrefix),
 		},
 		{
 			Flag:        "wait",
 			Env:         "CODER_CONFIGSSH_WAIT", // Not to be mixed with CODER_SSH_WAIT.
 			Description: "Specifies whether or not to wait for the startup script to finish executing. Auto means that the agent startup script behavior configured in the workspace template is used.",
 			Default:     "auto",
-			Value:       clibase.EnumOf(&sshConfigOpts.waitEnum, "yes", "no", "auto"),
+			Value:       serpent.EnumOf(&sshConfigOpts.waitEnum, "yes", "no", "auto"),
+		},
+		{
+			Flag:        "disable-autostart",
+			Description: "Disable starting the workspace automatically when connecting via SSH.",
+			Env:         "CODER_CONFIGSSH_DISABLE_AUTOSTART",
+			Value:       serpent.BoolOf(&sshConfigOpts.disableAutostart),
+			Default:     "false",
 		},
 		{
 			Flag: "force-unix-filepaths",
@@ -572,7 +617,7 @@ func (r *RootCmd) configSSH() *clibase.Cmd {
 			Description: "By default, 'config-ssh' uses the os path separator when writing the ssh config. " +
 				"This might be an issue in Windows machine that use a unix-like shell. " +
 				"This flag forces the use of unix file paths (the forward slash '/').",
-			Value: clibase.BoolOf(&forceUnixSeparators),
+			Value: serpent.BoolOf(&forceUnixSeparators),
 			// On non-windows showing this command is useless because it is a noop.
 			// Hide vs disable it though so if a command is copied from a Windows
 			// machine to a unix machine it will still work and not throw an
@@ -602,8 +647,17 @@ func sshConfigWriteSectionHeader(w io.Writer, addNewline bool, o sshConfigOption
 	if o.userHostPrefix != "" {
 		_, _ = fmt.Fprintf(&ow, "# :%s=%s\n", "ssh-host-prefix", o.userHostPrefix)
 	}
+	if o.disableAutostart {
+		_, _ = fmt.Fprintf(&ow, "# :%s=%v\n", "disable-autostart", o.disableAutostart)
+	}
 	for _, opt := range o.sshOptions {
 		_, _ = fmt.Fprintf(&ow, "# :%s=%s\n", "ssh-option", opt)
+	}
+	for _, h := range o.header {
+		_, _ = fmt.Fprintf(&ow, "# :%s=%s\n", "header", h)
+	}
+	if o.headerCommand != "" {
+		_, _ = fmt.Fprintf(&ow, "# :%s=%s\n", "header-command", o.headerCommand)
 	}
 	if ow.Len() > 0 {
 		_, _ = fmt.Fprint(w, sshConfigOptionsHeader)
@@ -634,6 +688,12 @@ func sshConfigParseLastOptions(r io.Reader) (o sshConfigOptions) {
 				o.userHostPrefix = parts[1]
 			case "ssh-option":
 				o.sshOptions = append(o.sshOptions, parts[1])
+			case "disable-autostart":
+				o.disableAutostart, _ = strconv.ParseBool(parts[1])
+			case "header":
+				o.header = append(o.header, parts[1])
+			case "header-command":
+				o.headerCommand = parts[1]
 			default:
 				// Unknown option, ignore.
 			}

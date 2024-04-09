@@ -34,6 +34,17 @@ WHERE
 			id = ANY(@ids)
 		ELSE true
 	END
+	-- Filter by deprecated
+	AND CASE
+		WHEN sqlc.narg('deprecated') :: boolean IS NOT NULL THEN
+			CASE
+				WHEN sqlc.narg('deprecated') :: boolean THEN
+					deprecated != ''
+				ELSE
+					deprecated = ''
+			END
+		ELSE true
+	END
   -- Authorize Filter clause will be injected below in GetAuthorizedTemplates
   -- @authorize_filter
 ORDER BY (name, id) ASC
@@ -72,10 +83,11 @@ INSERT INTO
 		user_acl,
 		group_acl,
 		display_name,
-		allow_user_cancel_workspace_jobs
+		allow_user_cancel_workspace_jobs,
+		max_port_sharing_level
 	)
 VALUES
-	($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14);
+	($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15);
 
 -- name: UpdateTemplateActiveVersionByID :exec
 UPDATE
@@ -104,7 +116,9 @@ SET
 	name = $4,
 	icon = $5,
 	display_name = $6,
-	allow_user_cancel_workspace_jobs = $7
+	allow_user_cancel_workspace_jobs = $7,
+	group_acl = $8,
+	max_port_sharing_level = $9
 WHERE
 	id = $1
 ;
@@ -117,7 +131,7 @@ SET
 	allow_user_autostart = $3,
 	allow_user_autostop = $4,
 	default_ttl = $5,
-	max_ttl = $6,
+	activity_bump = $6,
 	autostop_requirement_days_of_week = $7,
 	autostop_requirement_weeks = $8,
 	autostart_block_days_of_week = $9,
@@ -174,7 +188,8 @@ FROM build_times
 UPDATE
 	templates
 SET
-	require_active_version = $2
+	require_active_version = $2,
+	deprecated = $3
 WHERE
 	id = $1
 ;

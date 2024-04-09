@@ -23,6 +23,7 @@ application. The following providers are supported:
 - [GitLab](https://docs.gitlab.com/ee/integration/oauth_provider.html)
 - [BitBucket](https://support.atlassian.com/bitbucket-cloud/docs/use-oauth-on-bitbucket-cloud/)
 - [Azure DevOps](https://learn.microsoft.com/en-us/azure/devops/integrate/get-started/authentication/oauth?view=azure-devops)
+- [Azure DevOps (via Entra ID)](https://learn.microsoft.com/en-us/entra/architecture/auth-oauth2)
 
 Example callback URL:
 `https://coder.example.com/external-auth/primary-github/callback`. Use an
@@ -33,7 +34,7 @@ Set the following environment variables to
 
 ```env
 CODER_EXTERNAL_AUTH_0_ID="primary-github"
-CODER_EXTERNAL_AUTH_0_TYPE=github|gitlab|azure-devops|bitbucket|<name of service e.g. jfrog>
+CODER_EXTERNAL_AUTH_0_TYPE=github|gitlab|azure-devops|bitbucket-cloud|bitbucket-server|<name of service e.g. jfrog>
 CODER_EXTERNAL_AUTH_0_CLIENT_ID=xxxxxx
 CODER_EXTERNAL_AUTH_0_CLIENT_SECRET=xxxxxxx
 
@@ -70,12 +71,28 @@ CODER_EXTERNAL_AUTH_0_DISPLAY_ICON="https://mycustomicon.com/google.svg"
 
 ### GitHub Enterprise
 
-GitHub Enterprise requires the following authentication and token URLs:
+GitHub Enterprise requires the following environment variables:
 
 ```env
+CODER_EXTERNAL_AUTH_0_ID="primary-github"
+CODER_EXTERNAL_AUTH_0_TYPE=github-enterprise
+CODER_EXTERNAL_AUTH_0_CLIENT_ID=xxxxxx
+CODER_EXTERNAL_AUTH_0_CLIENT_SECRET=xxxxxxx
 CODER_EXTERNAL_AUTH_0_VALIDATE_URL="https://github.example.com/api/v3/user"
 CODER_EXTERNAL_AUTH_0_AUTH_URL="https://github.example.com/login/oauth/authorize"
 CODER_EXTERNAL_AUTH_0_TOKEN_URL="https://github.example.com/login/oauth/access_token"
+```
+
+### Bitbucket Server
+
+Bitbucket Server requires the following environment variables:
+
+```env
+CODER_EXTERNAL_AUTH_0_TYPE="bitbucket-server"
+CODER_EXTERNAL_AUTH_0_ID=bitbucket
+CODER_EXTERNAL_AUTH_0_CLIENT_ID=xxx
+CODER_EXTERNAL_AUTH_0_CLIENT_SECRET=xxx
+CODER_EXTERNAL_AUTH_0_AUTH_URL=https://bitbucket.domain.com/rest/oauth2/latest/authorize
 ```
 
 ### Azure DevOps
@@ -90,6 +107,47 @@ CODER_EXTERNAL_AUTH_0_CLIENT_ID=xxxxxx
 CODER_EXTERNAL_AUTH_0_CLIENT_SECRET=xxxxxxx
 CODER_EXTERNAL_AUTH_0_AUTH_URL="https://app.vssps.visualstudio.com/oauth2/authorize"
 CODER_EXTERNAL_AUTH_0_TOKEN_URL="https://app.vssps.visualstudio.com/oauth2/token"
+```
+
+### Azure DevOps (via Entra ID)
+
+Azure DevOps (via Entra ID) requires the following environment variables:
+
+```env
+CODER_EXTERNAL_AUTH_0_ID="primary-azure-devops"
+CODER_EXTERNAL_AUTH_0_TYPE=azure-devops-entra
+CODER_EXTERNAL_AUTH_0_CLIENT_ID=xxxxxx
+CODER_EXTERNAL_AUTH_0_CLIENT_SECRET=xxxxxxx
+CODER_EXTERNAL_AUTH_0_AUTH_URL="https://login.microsoftonline.com/<TENANT ID>/oauth2/authorize"
+```
+
+> Note: Your app registration in Entra ID requires the `vso.code_write` scope
+
+### GitLab self-managed
+
+GitLab self-managed requires the following environment variables:
+
+```env
+CODER_EXTERNAL_AUTH_0_ID="primary-gitlab"
+CODER_EXTERNAL_AUTH_0_TYPE=gitlab
+# This value is the "Application ID"
+CODER_EXTERNAL_AUTH_0_CLIENT_ID=xxxxxx
+CODER_EXTERNAL_AUTH_0_CLIENT_SECRET=xxxxxxx
+CODER_EXTERNAL_AUTH_0_VALIDATE_URL="https://gitlab.company.org/oauth/token/info"
+CODER_EXTERNAL_AUTH_0_AUTH_URL="https://gitlab.company.org/oauth/authorize"
+CODER_EXTERNAL_AUTH_0_TOKEN_URL="https://gitlab.company.org/oauth/token"
+CODER_EXTERNAL_AUTH_0_REGEX=gitlab\.company\.org
+```
+
+### Gitea
+
+```env
+CODER_EXTERNAL_AUTH_0_ID="gitea"
+CODER_EXTERNAL_AUTH_0_TYPE=gitea
+CODER_EXTERNAL_AUTH_0_CLIENT_ID=xxxxxxx
+CODER_EXTERNAL_AUTH_0_CLIENT_SECRET=xxxxxxx
+# If self managed, set the Auth URL to your Gitea instance
+CODER_EXTERNAL_AUTH_0_AUTH_URL="https://gitea.com/login/oauth/authorize"
 ```
 
 ### Self-managed git providers
@@ -154,8 +212,46 @@ you can require users authenticate via git prior to creating a workspace:
 
 ![Git authentication in template](../images/admin/git-auth-template.png)
 
-The following example will require users authenticate via GitHub and auto-clone
-a repo into the `~/coder` directory.
+### Native git authentication will auto-refresh tokens
+
+<blockquote class="info">
+  <p>
+  This is the preferred authentication method.
+  </p>
+</blockquote>
+
+By default, the coder agent will configure native `git` authentication via the
+`GIT_ASKPASS` environment variable. Meaning, with no additional configuration,
+external authentication will work with native `git` commands.
+
+To check the auth token being used **from inside a running workspace**, run:
+
+```shell
+# If the exit code is non-zero, then the user is not authenticated with the
+# external provider.
+coder external-auth access-token <external-auth-id>
+```
+
+Note: Some IDE's override the `GIT_ASKPASS` environment variable and need to be
+configured.
+
+**VSCode**
+
+Use the
+[Coder](https://marketplace.visualstudio.com/items?itemName=coder.coder-remote)
+extension to automatically configure these settings for you!
+
+Otherwise, you can manually configure the following settings:
+
+- Set `git.terminalAuthentication` to `false`
+- Set `git.useIntegratedAskPass` to `false`
+
+### Hard coded tokens do not auto-refresh
+
+If the token is required to be inserted into the workspace, for example
+[GitHub cli](https://cli.github.com/), the auth token can be inserted from the
+template. This token will not auto-refresh. The following example will
+authenticate via GitHub and auto-clone a repo into the `~/coder` directory.
 
 ```hcl
 data "coder_external_auth" "github" {

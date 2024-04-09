@@ -46,10 +46,11 @@ INSERT INTO
 		connection_timeout_seconds,
 		troubleshooting_url,
 		motd_file,
-		display_apps
+		display_apps,
+		display_order
 	)
 VALUES
-	($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) RETURNING *;
+	($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) RETURNING *;
 
 -- name: UpdateWorkspaceAgentConnectionByID :exec
 UPDATE
@@ -69,7 +70,8 @@ UPDATE
 SET
 	version = $2,
 	expanded_directory = $3,
-	subsystems = $4
+	subsystems = $4,
+	api_version = $5
 WHERE
 	id = $1;
 
@@ -102,10 +104,11 @@ INSERT INTO
 		key,
 		script,
 		timeout,
-		interval
+		interval,
+		display_order
 	)
 VALUES
-	($1, $2, $3, $4, $5, $6);
+	($1, $2, $3, $4, $5, $6, $7);
 
 -- name: UpdateWorkspaceAgentMetadata :exec
 WITH metadata AS (
@@ -211,55 +214,38 @@ WHERE
 			wb.workspace_id = @workspace_id :: uuid
 	);
 
--- name: GetWorkspaceAgentAndOwnerByAuthToken :one
+-- name: GetWorkspaceAgentAndLatestBuildByAuthToken :one
 SELECT
+	sqlc.embed(workspaces),
 	sqlc.embed(workspace_agents),
-	workspaces.id AS workspace_id,
-	users.id AS owner_id,
-	users.username AS owner_name,
-	users.status AS owner_status,
-	array_cat(
-		array_append(users.rbac_roles, 'member'),
-		array_append(ARRAY[]::text[], 'organization-member:' || organization_members.organization_id::text)
-	)::text[] as owner_roles,
-	array_agg(COALESCE(group_members.group_id::text, ''))::text[] AS owner_groups
-FROM users
-	INNER JOIN
-		workspaces
-	ON
-		workspaces.owner_id = users.id
-	INNER JOIN
-		workspace_builds
-	ON
-		workspace_builds.workspace_id = workspaces.id
-	INNER JOIN
-		workspace_resources
-	ON
-		workspace_resources.job_id = workspace_builds.job_id
-	INNER JOIN
-		workspace_agents
-	ON
-		workspace_agents.resource_id = workspace_resources.id
-	INNER JOIN -- every user is a member of some org
-		organization_members
-	ON
-		organization_members.user_id = users.id
-	LEFT JOIN -- as they may not be a member of any groups
-		group_members
-	ON
-		group_members.user_id = users.id
+	sqlc.embed(workspace_build_with_user)
+FROM
+	workspace_agents
+JOIN
+	workspace_resources
+ON
+	workspace_agents.resource_id = workspace_resources.id
+JOIN
+	workspace_build_with_user
+ON
+	workspace_resources.job_id = workspace_build_with_user.job_id
+JOIN
+	workspaces
+ON
+	workspace_build_with_user.workspace_id = workspaces.id
 WHERE
-	-- TODO: we can add more conditions here, such as:
-	-- 1) The user must be active
-	-- 2) The user must not be deleted
-	-- 3) The workspace must be running
-	workspace_agents.auth_token = @auth_token
-GROUP BY
-	workspace_agents.id,
-	workspaces.id,
-	users.id,
-	organization_members.organization_id,
-	workspace_builds.build_number
-ORDER BY
-	workspace_builds.build_number DESC
-LIMIT 1;
+	-- This should only match 1 agent, so 1 returned row or 0.
+	workspace_agents.auth_token = @auth_token::uuid
+	AND workspaces.deleted = FALSE
+	-- Filter out builds that are not the latest.
+	AND workspace_build_with_user.build_number = (
+		-- Select from workspace_builds as it's one less join compared
+		-- to workspace_build_with_user.
+		SELECT
+			MAX(build_number)
+		FROM
+			workspace_builds
+		WHERE
+			workspace_id = workspace_build_with_user.workspace_id
+	)
+;

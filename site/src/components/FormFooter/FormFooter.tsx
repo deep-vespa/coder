@@ -1,7 +1,7 @@
-import Button from "@mui/material/Button";
-import { type FC } from "react";
-import { Interpolation, Theme } from "@emotion/react";
+import type { Interpolation, Theme } from "@emotion/react";
 import LoadingButton from "@mui/lab/LoadingButton";
+import Button from "@mui/material/Button";
+import type { FC } from "react";
 
 export const Language = {
   cancelLabel: "Cancel",
@@ -19,10 +19,12 @@ export interface FormFooterProps {
   styles?: FormFooterStyles;
   submitLabel?: string;
   submitDisabled?: boolean;
+  extraActions?: React.ReactNode;
 }
 
 export const FormFooter: FC<FormFooterProps> = ({
   onCancel,
+  extraActions,
   isLoading,
   submitDisabled,
   submitLabel = Language.defaultSubmitLabel,
@@ -52,21 +54,22 @@ export const FormFooter: FC<FormFooterProps> = ({
       >
         {Language.cancelLabel}
       </Button>
+      {extraActions}
     </div>
   );
 };
 
 const defaultStyles = {
-  footer: (theme) => ({
+  footer: {
     display: "flex",
     flex: "0",
     // The first button is the submit so it is the first element to be focused
     // on tab so we use row-reverse to display it on the right
     flexDirection: "row-reverse",
-    gap: theme.spacing(1.5),
+    gap: 12,
     alignItems: "center",
-    marginTop: theme.spacing(3),
-  }),
+    marginTop: 24,
+  },
   button: {
     width: "100%",
   },

@@ -1,4 +1,4 @@
-import { Meta, StoryObj } from "@storybook/react";
+import type { Meta, StoryObj } from "@storybook/react";
 import dayjs from "dayjs";
 import advancedFormat from "dayjs/plugin/advancedFormat";
 import timezone from "dayjs/plugin/timezone";
@@ -8,19 +8,35 @@ import {
   emptySchedule,
 } from "pages/WorkspaceSettingsPage/WorkspaceSchedulePage/schedule";
 import { emptyTTL } from "pages/WorkspaceSettingsPage/WorkspaceSchedulePage/ttl";
-import { mockApiError } from "testHelpers/entities";
+import { MockTemplate, mockApiError } from "testHelpers/entities";
 import { WorkspaceScheduleForm } from "./WorkspaceScheduleForm";
 
 dayjs.extend(advancedFormat);
 dayjs.extend(utc);
 dayjs.extend(timezone);
 
+const mockTemplate = {
+  ...MockTemplate,
+  allow_user_autostart: true,
+  allow_user_autostop: true,
+  autostart_requirement: {
+    days_of_week: [
+      "sunday",
+      "monday",
+      "tuesday",
+      "wednesday",
+      "thursday",
+      "friday",
+      "saturday",
+    ],
+  },
+};
+
 const meta: Meta<typeof WorkspaceScheduleForm> = {
   title: "pages/WorkspaceSettingsPage/WorkspaceScheduleForm",
   component: WorkspaceScheduleForm,
   args: {
-    enableAutoStart: true,
-    enableAutoStop: true,
+    template: mockTemplate,
   },
 };
 
@@ -28,8 +44,8 @@ export default meta;
 type Story = StoryObj<typeof WorkspaceScheduleForm>;
 
 const defaultInitialValues = {
-  autostartEnabled: true,
   ...defaultSchedule(),
+  autostartEnabled: true,
   autostopEnabled: true,
   ttl: 24,
 };
@@ -42,8 +58,11 @@ export const AllDisabled: Story = {
       autostopEnabled: false,
       ttl: emptyTTL,
     },
-    enableAutoStart: false,
-    enableAutoStop: false,
+    template: {
+      ...mockTemplate,
+      allow_user_autostart: false,
+      allow_user_autostop: false,
+    },
   },
 };
 
@@ -55,7 +74,10 @@ export const Autostart: Story = {
       autostopEnabled: false,
       ttl: emptyTTL,
     },
-    enableAutoStop: false,
+    template: {
+      ...mockTemplate,
+      allow_user_autostop: false,
+    },
   },
 };
 
@@ -81,7 +103,7 @@ export const WithError: Story = {
   args: {
     initialValues: { ...defaultInitialValues, ttl: 100 },
     initialTouched: { ttl: true },
-    submitScheduleError: mockApiError({
+    error: mockApiError({
       message: "Something went wrong.",
       validations: [
         { field: "ttl_ms", detail: "Invalid time until shutdown." },
@@ -94,5 +116,15 @@ export const Loading: Story = {
   args: {
     initialValues: defaultInitialValues,
     isLoading: true,
+  },
+};
+
+export const AutoStopAndStartOff: Story = {
+  args: {
+    initialValues: {
+      ...defaultInitialValues,
+      autostartEnabled: false,
+      autostopEnabled: false,
+    },
   },
 };

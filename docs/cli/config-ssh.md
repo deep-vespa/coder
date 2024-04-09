@@ -25,24 +25,6 @@ workspaces:
 
 ## Options
 
-### --coder-binary-path
-
-|             |                                            |
-| ----------- | ------------------------------------------ |
-| Type        | <code>string</code>                        |
-| Environment | <code>$CODER_SSH_CONFIG_BINARY_PATH</code> |
-
-Optionally specify the absolute path to the coder binary used in ProxyCommand. By default, the binary invoking this command ('config ssh') is used.
-
-### -n, --dry-run
-
-|             |                                 |
-| ----------- | ------------------------------- |
-| Type        | <code>bool</code>               |
-| Environment | <code>$CODER_SSH_DRY_RUN</code> |
-
-Perform a trial run with no changes made, showing a diff at the end.
-
 ### --ssh-config-file
 
 |             |                                     |
@@ -53,14 +35,14 @@ Perform a trial run with no changes made, showing a diff at the end.
 
 Specifies the path to an SSH config.
 
-### --ssh-host-prefix
+### --coder-binary-path
 
-|             |                                               |
-| ----------- | --------------------------------------------- |
-| Type        | <code>string</code>                           |
-| Environment | <code>$CODER_CONFIGSSH_SSH_HOST_PREFIX</code> |
+|             |                                            |
+| ----------- | ------------------------------------------ |
+| Type        | <code>string</code>                        |
+| Environment | <code>$CODER_SSH_CONFIG_BINARY_PATH</code> |
 
-Override the default host prefix.
+Optionally specify the absolute path to the coder binary used in ProxyCommand. By default, the binary invoking this command ('config ssh') is used.
 
 ### -o, --ssh-option
 
@@ -71,6 +53,15 @@ Override the default host prefix.
 
 Specifies additional SSH options to embed in each host stanza.
 
+### -n, --dry-run
+
+|             |                                 |
+| ----------- | ------------------------------- |
+| Type        | <code>bool</code>               |
+| Environment | <code>$CODER_SSH_DRY_RUN</code> |
+
+Perform a trial run with no changes made, showing a diff at the end.
+
 ### --use-previous-options
 
 |             |                                              |
@@ -80,15 +71,34 @@ Specifies additional SSH options to embed in each host stanza.
 
 Specifies whether or not to keep options from previous run of config-ssh.
 
+### --ssh-host-prefix
+
+|             |                                               |
+| ----------- | --------------------------------------------- |
+| Type        | <code>string</code>                           |
+| Environment | <code>$CODER_CONFIGSSH_SSH_HOST_PREFIX</code> |
+
+Override the default host prefix.
+
 ### --wait
 
 |             |                                    |
-| ----------- | ---------------------------------- | --- | ------------ |
-| Type        | <code>enum[yes                     | no  | auto]</code> |
+| ----------- | ---------------------------------- |
+| Type        | <code>enum[yes\|no\|auto]</code>   |
 | Environment | <code>$CODER_CONFIGSSH_WAIT</code> |
 | Default     | <code>auto</code>                  |
 
 Specifies whether or not to wait for the startup script to finish executing. Auto means that the agent startup script behavior configured in the workspace template is used.
+
+### --disable-autostart
+
+|             |                                                 |
+| ----------- | ----------------------------------------------- |
+| Type        | <code>bool</code>                               |
+| Environment | <code>$CODER_CONFIGSSH_DISABLE_AUTOSTART</code> |
+| Default     | <code>false</code>                              |
+
+Disable starting the workspace automatically when connecting via SSH.
 
 ### -y, --yes
 

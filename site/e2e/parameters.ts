@@ -1,4 +1,4 @@
-import { RichParameter } from "./provisionerGenerated";
+import type { RichParameter } from "./provisionerGenerated";
 
 // Rich parameters
 
@@ -126,6 +126,14 @@ export const seventhParameter: RichParameter = {
   description: "This is seventh parameter.",
   required: true,
   order: 1,
+};
+
+// randParamName returns a new parameter with a random name.
+// It helps to avoid cross-test interference when user-auto-fill triggers on
+// the same parameter name.
+export const randParamName = (p: RichParameter): RichParameter => {
+  const name = p.name + "_" + Math.random().toString(36).substring(7);
+  return { ...p, name: name };
 };
 
 // Build options

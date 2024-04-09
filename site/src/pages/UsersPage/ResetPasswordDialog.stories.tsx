@@ -1,6 +1,5 @@
-import { Meta, StoryObj } from "@storybook/react";
+import type { Meta, StoryObj } from "@storybook/react";
 import { MockUser } from "testHelpers/entities";
-
 import { ResetPasswordDialog } from "./ResetPasswordDialog";
 
 const meta: Meta<typeof ResetPasswordDialog> = {
@@ -16,6 +15,8 @@ const Example: Story = {
     open: true,
     user: MockUser,
     newPassword: "somerandomstringhere",
+    onConfirm: () => {},
+    onClose: () => {},
   },
 };
 

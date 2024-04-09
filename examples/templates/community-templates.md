@@ -29,6 +29,11 @@ templates.
 - [atnomoverflow/coder-template](https://github.com/atnomoverflow/coder-template) -
   Kubernetes template that install VS code server Rstudio jupyter and also set
   ssh access to gitlab (Works also on self managed gitlab).
+- [sempie/coder-templates](https://github.com/sempie/coder-templates) - RStudio
+  template on a path using NGINX in the workspace
+- [sulo1337/coder-kubevirt-template](https://github.com/sulo1337/coder-kubevirt-template) -
+  Kubevirt-based development environment which provisions KVM virtual machines
+  as coder workspaces on top of a Kubernetes cluster.
 
 ## Automation
 

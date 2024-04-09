@@ -35,6 +35,7 @@ import (
 	"golang.org/x/xerrors"
 
 	"github.com/coder/coder/v2/buildinfo"
+	"github.com/coder/coder/v2/coderd/appearance"
 	"github.com/coder/coder/v2/coderd/database"
 	"github.com/coder/coder/v2/coderd/database/db2sdk"
 	"github.com/coder/coder/v2/coderd/database/dbauthz"
@@ -50,6 +51,11 @@ var (
 	errorHTML string
 
 	errorTemplate *htmltemplate.Template
+
+	//go:embed static/oauth2allow.html
+	oauthHTML string
+
+	oauthTemplate *htmltemplate.Template
 )
 
 func init() {
@@ -58,18 +64,29 @@ func init() {
 	if err != nil {
 		panic(err)
 	}
+
+	oauthTemplate, err = htmltemplate.New("error").Parse(oauthHTML)
+	if err != nil {
+		panic(err)
+	}
 }
 
 type Options struct {
-	BinFS         http.FileSystem
-	BinHashes     map[string]string
-	Database      database.Store
-	SiteFS        fs.FS
-	OAuth2Configs *httpmw.OAuth2Configs
-	DocsURL       string
+	BinFS             http.FileSystem
+	BinHashes         map[string]string
+	Database          database.Store
+	SiteFS            fs.FS
+	OAuth2Configs     *httpmw.OAuth2Configs
+	DocsURL           string
+	AppearanceFetcher *atomic.Pointer[appearance.Fetcher]
 }
 
 func New(opts *Options) *Handler {
+	if opts.AppearanceFetcher == nil {
+		daf := atomic.Pointer[appearance.Fetcher]{}
+		daf.Store(&appearance.DefaultFetcher)
+		opts.AppearanceFetcher = &daf
+	}
 	handler := &Handler{
 		opts:          opts,
 		secureHeaders: secureHeaders(),
@@ -95,7 +112,8 @@ func New(opts *Options) *Handler {
 		// Set ETag header to the SHA1 hash of the file contents.
 		name := filePath(r.URL.Path)
 		if name == "" || name == "/" {
-			// Serve the directory listing.
+			// Serve the directory listing. This intentionally allows directory listings to
+			// be served. This file system should not contain anything sensitive.
 			http.FileServer(opts.BinFS).ServeHTTP(rw, r)
 			return
 		}
@@ -122,7 +140,15 @@ func New(opts *Options) *Handler {
 		// If-Match and If-None-Match headers on the request properly.
 		http.FileServer(opts.BinFS).ServeHTTP(rw, r)
 	})))
-	mux.Handle("/", http.FileServer(http.FS(opts.SiteFS)))
+	mux.Handle("/", http.FileServer(
+		http.FS(
+			// OnlyFiles is a wrapper around the file system that prevents directory
+			// listings. Directory listings are not required for the site file system, so we
+			// exclude it as a security measure. In practice, this file system comes from our
+			// open source code base, but this is considered a best practice for serving
+			// static files.
+			OnlyFiles(opts.SiteFS))),
+	)
 
 	buildInfo := codersdk.BuildInfoResponse{
 		ExternalURL: buildinfo.ExternalURL(),
@@ -147,7 +173,6 @@ type Handler struct {
 
 	buildInfoJSON string
 
-	AppearanceFetcher func(ctx context.Context) (codersdk.AppearanceConfig, error)
 	// RegionsFetcher will attempt to fetch the more detailed WorkspaceProxy data, but will fall back to the
 	// regions if the user does not have the correct permissions.
 	RegionsFetcher func(ctx context.Context) (any, error)
@@ -291,6 +316,7 @@ func execTmpl(tmpl *template.Template, state htmlState) ([]byte, error) {
 // renderWithState will render the file using the given nonce if the file exists
 // as a template. If it does not, it will return an error.
 func (h *Handler) renderHTMLWithState(r *http.Request, filePath string, state htmlState) ([]byte, error) {
+	af := *(h.opts.AppearanceFetcher.Load())
 	if filePath == "" {
 		filePath = "index.html"
 	}
@@ -317,17 +343,15 @@ func (h *Handler) renderHTMLWithState(r *http.Request, filePath string, state ht
 	})
 	if !ok || apiKey == nil || actor == nil {
 		var cfg codersdk.AppearanceConfig
-		if h.AppearanceFetcher != nil {
-			// nolint:gocritic // User is not expected to be signed in.
-			ctx := dbauthz.AsSystemRestricted(r.Context())
-			cfg, _ = h.AppearanceFetcher(ctx)
-		}
+		// nolint:gocritic // User is not expected to be signed in.
+		ctx := dbauthz.AsSystemRestricted(r.Context())
+		cfg, _ = af.Fetch(ctx)
 		state.ApplicationName = applicationNameOrDefault(cfg)
 		state.LogoURL = cfg.LogoURL
 		return execTmpl(tmpl, state)
 	}
 
-	ctx := dbauthz.As(r.Context(), actor.Actor)
+	ctx := dbauthz.As(r.Context(), *actor)
 
 	var eg errgroup.Group
 	var user database.User
@@ -370,21 +394,21 @@ func (h *Handler) renderHTMLWithState(r *http.Request, filePath string, state ht
 				}
 			}()
 		}
-		if h.AppearanceFetcher != nil {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				cfg, err := h.AppearanceFetcher(ctx)
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cfg, err := af.Fetch(ctx)
+			if err == nil {
+				appr, err := json.Marshal(cfg)
 				if err == nil {
-					appearance, err := json.Marshal(cfg)
-					if err == nil {
-						state.Appearance = html.EscapeString(string(appearance))
-						state.ApplicationName = applicationNameOrDefault(cfg)
-						state.LogoURL = cfg.LogoURL
-					}
+					state.Appearance = html.EscapeString(string(appr))
+					state.ApplicationName = applicationNameOrDefault(cfg)
+					state.LogoURL = cfg.LogoURL
 				}
-			}()
-		}
+			}
+		}()
+
 		if h.RegionsFetcher != nil {
 			wg.Add(1)
 			go func() {
@@ -768,6 +792,8 @@ type ErrorPageData struct {
 	RetryEnabled bool
 	DashboardURL string
 	Warnings     []string
+
+	RenderDescriptionMarkdown bool
 }
 
 // RenderStaticErrorPage renders the static error page. This is used by app
@@ -776,12 +802,17 @@ type ErrorPageData struct {
 func RenderStaticErrorPage(rw http.ResponseWriter, r *http.Request, data ErrorPageData) {
 	type outerData struct {
 		Error ErrorPageData
+
+		ErrorDescriptionHTML htmltemplate.HTML
 	}
 
 	rw.Header().Set("Content-Type", "text/html; charset=utf-8")
 	rw.WriteHeader(data.Status)
 
-	err := errorTemplate.Execute(rw, outerData{Error: data})
+	err := errorTemplate.Execute(rw, outerData{
+		Error:                data,
+		ErrorDescriptionHTML: htmltemplate.HTML(data.Description), //nolint:gosec // gosec thinks this is user-input, but it is from Coder deployment configuration.
+	})
 	if err != nil {
 		httpapi.Write(r.Context(), rw, http.StatusInternalServerError, codersdk.Response{
 			Message: "Failed to render error page: " + err.Error(),
@@ -860,4 +891,64 @@ func applicationNameOrDefault(cfg codersdk.AppearanceConfig) string {
 		return cfg.ApplicationName
 	}
 	return "Coder"
+}
+
+// OnlyFiles returns a new fs.FS that only contains files. If a directory is
+// requested, os.ErrNotExist is returned. This prevents directory listings from
+// being served.
+func OnlyFiles(files fs.FS) fs.FS {
+	return justFilesSystem{FS: files}
+}
+
+type justFilesSystem struct {
+	FS fs.FS
+}
+
+func (jfs justFilesSystem) Open(name string) (fs.File, error) {
+	f, err := jfs.FS.Open(name)
+	if err != nil {
+		return nil, err
+	}
+
+	stat, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+
+	// Returning a 404 here does prevent the http.FileServer from serving
+	// index.* files automatically. Coder handles this above as all index pages
+	// are considered template files. So we never relied on this behavior.
+	if stat.IsDir() {
+		return nil, os.ErrNotExist
+	}
+
+	return f, nil
+}
+
+// RenderOAuthAllowData contains the variables that are found in
+// site/static/oauth2allow.html.
+type RenderOAuthAllowData struct {
+	AppIcon     string
+	AppName     string
+	CancelURI   string
+	RedirectURI string
+	Username    string
+}
+
+// RenderOAuthAllowPage renders the static page for a user to "Allow" an create
+// a new oauth2 link with an external site. This is when Coder is acting as the
+// identity provider.
+//
+// This has to be done statically because Golang has to handle the full request.
+// It cannot defer to the FE typescript easily.
+func RenderOAuthAllowPage(rw http.ResponseWriter, r *http.Request, data RenderOAuthAllowData) {
+	rw.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+	err := oauthTemplate.Execute(rw, data)
+	if err != nil {
+		httpapi.Write(r.Context(), rw, http.StatusOK, codersdk.Response{
+			Message: "Failed to render oauth page: " + err.Error(),
+		})
+		return
+	}
 }

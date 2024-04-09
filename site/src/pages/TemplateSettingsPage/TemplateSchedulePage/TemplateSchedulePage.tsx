@@ -1,32 +1,26 @@
-import { useMutation, useQueryClient } from "react-query";
-import { updateTemplateMeta } from "api/api";
-import { UpdateTemplateMeta } from "api/typesGenerated";
-import { useDashboard } from "components/Dashboard/DashboardProvider";
-import { displaySuccess } from "components/GlobalSnackbar/utils";
-import { FC } from "react";
+import type { FC } from "react";
 import { Helmet } from "react-helmet-async";
+import { useMutation, useQueryClient } from "react-query";
 import { useNavigate, useParams } from "react-router-dom";
+import { updateTemplateMeta } from "api/api";
+import { templateByNameKey } from "api/queries/templates";
+import type { UpdateTemplateMeta } from "api/typesGenerated";
+import { displaySuccess } from "components/GlobalSnackbar/utils";
+import { useAuthenticated } from "contexts/auth/RequireAuth";
+import { useDashboard } from "modules/dashboard/useDashboard";
 import { pageTitle } from "utils/page";
 import { useTemplateSettings } from "../TemplateSettingsLayout";
 import { TemplateSchedulePageView } from "./TemplateSchedulePageView";
-import { useLocalStorage, useOrganizationId } from "hooks";
-import { templateByNameKey } from "api/queries/templates";
 
 const TemplateSchedulePage: FC = () => {
   const { template: templateName } = useParams() as { template: string };
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const orgId = useOrganizationId();
+  const { organizationId } = useAuthenticated();
   const { template } = useTemplateSettings();
-  const { entitlements, experiments } = useDashboard();
+  const { entitlements } = useDashboard();
   const allowAdvancedScheduling =
     entitlements.features["advanced_template_scheduling"].enabled;
-  // This check can be removed when https://github.com/coder/coder/milestone/19
-  // is merged up
-  const allowWorkspaceActions = experiments.includes("workspace_actions");
-  const allowAutostopRequirement =
-    entitlements.features["template_autostop_requirement"].enabled;
-  const { clearLocal } = useLocalStorage();
 
   const {
     mutate: updateTemplate,
@@ -37,12 +31,12 @@ const TemplateSchedulePage: FC = () => {
     {
       onSuccess: async () => {
         await queryClient.invalidateQueries(
-          templateByNameKey(orgId, templateName),
+          templateByNameKey(organizationId, templateName),
         );
         displaySuccess("Template updated successfully");
         // clear browser storage of workspaces impending deletion
-        clearLocal("dismissedWorkspaceList"); // workspaces page
-        clearLocal("dismissedWorkspace"); // workspace page
+        localStorage.removeItem("dismissedWorkspaceList"); // workspaces page
+        localStorage.removeItem("dismissedWorkspace"); // workspace page
       },
     },
   );
@@ -54,8 +48,6 @@ const TemplateSchedulePage: FC = () => {
       </Helmet>
       <TemplateSchedulePageView
         allowAdvancedScheduling={allowAdvancedScheduling}
-        allowWorkspaceActions={allowWorkspaceActions}
-        allowAutostopRequirement={allowAutostopRequirement}
         isSubmitting={isSubmitting}
         template={template}
         submitError={submitError}

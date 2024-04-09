@@ -1,20 +1,20 @@
-import TextField from "@mui/material/TextField";
-import MenuItem from "@mui/material/MenuItem";
 import Link from "@mui/material/Link";
-import { FormikContextType, useFormik } from "formik";
-import { FC } from "react";
+import MenuItem from "@mui/material/MenuItem";
+import TextField from "@mui/material/TextField";
+import { type FormikContextType, useFormik } from "formik";
+import type { FC } from "react";
 import * as Yup from "yup";
 import { hasApiFieldErrors, isApiError } from "api/errors";
-import * as TypesGen from "api/typesGenerated";
+import type * as TypesGen from "api/typesGenerated";
+import { ErrorAlert } from "components/Alert/ErrorAlert";
+import { FormFooter } from "components/FormFooter/FormFooter";
+import { FullPageForm } from "components/FullPageForm/FullPageForm";
+import { Stack } from "components/Stack/Stack";
 import {
   getFormHelpers,
   nameValidator,
   onChangeTrimmed,
 } from "utils/formUtils";
-import { FormFooter } from "components/FormFooter/FormFooter";
-import { FullPageForm } from "components/FullPageForm/FullPageForm";
-import { Stack } from "components/Stack/Stack";
-import { ErrorAlert } from "components/Alert/ErrorAlert";
 
 export const Language = {
   emailLabel: "Email",
@@ -63,7 +63,7 @@ export interface CreateUserFormProps {
   onCancel: () => void;
   error?: unknown;
   isLoading: boolean;
-  myOrgId: string;
+  organizationId: string;
   authMethods?: TypesGen.AuthMethods;
 }
 
@@ -83,14 +83,14 @@ const validationSchema = Yup.object({
 
 export const CreateUserForm: FC<
   React.PropsWithChildren<CreateUserFormProps>
-> = ({ onSubmit, onCancel, error, isLoading, myOrgId, authMethods }) => {
+> = ({ onSubmit, onCancel, error, isLoading, organizationId, authMethods }) => {
   const form: FormikContextType<TypesGen.CreateUserRequest> =
     useFormik<TypesGen.CreateUserRequest>({
       initialValues: {
         email: "",
         password: "",
         username: "",
-        organization_id: myOrgId,
+        organization_id: organizationId,
         disable_login: false,
         login_type: "",
       },
@@ -112,7 +112,7 @@ export const CreateUserForm: FC<
   return (
     <FullPageForm title="Create user">
       {isApiError(error) && !hasApiFieldErrors(error) && (
-        <ErrorAlert error={error} sx={{ mb: 4 }} />
+        <ErrorAlert error={error} css={{ marginBottom: 32 }} />
       )}
       <form onSubmit={form.handleSubmit} autoComplete="off">
         <Stack spacing={2.5}>
@@ -132,10 +132,9 @@ export const CreateUserForm: FC<
             label={Language.emailLabel}
           />
           <TextField
-            {...getFieldHelpers(
-              "login_type",
-              "Authentication method for this user",
-            )}
+            {...getFieldHelpers("login_type", {
+              helperText: "Authentication method for this user",
+            })}
             select
             id="login_type"
             data-testid="login-type-input"
@@ -180,12 +179,11 @@ export const CreateUserForm: FC<
             })}
           </TextField>
           <TextField
-            {...getFieldHelpers(
-              "password",
-              form.values.login_type === "password"
-                ? ""
-                : "No password required for this login type",
-            )}
+            {...getFieldHelpers("password", {
+              helperText:
+                form.values.login_type !== "password" &&
+                "No password required for this login type",
+            })}
             autoComplete="current-password"
             fullWidth
             id="password"
@@ -195,7 +193,11 @@ export const CreateUserForm: FC<
             type="password"
           />
         </Stack>
-        <FormFooter onCancel={onCancel} isLoading={isLoading} />
+        <FormFooter
+          submitLabel="Create user"
+          onCancel={onCancel}
+          isLoading={isLoading}
+        />
       </form>
     </FullPageForm>
   );

@@ -26,6 +26,7 @@ import (
 	clitelemetry "github.com/coder/coder/v2/cli/telemetry"
 	"github.com/coder/coder/v2/coderd/database"
 	"github.com/coder/coder/v2/coderd/database/dbtime"
+	"github.com/coder/coder/v2/codersdk"
 )
 
 const (
@@ -52,6 +53,8 @@ type Options struct {
 	STUN               bool
 	SnapshotFrequency  time.Duration
 	Tunnel             bool
+	ParseLicenseJWT    func(lic *License) error
+	Experiments        []string
 }
 
 // New constructs a reporter for telemetry data.
@@ -446,7 +449,13 @@ func (r *remoteReporter) createSnapshot() (*Snapshot, error) {
 		}
 		snapshot.Licenses = make([]License, 0, len(licenses))
 		for _, license := range licenses {
-			snapshot.Licenses = append(snapshot.Licenses, ConvertLicense(license))
+			tl := ConvertLicense(license)
+			if r.options.ParseLicenseJWT != nil {
+				if err := r.options.ParseLicenseJWT(&tl); err != nil {
+					r.options.Logger.Warn(ctx, "parse license JWT", slog.Error(err))
+				}
+			}
+			snapshot.Licenses = append(snapshot.Licenses, tl)
 		}
 		return nil
 	})
@@ -470,6 +479,10 @@ func (r *remoteReporter) createSnapshot() (*Snapshot, error) {
 		for _, proxy := range proxies {
 			snapshot.WorkspaceProxies = append(snapshot.WorkspaceProxies, ConvertWorkspaceProxy(proxy))
 		}
+		return nil
+	})
+	eg.Go(func() error {
+		snapshot.Experiments = ConvertExperiments(r.options.Experiments)
 		return nil
 	})
 
@@ -656,6 +669,22 @@ func ConvertTemplate(dbTemplate database.Template) Template {
 		ActiveVersionID: dbTemplate.ActiveVersionID,
 		Name:            dbTemplate.Name,
 		Description:     dbTemplate.Description != "",
+
+		// Some of these fields are meant to be accessed using a specialized
+		// interface (for entitlement purposes), but for telemetry purposes
+		// there's minimal harm accessing them directly.
+		DefaultTTLMillis:               time.Duration(dbTemplate.DefaultTTL).Milliseconds(),
+		AllowUserCancelWorkspaceJobs:   dbTemplate.AllowUserCancelWorkspaceJobs,
+		AllowUserAutostart:             dbTemplate.AllowUserAutostart,
+		AllowUserAutostop:              dbTemplate.AllowUserAutostop,
+		FailureTTLMillis:               time.Duration(dbTemplate.FailureTTL).Milliseconds(),
+		TimeTilDormantMillis:           time.Duration(dbTemplate.TimeTilDormant).Milliseconds(),
+		TimeTilDormantAutoDeleteMillis: time.Duration(dbTemplate.TimeTilDormantAutoDelete).Milliseconds(),
+		AutostopRequirementDaysOfWeek:  codersdk.BitmapToWeekdays(uint8(dbTemplate.AutostopRequirementDaysOfWeek)),
+		AutostopRequirementWeeks:       dbTemplate.AutostopRequirementWeeks,
+		AutostartAllowedDays:           codersdk.BitmapToWeekdays(dbTemplate.AutostartAllowedDays()),
+		RequireActiveVersion:           dbTemplate.RequireActiveVersion,
+		Deprecated:                     dbTemplate.Deprecated != "",
 	}
 }
 
@@ -715,6 +744,16 @@ func ConvertExternalProvisioner(id uuid.UUID, tags map[string]string, provisione
 	}
 }
 
+func ConvertExperiments(experiments []string) []Experiment {
+	var out []Experiment
+
+	for _, exp := range experiments {
+		out = append(out, Experiment{Name: exp})
+	}
+
+	return out
+}
+
 // Snapshot represents a point-in-time anonymized database dump.
 // Data is aggregated by latest on the server-side, so partial data
 // can be sent without issue.
@@ -737,6 +776,7 @@ type Snapshot struct {
 	WorkspaceResourceMetadata []WorkspaceResourceMetadata `json:"workspace_resource_metadata"`
 	WorkspaceResources        []WorkspaceResource         `json:"workspace_resources"`
 	Workspaces                []Workspace                 `json:"workspaces"`
+	Experiments               []Experiment                `json:"experiments"`
 }
 
 // Deployment contains information about the host running Coder.
@@ -876,6 +916,19 @@ type Template struct {
 	ActiveVersionID uuid.UUID `json:"active_version_id"`
 	Name            string    `json:"name"`
 	Description     bool      `json:"description"`
+
+	DefaultTTLMillis               int64    `json:"default_ttl_ms"`
+	AllowUserCancelWorkspaceJobs   bool     `json:"allow_user_cancel_workspace_jobs"`
+	AllowUserAutostart             bool     `json:"allow_user_autostart"`
+	AllowUserAutostop              bool     `json:"allow_user_autostop"`
+	FailureTTLMillis               int64    `json:"failure_ttl_ms"`
+	TimeTilDormantMillis           int64    `json:"time_til_dormant_ms"`
+	TimeTilDormantAutoDeleteMillis int64    `json:"time_til_dormant_auto_delete_ms"`
+	AutostopRequirementDaysOfWeek  []string `json:"autostop_requirement_days_of_week"`
+	AutostopRequirementWeeks       int64    `json:"autostop_requirement_weeks"`
+	AutostartAllowedDays           []string `json:"autostart_allowed_days"`
+	RequireActiveVersion           bool     `json:"require_active_version"`
+	Deprecated                     bool     `json:"deprecated"`
 }
 
 type TemplateVersion struct {
@@ -904,6 +957,10 @@ type License struct {
 	UploadedAt time.Time `json:"uploaded_at"`
 	Exp        time.Time `json:"exp"`
 	UUID       uuid.UUID `json:"uuid"`
+	// These two fields are set by decoding the JWT. If the signing keys aren't
+	// passed in, these will always be nil.
+	Email *string `json:"email"`
+	Trial *bool   `json:"trial"`
 }
 
 type WorkspaceProxy struct {
@@ -924,6 +981,10 @@ type ExternalProvisioner struct {
 	Provisioners []string          `json:"provisioners"`
 	StartedAt    time.Time         `json:"started_at"`
 	ShutdownAt   *time.Time        `json:"shutdown_at"`
+}
+
+type Experiment struct {
+	Name string `json:"name"`
 }
 
 type noopReporter struct{}

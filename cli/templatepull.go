@@ -4,31 +4,33 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 
-	"github.com/codeclysm/extract/v3"
 	"golang.org/x/xerrors"
 
-	"github.com/coder/coder/v2/cli/clibase"
 	"github.com/coder/coder/v2/cli/cliui"
 	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/provisionersdk"
+	"github.com/coder/serpent"
 )
 
-func (r *RootCmd) templatePull() *clibase.Cmd {
+func (r *RootCmd) templatePull() *serpent.Command {
 	var (
 		tarMode     bool
+		zipMode     bool
 		versionName string
 	)
 
 	client := new(codersdk.Client)
-	cmd := &clibase.Cmd{
+	cmd := &serpent.Command{
 		Use:   "pull <name> [destination]",
 		Short: "Download the active, latest, or specified version of a template to a path.",
-		Middleware: clibase.Chain(
-			clibase.RequireRangeArgs(1, 2),
+		Middleware: serpent.Chain(
+			serpent.RequireRangeArgs(1, 2),
 			r.InitClient(client),
 		),
-		Handler: func(inv *clibase.Invocation) error {
+		Handler: func(inv *serpent.Invocation) error {
 			var (
 				ctx          = inv.Context()
 				templateName = inv.Args[0]
@@ -39,7 +41,11 @@ func (r *RootCmd) templatePull() *clibase.Cmd {
 				dest = inv.Args[1]
 			}
 
-			organization, err := CurrentOrganization(inv, client)
+			if tarMode && zipMode {
+				return xerrors.Errorf("either tar or zip can be selected")
+			}
+
+			organization, err := CurrentOrganization(r, inv, client)
 			if err != nil {
 				return xerrors.Errorf("get current organization: %w", err)
 			}
@@ -82,7 +88,7 @@ func (r *RootCmd) templatePull() *clibase.Cmd {
 				if versionName == "" && activeVersion.ID != latestVersion.ID {
 					cliui.Warn(inv.Stderr,
 						"A newer template version than the active version exists. Pulling the active version instead.",
-						"Use "+cliui.Code("--template latest")+" to pull the latest version.",
+						"Use "+cliui.Code("--version latest")+" to pull the latest version.",
 					)
 				}
 				templateVersion = activeVersion
@@ -98,17 +104,25 @@ func (r *RootCmd) templatePull() *clibase.Cmd {
 
 			cliui.Info(inv.Stderr, "Pulling template version "+cliui.Bold(templateVersion.Name)+"...")
 
+			var fileFormat string // empty = default, so .tar
+			if zipMode {
+				fileFormat = codersdk.FormatZip
+			}
+
 			// Download the tar archive.
-			raw, ctype, err := client.Download(ctx, templateVersion.Job.FileID)
+			raw, ctype, err := client.DownloadWithFormat(ctx, templateVersion.Job.FileID, fileFormat)
 			if err != nil {
 				return xerrors.Errorf("download template: %w", err)
 			}
 
-			if ctype != codersdk.ContentTypeTar {
+			if fileFormat == "" && ctype != codersdk.ContentTypeTar {
 				return xerrors.Errorf("unexpected Content-Type %q, expecting %q", ctype, codersdk.ContentTypeTar)
 			}
+			if fileFormat == codersdk.FormatZip && ctype != codersdk.ContentTypeZip {
+				return xerrors.Errorf("unexpected Content-Type %q, expecting %q", ctype, codersdk.ContentTypeZip)
+			}
 
-			if tarMode {
+			if tarMode || zipMode {
 				_, err = inv.Stdout.Write(raw)
 				return err
 			}
@@ -116,6 +130,13 @@ func (r *RootCmd) templatePull() *clibase.Cmd {
 			if dest == "" {
 				dest = templateName
 			}
+
+			clean, err := filepath.Abs(filepath.Clean(dest))
+			if err != nil {
+				return xerrors.Errorf("cleaning destination path %s failed: %w", dest, err)
+			}
+
+			dest = clean
 
 			err = os.MkdirAll(dest, 0o750)
 			if err != nil {
@@ -140,23 +161,29 @@ func (r *RootCmd) templatePull() *clibase.Cmd {
 			}
 
 			_, _ = fmt.Fprintf(inv.Stderr, "Extracting template to %q\n", dest)
-			err = extract.Tar(ctx, bytes.NewReader(raw), dest, nil)
+			err = provisionersdk.Untar(dest, bytes.NewReader(raw))
 			return err
 		},
 	}
 
-	cmd.Options = clibase.OptionSet{
+	cmd.Options = serpent.OptionSet{
 		{
 			Description: "Output the template as a tar archive to stdout.",
 			Flag:        "tar",
 
-			Value: clibase.BoolOf(&tarMode),
+			Value: serpent.BoolOf(&tarMode),
+		},
+		{
+			Description: "Output the template as a zip archive to stdout.",
+			Flag:        "zip",
+
+			Value: serpent.BoolOf(&zipMode),
 		},
 		{
 			Description: "The name of the template version to pull. Use 'active' to pull the active version, 'latest' to pull the latest version, or the name of the template version to pull.",
 			Flag:        "version",
 
-			Value: clibase.StringOf(&versionName),
+			Value: serpent.StringOf(&versionName),
 		},
 		cliui.SkipPromptOption(),
 	}

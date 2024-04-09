@@ -1,8 +1,10 @@
-import { type FC, useState, useEffect } from "react";
-import TextField from "@mui/material/TextField";
+import { css } from "@emotion/css";
 import MenuItem from "@mui/material/MenuItem";
-import type { FormikContextType } from "formik";
+import TextField from "@mui/material/TextField";
 import dayjs from "dayjs";
+import utc from "dayjs/plugin/utc";
+import type { FormikContextType } from "formik";
+import { type FC, useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   FormFields,
@@ -19,7 +21,8 @@ import {
   filterByMaxTokenLifetime,
   customLifetimeDay,
 } from "./utils";
-import { css } from "@emotion/css";
+
+dayjs.extend(utc);
 
 interface CreateTokenFormProps {
   form: FormikContextType<CreateTokenData>;
@@ -29,10 +32,6 @@ interface CreateTokenFormProps {
   isCreating: boolean;
   creationFailed: boolean;
 }
-
-const sectionInfoStyles = css`
-  min-width: 300px;
-`;
 
 export const CreateTokenForm: FC<CreateTokenFormProps> = ({
   form,
@@ -65,7 +64,7 @@ export const CreateTokenForm: FC<CreateTokenFormProps> = ({
       <FormSection
         title="Name"
         description="What is this token for?"
-        classes={{ sectionInfo: sectionInfoStyles }}
+        classes={{ sectionInfo: classNames.sectionInfo }}
       >
         <FormFields>
           <TextField
@@ -88,7 +87,7 @@ export const CreateTokenForm: FC<CreateTokenFormProps> = ({
                 .format("MMMM DD, YYYY")}`
             : "Please set a token expiration."
         }
-        classes={{ sectionInfo: sectionInfoStyles }}
+        classes={{ sectionInfo: classNames.sectionInfo }}
       >
         <FormFields>
           <Stack direction="row">
@@ -151,4 +150,10 @@ export const CreateTokenForm: FC<CreateTokenFormProps> = ({
       />
     </HorizontalForm>
   );
+};
+
+const classNames = {
+  sectionInfo: css`
+    min-width: 300px;
+  `,
 };

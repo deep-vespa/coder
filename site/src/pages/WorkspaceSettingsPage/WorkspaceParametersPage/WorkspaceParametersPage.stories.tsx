@@ -1,5 +1,4 @@
-import { Meta, StoryObj } from "@storybook/react";
-import { WorkspaceParametersPageView } from "./WorkspaceParametersPage";
+import type { Meta, StoryObj } from "@storybook/react";
 import {
   MockWorkspaceBuildParameter1,
   MockWorkspaceBuildParameter2,
@@ -7,7 +6,10 @@ import {
   MockTemplateVersionParameter2,
   MockTemplateVersionParameter3,
   MockWorkspaceBuildParameter3,
+  MockWorkspace,
+  MockOutdatedStoppedWorkspaceRequireActiveVersion,
 } from "testHelpers/entities";
+import { WorkspaceParametersPageView } from "./WorkspaceParametersPage";
 
 const meta: Meta<typeof WorkspaceParametersPageView> = {
   title: "pages/WorkspaceSettingsPage/WorkspaceParametersPageView",
@@ -15,6 +17,8 @@ const meta: Meta<typeof WorkspaceParametersPageView> = {
   args: {
     submitError: undefined,
     isSubmitting: false,
+    workspace: MockWorkspace,
+    canChangeVersions: true,
 
     data: {
       buildParameters: [
@@ -44,6 +48,50 @@ export const Empty: Story = {
     data: {
       buildParameters: [],
       templateVersionRichParameters: [],
+    },
+  },
+};
+
+export const RequireActiveVersionNoChangeVersion: Story = {
+  args: {
+    workspace: MockOutdatedStoppedWorkspaceRequireActiveVersion,
+    canChangeVersions: false,
+    data: {
+      buildParameters: [
+        MockWorkspaceBuildParameter1,
+        MockWorkspaceBuildParameter2,
+        MockWorkspaceBuildParameter3,
+      ],
+      templateVersionRichParameters: [
+        MockTemplateVersionParameter1,
+        MockTemplateVersionParameter2,
+        {
+          ...MockTemplateVersionParameter3,
+          mutable: false,
+        },
+      ],
+    },
+  },
+};
+
+export const RequireActiveVersionCanChangeVersion: Story = {
+  args: {
+    workspace: MockOutdatedStoppedWorkspaceRequireActiveVersion,
+    canChangeVersions: true,
+    data: {
+      buildParameters: [
+        MockWorkspaceBuildParameter1,
+        MockWorkspaceBuildParameter2,
+        MockWorkspaceBuildParameter3,
+      ],
+      templateVersionRichParameters: [
+        MockTemplateVersionParameter1,
+        MockTemplateVersionParameter2,
+        {
+          ...MockTemplateVersionParameter3,
+          mutable: false,
+        },
+      ],
     },
   },
 };

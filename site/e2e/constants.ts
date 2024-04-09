@@ -1,7 +1,16 @@
+import * as path from "path";
+
+export const coderMain = path.join(__dirname, "../../enterprise/cmd/coder");
+
 // Default port from the server
-export const defaultPort = 3000;
+export const coderPort = process.env.CODER_E2E_PORT
+  ? Number(process.env.CODER_E2E_PORT)
+  : 3111;
 export const prometheusPort = 2114;
-export const pprofPort = 6061;
+
+// Use alternate ports in case we're running in a Coder Workspace.
+export const agentPProfPort = 6061;
+export const coderdPProfPort = 6062;
 
 // Credentials for the first user
 export const username = "admin";
@@ -23,3 +32,8 @@ export const gitAuth = {
   validatePath: "/validate",
   installationsPath: "/installations",
 };
+
+export const requireEnterpriseTests = Boolean(
+  process.env.CODER_E2E_REQUIRE_ENTERPRISE_TESTS,
+);
+export const enterpriseLicense = process.env.CODER_E2E_ENTERPRISE_LICENSE ?? "";

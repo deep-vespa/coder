@@ -13,8 +13,8 @@ import (
 	"github.com/mattn/go-isatty"
 	"golang.org/x/xerrors"
 
-	"github.com/coder/coder/v2/cli/clibase"
 	"github.com/coder/pretty"
+	"github.com/coder/serpent"
 )
 
 // PromptOptions supply a set of options to the prompt.
@@ -30,13 +30,13 @@ const skipPromptFlag = "yes"
 
 // SkipPromptOption adds a "--yes/-y" flag to the cmd that can be used to skip
 // prompts.
-func SkipPromptOption() clibase.Option {
-	return clibase.Option{
+func SkipPromptOption() serpent.Option {
+	return serpent.Option{
 		Flag:          skipPromptFlag,
 		FlagShorthand: "y",
 		Description:   "Bypass prompts.",
 		// Discard
-		Value: clibase.BoolOf(new(bool)),
+		Value: serpent.BoolOf(new(bool)),
 	}
 }
 
@@ -46,7 +46,7 @@ const (
 )
 
 // Prompt asks the user for input.
-func Prompt(inv *clibase.Invocation, opts PromptOptions) (string, error) {
+func Prompt(inv *serpent.Invocation, opts PromptOptions) (string, error) {
 	// If the cmd has a "yes" flag for skipping confirm prompts, honor it.
 	// If it's not a "Confirm" prompt, then don't skip. As the default value of
 	// "yes" makes no sense.
@@ -71,9 +71,9 @@ func Prompt(inv *clibase.Invocation, opts PromptOptions) (string, error) {
 		} else {
 			renderedNo = Bold(ConfirmNo)
 		}
-		pretty.Fprintf(inv.Stdout, DefaultStyles.Placeholder, "(%s/%s)", renderedYes, renderedNo)
+		_, _ = fmt.Fprintf(inv.Stdout, "(%s/%s) ", renderedYes, renderedNo)
 	} else if opts.Default != "" {
-		_, _ = fmt.Fprint(inv.Stdout, pretty.Sprint(DefaultStyles.Placeholder, "("+opts.Default+") "))
+		_, _ = fmt.Fprintf(inv.Stdout, "(%s) ", pretty.Sprint(DefaultStyles.Placeholder, opts.Default))
 	}
 	interrupt := make(chan os.Signal, 1)
 

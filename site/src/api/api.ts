@@ -1,10 +1,15 @@
-import axios from "axios";
-import dayjs from "dayjs";
-import * as TypesGen from "./typesGenerated";
-// This needs to include the `../`, otherwise it breaks when importing into
-// vscode-coder.
-import { delay } from "../utils/delay";
+/**
+ * @fileoverview This file is imported externally by things like vscode-coder so
+ * it must not import anything using aliases otherwise it will break when being
+ * imported by those external consumers.  For example, `utils/delay` must be
+ * imported using `../utils/delay` instead.
+ */
+
+import axios, { isAxiosError } from "axios";
+import type dayjs from "dayjs";
 import userAgentParser from "ua-parser-js";
+import { delay } from "../utils/delay";
+import * as TypesGen from "./typesGenerated";
 
 // Adds 304 for the default axios validateStatus function
 // https://github.com/axios/axios#handling-errors Check status here
@@ -67,6 +72,14 @@ if (token !== null && token.getAttribute("content") !== null) {
   }
 }
 
+export const setSessionToken = (token: string) => {
+  axios.defaults.headers.common["Coder-Session-Token"] = token;
+};
+
+export const setHost = (host?: string) => {
+  axios.defaults.baseURL = host;
+};
+
 const CONTENT_TYPE_JSON = {
   "Content-Type": "application/json",
 };
@@ -78,6 +91,8 @@ export const provisioners: TypesGen.ProvisionerDaemon[] = [
     created_at: "",
     provisioners: [],
     tags: {},
+    version: "v2.34.5",
+    api_version: "1.0",
   },
   {
     id: "cdr-basic",
@@ -85,6 +100,8 @@ export const provisioners: TypesGen.ProvisionerDaemon[] = [
     created_at: "",
     provisioners: [],
     tags: {},
+    version: "v2.34.5",
+    api_version: "1.0",
   },
 ];
 
@@ -122,6 +139,13 @@ export const logout = async (): Promise<void> => {
 
 export const getAuthenticatedUser = async () => {
   const response = await axios.get<TypesGen.User>("/api/v2/users/me");
+  return response.data;
+};
+
+export const getUserParameters = async (templateID: string) => {
+  const response = await axios.get<TypesGen.UserParameter[]>(
+    "/api/v2/users/me/autofill-parameters?template_id=" + templateID,
+  );
   return response.data;
 };
 
@@ -220,11 +244,27 @@ export const getTemplate = async (
   return response.data;
 };
 
+export interface TemplateOptions {
+  readonly deprecated?: boolean;
+}
+
 export const getTemplates = async (
   organizationId: string,
+  options?: TemplateOptions,
 ): Promise<TypesGen.Template[]> => {
+  const params = {} as Record<string, string>;
+  if (options && options.deprecated !== undefined) {
+    // Just want to check if it isn't undefined. If it has
+    // a boolean value, convert it to a string and include
+    // it as a param.
+    params["deprecated"] = String(options.deprecated);
+  }
+
   const response = await axios.get<TypesGen.Template[]>(
     `/api/v2/organizations/${organizationId}/templates`,
+    {
+      params,
+    },
   );
   return response.data;
 };
@@ -294,7 +334,7 @@ export const getPreviousTemplateVersionByName = async (
   organizationId: string,
   templateName: string,
   versionName: string,
-): Promise<GetPreviousTemplateVersionByNameResponse> => {
+) => {
   try {
     const response = await axios.get<TypesGen.TemplateVersion>(
       `/api/v2/organizations/${organizationId}/templates/${templateName}/versions/${versionName}/previous`,
@@ -394,11 +434,16 @@ export const unarchiveTemplateVersion = async (templateVersionId: string) => {
 export const updateTemplateMeta = async (
   templateId: string,
   data: TypesGen.UpdateTemplateMeta,
-): Promise<TypesGen.Template> => {
+): Promise<TypesGen.Template | null> => {
   const response = await axios.patch<TypesGen.Template>(
     `/api/v2/templates/${templateId}`,
     data,
   );
+  // On 304 response there is no data payload.
+  if (response.status === 304) {
+    return null;
+  }
+
   return response.data;
 };
 
@@ -525,7 +570,7 @@ export const postWorkspaceBuild = async (
 export const startWorkspace = (
   workspaceId: string,
   templateVersionId: string,
-  logLevel?: TypesGen.CreateWorkspaceBuildRequest["log_level"],
+  logLevel?: TypesGen.ProvisionerLogLevel,
   buildParameters?: TypesGen.WorkspaceBuildParameter[],
 ) =>
   postWorkspaceBuild(workspaceId, {
@@ -536,20 +581,25 @@ export const startWorkspace = (
   });
 export const stopWorkspace = (
   workspaceId: string,
-  logLevel?: TypesGen.CreateWorkspaceBuildRequest["log_level"],
+  logLevel?: TypesGen.ProvisionerLogLevel,
 ) =>
   postWorkspaceBuild(workspaceId, {
     transition: "stop",
     log_level: logLevel,
   });
 
+export type DeleteWorkspaceOptions = Pick<
+  TypesGen.CreateWorkspaceBuildRequest,
+  "log_level" & "orphan"
+>;
+
 export const deleteWorkspace = (
   workspaceId: string,
-  logLevel?: TypesGen.CreateWorkspaceBuildRequest["log_level"],
+  options?: DeleteWorkspaceOptions,
 ) =>
   postWorkspaceBuild(workspaceId, {
     transition: "delete",
-    log_level: logLevel,
+    ...options,
   });
 
 export const cancelWorkspaceBuild = async (
@@ -572,6 +622,21 @@ export const updateWorkspaceDormancy = async (
   const response = await axios.put(
     `/api/v2/workspaces/${workspaceId}/dormant`,
     data,
+  );
+  return response.data;
+};
+
+export const updateWorkspaceAutomaticUpdates = async (
+  workspaceId: string,
+  automaticUpdates: TypesGen.AutomaticUpdates,
+): Promise<void> => {
+  const req: TypesGen.UpdateWorkspaceAutomaticUpdatesRequest = {
+    automatic_updates: automaticUpdates,
+  };
+
+  const response = await axios.put(
+    `/api/v2/workspaces/${workspaceId}/autoupdates`,
+    req,
   );
   return response.data;
 };
@@ -674,6 +739,14 @@ export const updateProfile = async (
   return response.data;
 };
 
+export const updateAppearanceSettings = async (
+  userId: string,
+  data: TypesGen.UpdateUserAppearanceSettingsRequest,
+): Promise<TypesGen.User> => {
+  const response = await axios.put(`/api/v2/users/${userId}/appearance`, data);
+  return response.data;
+};
+
 export const getUserQuietHoursSchedule = async (
   userId: TypesGen.User["id"],
 ): Promise<TypesGen.UserQuietHoursScheduleResponse> => {
@@ -744,9 +817,8 @@ export const updateUserPassword = async (
   axios.put(`/api/v2/users/${userId}/password`, updatePassword);
 
 export const getRoles = async (): Promise<Array<TypesGen.AssignableRoles>> => {
-  const response = await axios.get<Array<TypesGen.AssignableRoles>>(
-    `/api/v2/users/roles`,
-  );
+  const response =
+    await axios.get<Array<TypesGen.AssignableRoles>>(`/api/v2/users/roles`);
   return response.data;
 };
 
@@ -902,6 +974,82 @@ export const exchangeExternalAuthDevice = async (
   return resp.data;
 };
 
+export const getUserExternalAuthProviders =
+  async (): Promise<TypesGen.ListUserExternalAuthResponse> => {
+    const resp = await axios.get(`/api/v2/external-auth`);
+    return resp.data;
+  };
+
+export const unlinkExternalAuthProvider = async (
+  provider: string,
+): Promise<string> => {
+  const resp = await axios.delete(`/api/v2/external-auth/${provider}`);
+  return resp.data;
+};
+
+export const getOAuth2ProviderApps = async (
+  filter?: TypesGen.OAuth2ProviderAppFilter,
+): Promise<TypesGen.OAuth2ProviderApp[]> => {
+  const params = filter?.user_id
+    ? new URLSearchParams({ user_id: filter.user_id })
+    : "";
+  const resp = await axios.get(`/api/v2/oauth2-provider/apps?${params}`);
+  return resp.data;
+};
+
+export const getOAuth2ProviderApp = async (
+  id: string,
+): Promise<TypesGen.OAuth2ProviderApp> => {
+  const resp = await axios.get(`/api/v2/oauth2-provider/apps/${id}`);
+  return resp.data;
+};
+
+export const postOAuth2ProviderApp = async (
+  data: TypesGen.PostOAuth2ProviderAppRequest,
+): Promise<TypesGen.OAuth2ProviderApp> => {
+  const response = await axios.post(`/api/v2/oauth2-provider/apps`, data);
+  return response.data;
+};
+
+export const putOAuth2ProviderApp = async (
+  id: string,
+  data: TypesGen.PutOAuth2ProviderAppRequest,
+): Promise<TypesGen.OAuth2ProviderApp> => {
+  const response = await axios.put(`/api/v2/oauth2-provider/apps/${id}`, data);
+  return response.data;
+};
+
+export const deleteOAuth2ProviderApp = async (id: string): Promise<void> => {
+  await axios.delete(`/api/v2/oauth2-provider/apps/${id}`);
+};
+
+export const getOAuth2ProviderAppSecrets = async (
+  id: string,
+): Promise<TypesGen.OAuth2ProviderAppSecret[]> => {
+  const resp = await axios.get(`/api/v2/oauth2-provider/apps/${id}/secrets`);
+  return resp.data;
+};
+
+export const postOAuth2ProviderAppSecret = async (
+  id: string,
+): Promise<TypesGen.OAuth2ProviderAppSecretFull> => {
+  const resp = await axios.post(`/api/v2/oauth2-provider/apps/${id}/secrets`);
+  return resp.data;
+};
+
+export const deleteOAuth2ProviderAppSecret = async (
+  appId: string,
+  secretId: string,
+): Promise<void> => {
+  await axios.delete(
+    `/api/v2/oauth2-provider/apps/${appId}/secrets/${secretId}`,
+  );
+};
+
+export const revokeOAuth2ProviderApp = async (appId: string): Promise<void> => {
+  await axios.delete(`/oauth2/tokens?client_id=${appId}`);
+};
+
 export const getAuditLogs = async (
   options: TypesGen.AuditLogsRequest,
 ): Promise<TypesGen.AuditLogResponse> => {
@@ -918,8 +1066,10 @@ export const getTemplateDAUs = async (
 };
 
 export const getDeploymentDAUs = async (
-  // Default to user's local timezone
-  offset = new Date().getTimezoneOffset() / 60,
+  // Default to user's local timezone.
+  // As /api/v2/insights/daus only accepts whole-number values for tz_offset
+  // we truncate the tz offset down to the closest hour.
+  offset = Math.trunc(new Date().getTimezoneOffset() / 60),
 ): Promise<TypesGen.DAUsResponse> => {
   const response = await axios.get(`/api/v2/insights/daus?tz_offset=${offset}`);
   return response.data;
@@ -997,7 +1147,6 @@ export const patchGroup = async (
 export const addMember = async (groupId: string, userId: string) => {
   return patchGroup(groupId, {
     name: "",
-    display_name: "",
     add_users: [userId],
     remove_users: [],
   });
@@ -1034,6 +1183,39 @@ export const getAgentListeningPorts = async (
   return response.data;
 };
 
+export const getWorkspaceAgentSharedPorts = async (
+  workspaceID: string,
+): Promise<TypesGen.WorkspaceAgentPortShares> => {
+  const response = await axios.get(
+    `/api/v2/workspaces/${workspaceID}/port-share`,
+  );
+  return response.data;
+};
+
+export const upsertWorkspaceAgentSharedPort = async (
+  workspaceID: string,
+  req: TypesGen.UpsertWorkspaceAgentPortShareRequest,
+): Promise<TypesGen.WorkspaceAgentPortShares> => {
+  const response = await axios.post(
+    `/api/v2/workspaces/${workspaceID}/port-share`,
+    req,
+  );
+  return response.data;
+};
+
+export const deleteWorkspaceAgentSharedPort = async (
+  workspaceID: string,
+  req: TypesGen.DeleteWorkspaceAgentPortShareRequest,
+): Promise<TypesGen.WorkspaceAgentPortShares> => {
+  const response = await axios.delete(
+    `/api/v2/workspaces/${workspaceID}/port-share`,
+    {
+      data: req,
+    },
+  );
+  return response.data;
+};
+
 // getDeploymentSSHConfig is used by the VSCode-Extension.
 export const getDeploymentSSHConfig =
   async (): Promise<TypesGen.SSHConfigResponse> => {
@@ -1043,7 +1225,7 @@ export const getDeploymentSSHConfig =
 
 export type DeploymentConfig = {
   readonly config: TypesGen.DeploymentValues;
-  readonly options: TypesGen.ClibaseOption[];
+  readonly options: TypesGen.SerpentOption[];
 };
 
 export const getDeploymentConfig = async (): Promise<DeploymentConfig> => {
@@ -1072,9 +1254,10 @@ export const getFile = async (fileId: string): Promise<ArrayBuffer> => {
 export const getWorkspaceProxyRegions = async (): Promise<
   TypesGen.RegionsResponse<TypesGen.Region>
 > => {
-  const response = await axios.get<TypesGen.RegionsResponse<TypesGen.Region>>(
-    `/api/v2/regions`,
-  );
+  const response =
+    await axios.get<TypesGen.RegionsResponse<TypesGen.Region>>(
+      `/api/v2/regions`,
+    );
   return response.data;
 };
 
@@ -1190,10 +1373,15 @@ export const removeLicense = async (licenseId: number): Promise<void> => {
 
 export class MissingBuildParameters extends Error {
   parameters: TypesGen.TemplateVersionParameter[] = [];
+  versionId: string;
 
-  constructor(parameters: TypesGen.TemplateVersionParameter[]) {
+  constructor(
+    parameters: TypesGen.TemplateVersionParameter[],
+    versionId: string,
+  ) {
     super("Missing build parameters.");
     this.parameters = parameters;
+    this.versionId = versionId;
   }
 }
 
@@ -1222,7 +1410,7 @@ export const changeWorkspaceVersion = async (
   );
 
   if (missingParameters.length > 0) {
-    throw new MissingBuildParameters(missingParameters);
+    throw new MissingBuildParameters(missingParameters, templateVersionId);
   }
 
   return postWorkspaceBuild(workspace.id, {
@@ -1250,9 +1438,8 @@ export const updateWorkspace = async (
     getWorkspaceBuildParameters(workspace.latest_build.id),
   ]);
   const activeVersionId = template.active_version_id;
-  const templateParameters = await getTemplateVersionRichParameters(
-    activeVersionId,
-  );
+  const templateParameters =
+    await getTemplateVersionRichParameters(activeVersionId);
   const missingParameters = getMissingParameters(
     oldBuildParameters,
     newBuildParameters,
@@ -1260,7 +1447,7 @@ export const updateWorkspace = async (
   );
 
   if (missingParameters.length > 0) {
-    throw new MissingBuildParameters(missingParameters);
+    throw new MissingBuildParameters(missingParameters, activeVersionId);
   }
 
   return postWorkspaceBuild(workspace.id, {
@@ -1268,6 +1455,15 @@ export const updateWorkspace = async (
     template_version_id: activeVersionId,
     rich_parameter_values: newBuildParameters,
   });
+};
+
+export const getWorkspaceResolveAutostart = async (
+  workspaceId: string,
+): Promise<TypesGen.ResolveAutostartResponse> => {
+  const response = await axios.get(
+    `/api/v2/workspaces/${workspaceId}/resolve-autostart`,
+  );
+  return response.data;
 };
 
 const getMissingParameters = (
@@ -1359,7 +1555,7 @@ export const watchAgentMetadata = (agentId: string): EventSource => {
 type WatchBuildLogsByTemplateVersionIdOptions = {
   after?: number;
   onMessage: (log: TypesGen.ProvisionerJobLog) => void;
-  onDone: () => void;
+  onDone?: () => void;
   onError: (error: Error) => void;
 };
 export const watchBuildLogsByTemplateVersionId = (
@@ -1391,7 +1587,7 @@ export const watchBuildLogsByTemplateVersionId = (
   });
   socket.addEventListener("close", () => {
     // When the socket closes, logs have finished streaming!
-    onDone();
+    onDone?.();
   });
   return socket;
 };
@@ -1529,17 +1725,58 @@ export const getInsightsTemplate = async (
   return response.data;
 };
 
-export interface Health {
-  healthy: boolean;
-  time: string;
-  coder_version: string;
-  access_url: { healthy: boolean };
-  database: { healthy: boolean };
-  derp: { healthy: boolean };
-  websocket: { healthy: boolean };
-}
-
-export const getHealth = async () => {
-  const response = await axios.get<Health>("/api/v2/debug/health");
+export const getHealth = async (force: boolean = false) => {
+  const params = new URLSearchParams({ force: force.toString() });
+  const response = await axios.get<TypesGen.HealthcheckReport>(
+    `/api/v2/debug/health?${params}`,
+  );
   return response.data;
+};
+
+export const getHealthSettings = async () => {
+  return (
+    await axios.get<TypesGen.HealthSettings>(`/api/v2/debug/health/settings`)
+  ).data;
+};
+
+export const updateHealthSettings = async (
+  data: TypesGen.UpdateHealthSettings,
+) => {
+  const response = await axios.put<TypesGen.HealthSettings>(
+    `/api/v2/debug/health/settings`,
+    data,
+  );
+  return response.data;
+};
+
+export const putFavoriteWorkspace = async (workspaceID: string) => {
+  await axios.put(`/api/v2/workspaces/${workspaceID}/favorite`);
+};
+
+export const deleteFavoriteWorkspace = async (workspaceID: string) => {
+  await axios.delete(`/api/v2/workspaces/${workspaceID}/favorite`);
+};
+
+export type GetJFrogXRayScanParams = {
+  workspaceId: string;
+  agentId: string;
+};
+
+export const getJFrogXRayScan = async (options: GetJFrogXRayScanParams) => {
+  const searchParams = new URLSearchParams({
+    workspace_id: options.workspaceId,
+    agent_id: options.agentId,
+  });
+
+  try {
+    const res = await axios.get<TypesGen.JFrogXrayScan>(
+      `/api/v2/integrations/jfrog/xray-scan?${searchParams}`,
+    );
+    return res.data;
+  } catch (error) {
+    if (isAxiosError(error) && error.response?.status === 404) {
+      // react-query library does not allow undefined to be returned as a query result
+      return null;
+    }
+  }
 };

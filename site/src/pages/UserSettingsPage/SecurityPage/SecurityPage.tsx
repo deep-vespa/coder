@@ -1,20 +1,20 @@
-import { useMe } from "hooks/useMe";
-import { ComponentProps, FC } from "react";
-import { Section } from "components/SettingsLayout/Section";
-import { SecurityForm } from "./SettingsSecurityForm";
+import type { ComponentProps, FC } from "react";
 import { useMutation, useQuery } from "react-query";
 import { getUserLoginType } from "api/api";
+import { authMethods, updatePassword } from "api/queries/users";
+import { displaySuccess } from "components/GlobalSnackbar/utils";
+import { Loader } from "components/Loader/Loader";
+import { Stack } from "components/Stack/Stack";
+import { useAuthenticated } from "contexts/auth/RequireAuth";
+import { Section } from "../Section";
+import { SecurityForm } from "./SecurityForm";
 import {
   SingleSignOnSection,
   useSingleSignOnSection,
 } from "./SingleSignOnSection";
-import { Loader } from "components/Loader/Loader";
-import { Stack } from "components/Stack/Stack";
-import { authMethods, updatePassword } from "api/queries/users";
-import { displaySuccess } from "components/GlobalSnackbar/utils";
 
 export const SecurityPage: FC = () => {
-  const me = useMe();
+  const { user: me } = useAuthenticated();
   const updatePasswordMutation = useMutation(updatePassword());
   const authMethodsQuery = useQuery(authMethods());
   const { data: userLoginType } = useQuery({
@@ -57,16 +57,18 @@ export const SecurityPage: FC = () => {
   );
 };
 
-export const SecurityPageView = ({
-  security,
-  oidc,
-}: {
+interface SecurityPageViewProps {
   security: {
     form: ComponentProps<typeof SecurityForm>;
   };
   oidc?: {
     section: ComponentProps<typeof SingleSignOnSection>;
   };
+}
+
+export const SecurityPageView: FC<SecurityPageViewProps> = ({
+  security,
+  oidc,
 }) => {
   return (
     <Stack spacing={6}>

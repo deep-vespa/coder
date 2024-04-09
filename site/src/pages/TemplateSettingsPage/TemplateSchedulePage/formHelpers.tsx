@@ -1,9 +1,9 @@
-import { UpdateTemplateMeta } from "api/typesGenerated";
-import {
+import * as Yup from "yup";
+import type { UpdateTemplateMeta } from "api/typesGenerated";
+import type {
   TemplateAutostartRequirementDaysValue,
   TemplateAutostopRequirementDaysValue,
 } from "utils/schedule";
-import * as Yup from "yup";
 
 export interface TemplateScheduleFormValues
   extends Omit<
@@ -24,19 +24,23 @@ export const getValidationSchema = (): Yup.AnyObjectSchema =>
   Yup.object({
     default_ttl_ms: Yup.number()
       .integer()
+      .required()
       .min(0, "Default time until autostop must not be less than 0.")
       .max(
         24 * MAX_TTL_DAYS /* 30 days in hours */,
         "Please enter a limit that is less than or equal to 720 hours (30 days).",
       ),
-    max_ttl_ms: Yup.number()
+    activity_bump_ms: Yup.number()
       .integer()
-      .min(0, "Maximum time until autostop must not be less than 0.")
+      .required()
+      .min(0, "Activity bump must not be less than 0.")
       .max(
         24 * MAX_TTL_DAYS /* 30 days in hours */,
-        "Please enter a limit that is less than or equal to 720 hours (30 days).",
+        "Please enter an activity bump duration that is less than or equal to 720 hours (30 days).",
       ),
     failure_ttl_ms: Yup.number()
+      .integer()
+      .required()
       .min(0, "Failure cleanup days must not be less than 0.")
       .test(
         "positive-if-enabled",
@@ -51,6 +55,8 @@ export const getValidationSchema = (): Yup.AnyObjectSchema =>
         },
       ),
     time_til_dormant_ms: Yup.number()
+      .integer()
+      .required()
       .min(0, "Dormancy threshold days must not be less than 0.")
       .test(
         "positive-if-enabled",
@@ -65,6 +71,8 @@ export const getValidationSchema = (): Yup.AnyObjectSchema =>
         },
       ),
     time_til_dormant_autodelete_ms: Yup.number()
+      .integer()
+      .required()
       .min(0, "Dormancy auto-deletion days must not be less than 0.")
       .test(
         "positive-if-enabled",
